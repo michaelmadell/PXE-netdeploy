@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/your-org/netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 )
 
 // Server implements api.StrictServerInterface.

@@ -1,4 +1,4 @@
-module github.com/your-org/netdeploy
+module github.com/michaelmadell/pxe-netdeploy
 
 go 1.27.3
 

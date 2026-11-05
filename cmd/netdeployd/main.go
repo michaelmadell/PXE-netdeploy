@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/your-org/netdeploy/internal/api"
-	"github.com/your-org/netdeploy/internal/certs"
-	"github.com/your-org/netdeploy/internal/server"
-	"github.com/your-org/netdeploy/web"
+	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
+	"github.com/michaelmadell/pxe-netdeploy/internal/server"
+	"github.com/michaelmadell/pxe-netdeploy/web"
 )
 
 // version is set at build time: -ldflags "-X main.version=..."

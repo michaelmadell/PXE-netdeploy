@@ -79,21 +79,17 @@ settings, atomic settings apply.
 implemented, agent stub, React shell with a live health page, `justfile` and
 PowerShell scripts, CI, Hyper-V lab script, docs and ADRs.
 
-**Verified:** `just setup` was run on the developer's Windows machine and
-progressed without errors at last report. Confirm a full `just setup`,
-`just dev` and `just build` before relying on the skeleton.
+**Verified:**
+* `just setup`, `just gen`, `just lint`, `just build` and `just dev` all work on Windows, and CI passes on Ubuntu and Windows.
+* The generated identifiers in `server.go` match oapi-codegen v2.4.1, with `always-prefix-enum-values` making the names deterministic.
+* The spec generates cleanly, and Redocly is clean apart from two intentional warnings recorded in `.redocly.lint-ignore.yaml`.
+* Parameter errors return problem JSON.
+* The Go toolchain is pinned to 1.27.3, because the gzipped embedded spec differs between Go versions and broke the drift check.
 
 **Not yet verified:**
 
-- Generated Go identifiers used in `internal/server/server.go`
-  (`HealthStatusOk`, `ServiceHealthStatusDisabled`, `GetHealth200JSONResponse`)
-  match what oapi-codegen v2.4.1 actually emits.
-- The spec generates cleanly; naming collisions between inline enums in
-  `allOf` compositions are possible.
-- `just lint` (Redocly) passes; expect some warnings to tune.
-- CI on GitHub: needs `web/pnpm-lock.yaml` committed (`--frozen-lockfile`).
-- The project name `netdeploy` and module path `github.com/your-org/netdeploy`
-  are placeholders.
+- The product name `netdeploy` (binary `netdeployd`) is still a working name.
+  The Go module path is now `github.com/michaelmadell/pxe-netdeploy`.
 
 ## Next step
 
@@ -112,6 +108,8 @@ plan, tasks and success criteria in [plan/phase-1-spike.md](plan/phase-1-spike.m
 | UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Spike on QEMU/OVMF or real hardware (Hyper-V likely has no HTTP Boot) |
 | TFTP `windowsize` support in the chosen Go TFTP library | Spike; implement our own if missing |
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
+| The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator | |
+| Raw Go error text appears in problem `detail` fields | |
 
 ## Suggested skills for the next session
 

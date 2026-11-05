@@ -22,7 +22,8 @@ Open http://localhost:5173. Vite proxies `/api` to the Go server on
 https://127.0.0.1:8443 (self-signed certificate; your browser will warn if you
 open the server address directly).
 
-Running DHCP or TFTP later: on Windows, ports 67 and 69 can be bound without
+Running DHCP or TFTP (Phase 1 spike flags; `go run ./cmd/netdeployd -h` lists
+them, and [the runbook](../spikes/phase-1-runbook.md) has lab commands): on Windows, ports 67 and 69 can be bound without
 elevation, but creating firewall rules needs it (`just lab` adds rules for the
 lab adapter). On Linux they are privileged ports, so run with root or grant
 `CAP_NET_BIND_SERVICE` to the binary.

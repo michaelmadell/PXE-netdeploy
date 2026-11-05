@@ -79,14 +79,20 @@ documentation if anything fails, and record differences in the findings.
   Its server binds to a device on Linux; check its behaviour on Windows. If
   needed, use a plain UDP socket on the interface address and broadcast
   replies to `255.255.255.255:68`.
-- **TFTP library:** start with `github.com/pin/tftp/v3`. Check whether it
-  supports `windowsize` (RFC 7440); if not, a minimal read-only server is small
-  enough to write ourselves, and that also gives per-client file selection later.
+- **TFTP library:** `github.com/pin/tftp/v3` turned out not to support
+  `windowsize` (RFC 7440), so `internal/tftp` is our own read-only server
+  ([ADR 0012](../adr/0012-own-tftp-server.md)).
 - **Elevation:** on Windows, ports 67 and 69 don't need elevation, but firewall
   rules do (`just lab` adds them). On Linux, binding them needs root or
   `CAP_NET_BIND_SERVICE`.
 - **Port conflicts:** stop Internet Connection Sharing (SharedAccess) if UDP 67
   is taken; WDS, if installed, holds 69 and 4011.
+
+## Running it
+
+Step-by-step commands for each task, and what to capture:
+[spikes/phase-1-runbook.md](../spikes/phase-1-runbook.md). Results go in
+[spikes/phase-1-findings.md](../spikes/phase-1-findings.md).
 
 ## Deliverables
 

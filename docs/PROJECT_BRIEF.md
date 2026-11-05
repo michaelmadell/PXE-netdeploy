@@ -64,6 +64,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0009 | Separate admin (HTTPS, localhost by default) and content listeners. |
 | 0010 | Unknown PXE clients are ignored by default. |
 | 0011 | Vite + React + Tailwind v4 + shadcn/ui (not Turbopack, not DaisyUI). |
+| 0012 | Our own read-only TFTP server (pin/tftp lacks RFC 7440 windowsize). |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -93,9 +94,17 @@ PowerShell scripts, CI, Hyper-V lab script, docs and ADRs.
 
 ## Next step
 
-**Phase 1 spike**: boot Windows 11 WinPE under Secure Boot on the Hyper-V lab
-VM from netdeployd's own DHCP and TFTP, then repeat on real I210 hardware. Full
-plan, tasks and success criteria in [plan/phase-1-spike.md](plan/phase-1-spike.md).
+**Phase 1 spike (in progress)**: boot Windows 11 WinPE under Secure Boot on the
+Hyper-V lab VM from netdeployd's own DHCP and TFTP, then repeat on real I210
+hardware. Full plan, tasks and success criteria in
+[plan/phase-1-spike.md](plan/phase-1-spike.md).
+
+- **Code (tasks 1–2):** `internal/dhcp` (full mode, one interface, in-memory
+  leases) and `internal/tftp` (own server, ADR 0012), behind `-dhcp-*` and
+  `-tftp-*` flags on `netdeployd`. Unit and loopback tests pass; untested
+  against real firmware.
+- **Lab runs (tasks 3–10):** follow [spikes/phase-1-runbook.md](spikes/phase-1-runbook.md),
+  record results in [spikes/phase-1-findings.md](spikes/phase-1-findings.md).
 
 ## Open questions and things to verify
 
@@ -106,7 +115,7 @@ plan, tasks and success criteria in [plan/phase-1-spike.md](plan/phase-1-spike.m
 | Whether Hyper-V's Secure Boot templates trust the Windows UEFI CA 2023 | Spike: try the 2023-signed boot manager |
 | Where recent Win11 media keeps the 2023-signed boot manager (`EFI_EX`) | Spike: inspect current ISO and its WIMs |
 | UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Spike on QEMU/OVMF or real hardware (Hyper-V likely has no HTTP Boot) |
-| TFTP `windowsize` support in the chosen Go TFTP library | Spike; implement our own if missing |
+| ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
 | The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator | |
 | Raw Go error text appears in problem `detail` fields | |

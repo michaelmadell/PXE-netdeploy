@@ -16,5 +16,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0009](0009-separate-admin-and-content-listeners.md) | Separate admin and content listeners | accepted |
 | [0010](0010-unknown-clients-ignored-by-default.md) | Unknown clients are ignored by default | accepted |
 | [0011](0011-frontend-stack.md) | Vite + React + Tailwind v4 + shadcn/ui | accepted |
+| [0012](0012-own-tftp-server.md) | Our own read-only TFTP server | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

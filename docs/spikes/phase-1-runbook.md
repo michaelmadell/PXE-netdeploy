@@ -170,7 +170,8 @@ template: accepted, or the firmware's Secure Boot violation message.
 ## Task 6: transfer tuning
 
 Boot Manager asks for the blksize and windowsize set in the BCD; the server
-can only lower them. Set the BCD high once, then cap from the server:
+can only lower them. The server's default caps are 8192/8 (chosen from these
+runs), so pass explicit caps for every run. Set the BCD high once:
 
 ```powershell
 bcdedit /store .tmp\spike\Boot\BCD /set '{ramdiskoptions}' ramdisktftpblocksize 16384
@@ -181,8 +182,8 @@ bcdedit /store .tmp\spike\Boot\BCD /set '{ramdiskoptions}' ramdisktftpwindowsize
 |---|---|
 | 1456 / 1 | `-tftp-max-blksize 1456 -tftp-max-windowsize 1` |
 | 1456 / 8 | `-tftp-max-blksize 1456 -tftp-max-windowsize 8` |
-| 8192 / 8 | `-tftp-max-blksize 8192 -tftp-max-windowsize 8` |
-| 16384 / 16 | (no caps) |
+| 8192 / 8 | (defaults) |
+| 16384 / 16 | `-tftp-max-blksize 16384 -tftp-max-windowsize 16` (fails on Hyper-V) |
 
 Take `duration_ms`, `mb_per_s` and `retransmits` from the boot.wim
 `tftp transfer complete` line. Turn the VM off between runs.
@@ -195,8 +196,22 @@ adding its alias). Run with `-dhcp-iface '<that NIC alias>'`
 (`Get-NetAdapter` lists aliases). Boot the device from its network boot
 entry with Secure Boot on.
 
-In WinPE (Shift+F10 on the Setup screen): `ipconfig /all`. Expect no
-I210 adapter or no address, and no `dhcp rx` without `arch` in the log.
+At the WinPE command prompt: `ipconfig /all`. Expect no I210 adapter or no
+address, and no `dhcp rx` without `arch` in the log.
+
+Also repeat the task 6 timings here: physical networks handle IP fragments
+worse than Hyper-V's switch, and these runs set the final defaults. The boot.wim
+download doesn't need the I210 driver (the firmware and Boot Manager use their
+own network stack).
+
+| Run | Server flags | Why |
+|---|---|---|
+| 1456 / 8 | `-tftp-max-blksize 1456 -tftp-max-windowsize 8` | Unfragmented baseline |
+| 1456 / 16 | `-tftp-max-blksize 1456 -tftp-max-windowsize 16` | Unfragmented, more in flight |
+| 1456 / 32 | `-tftp-max-blksize 1456 -tftp-max-windowsize 32` | Unfragmented, more in flight |
+| 8192 / 8 | (defaults) | Current default |
+
+If a run fails, note Boot Manager's on-screen error and the `retransmits` count.
 
 ## Task 8: inject the I210 driver
 

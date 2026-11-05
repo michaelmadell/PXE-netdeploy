@@ -38,7 +38,7 @@ Mark every result **tested** (with the date and setup) or **untested**.
 | 3 | WinPE on Windows-CA VM | **Pass** (tested 2026-11-05) | Setup screen reached under Secure Boot from our DHCP + TFTP, then the WDS deprecation block (above). Remaining tasks use index 1 (plain WinPE) |
 | 4 | WinPE on third-party-CA VM | **Refused, expected** (tested 2026-11-05) | Secure Boot violation. The `MicrosoftUEFICertificateAuthority` template trusts only Microsoft UEFI CA 2011 and removes Windows Production PCA 2011, so no Windows boot manager can boot. Our docs had this wrong ("+ third-party CA"); fixed. The both-CAs configuration of real PCs needs physical hardware (task 7) |
 | 5 | 2023-signed boot manager | **nd-win: boots** (tested 2026-11-05); nd-shim: expected refused (only the third-party CA) | `bootmgfw_EX.efi` (Windows UEFI CA 2023) booted to the WinPE command prompt under Secure Boot |
-| 6 | Transfer tuning | | |
+| 6 | Transfer tuning | **Hyper-V done** (tested 2026-11-05) | 1456/1: 28.5 s; 1456/8: 8.2 s; 8192/8: 2.4 s; 8192/16: 2.1 s; 16384/16: fails. Defaults decided after I210 runs |
 | 7 | I210, stock WinPE | | |
 | 8 | I210, driver injected | | |
 | 9 | HTTP Boot ISO (optional) | | |
@@ -108,11 +108,27 @@ the defaults. BCD requested 16384/16; the server capped it.
 
 | blksize / windowsize | Duration | MB/s | Retransmits |
 |---|---|---|---|
-| 1456 / 1 | | | |
-| 1456 / 8 | | | |
+| 1456 / 1 | 28.53 s | 20.4 | 0 |
+| 1456 / 8 | 8.24 s | 70.6 | 0 |
 | 8192 / 8 | 2.44 s, 2.40 s, 2.40 s | 238.6, 242.0, 242.7 | 0, 0, 0 |
 | 8192 / 16 | 2.08 s | 279.5 | 0 |
-| 16384 / 16 | | | |
+| 16384 / 16 | **Failed** after 77.2 s at block 2881 (47 MB) | – | 76 |
+
+**16384/16 fails.** Each 16 KB block is fragmented into 12 IP fragments, and a
+window of 16 sends ~190 fragments back to back; losing any fragment loses the
+block. Retransmits came at ~1 s intervals (the server's timeout), so Boot
+Manager didn't ACK early to request resends, then stopped ACKing entirely
+without sending an ERROR; the VM showed Windows Boot Manager's "Windows failed
+to start" error. 8192/8 (~50 fragments per window) has never lost a
+packet in four runs. Consequences:
+
+- The server's caps must protect clients from a BCD that asks for too much.
+  **Done:** default caps lowered from 65464/64 to **8192/8** (provisional;
+  test `TestDefaultCapsLowerLargeRequests`).
+- Physical networks fragment worse than Hyper-V's in-memory switch, so the
+  I210 runs compare unfragmented 1456 with larger windows against 8192/8.
+- Phase 2: shrink the window after repeated loss instead of resending the same
+  full window.
 
 Chosen defaults:
 

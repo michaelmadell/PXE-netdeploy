@@ -69,8 +69,8 @@ func main() {
 
 	flag.StringVar(&o.tftpRoot, "tftp-root", "", "serve this directory read-only over TFTP; empty disables TFTP")
 	flag.StringVar(&o.tftpAddr, "tftp-addr", "0.0.0.0:69", "TFTP listen address")
-	flag.IntVar(&o.tftpMaxBlockSize, "tftp-max-blksize", tftp.DefaultMaxBlockSize, "largest TFTP blksize to accept")
-	flag.IntVar(&o.tftpMaxWindowSize, "tftp-max-windowsize", tftp.DefaultMaxWindowSize, "largest TFTP windowsize to accept")
+	flag.IntVar(&o.tftpMaxBlockSize, "tftp-max-blksize", tftp.DefaultMaxBlockSize, "largest TFTP blksize to accept (8..65464); larger client requests are lowered to this")
+	flag.IntVar(&o.tftpMaxWindowSize, "tftp-max-windowsize", tftp.DefaultMaxWindowSize, "largest TFTP windowsize to accept (1..4096); larger client requests are lowered to this")
 	flag.DurationVar(&o.tftpTimeout, "tftp-timeout", tftp.DefaultTimeout, "TFTP retransmit timeout")
 	flag.Parse()
 

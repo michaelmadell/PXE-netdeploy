@@ -546,3 +546,35 @@ func TestEmptyFinalBlockRequiredWithoutTsize(t *testing.T) {
 		t.Fatalf("want a failed transfer, got logs:\n%s", logs.String())
 	}
 }
+
+// A BCD asking for 16384/16 made Windows Boot Manager fail on Hyper-V, so the
+// defaults must lower such requests.
+func TestDefaultCapsLowerLargeRequests(t *testing.T) {
+	dir := t.TempDir()
+	want := randomBytes(100_000)
+	writeFile(t, dir, "Boot/boot.wim", want)
+	addr := startServer(t, dir, Config{})
+
+	res, err := (&client{opts: map[string]string{"blksize": "16384", "windowsize": "16"}}).get(addr, `\Boot\boot.wim`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(res.data, want) {
+		t.Fatal("content mismatch")
+	}
+	if res.oack["blksize"] != strconv.Itoa(DefaultMaxBlockSize) || res.oack["windowsize"] != strconv.Itoa(DefaultMaxWindowSize) {
+		t.Errorf("OACK %v, want blksize %d windowsize %d", res.oack, DefaultMaxBlockSize, DefaultMaxWindowSize)
+	}
+}
+
+func TestMaxBlockSizeUpToRFCLimit(t *testing.T) {
+	s, err := New(Config{Root: t.TempDir(), MaxBlockSize: 65464})
+	if err != nil {
+		t.Fatalf("65464 should be allowed: %v", err)
+	}
+	s.Close()
+	if s, err := New(Config{Root: t.TempDir(), MaxBlockSize: 65465}); err == nil {
+		s.Close()
+		t.Fatal("65465 should be refused")
+	}
+}

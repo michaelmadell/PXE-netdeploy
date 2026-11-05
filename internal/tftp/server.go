@@ -28,12 +28,17 @@ import (
 
 // Defaults for Config fields left at zero.
 const (
-	DefaultMaxBlockSize  = 65464 // largest blksize RFC 2348 allows
-	DefaultMaxWindowSize = 64
+	// Default caps on what clients may negotiate. Phase 1 spike on Hyper-V:
+	// 8192/8 never lost a packet; 16384/16 (~190 IP fragments per window)
+	// lost blocks until Windows Boot Manager gave up ("Windows failed to
+	// start"). Provisional until measured on physical hardware.
+	DefaultMaxBlockSize  = 8192
+	DefaultMaxWindowSize = 8
 	DefaultTimeout       = time.Second
 	DefaultRetries       = 5
 
 	minBlockSize    = 8
+	maxBlockSize    = 65464 // largest blksize RFC 2348 allows
 	plainBlockSize  = 512
 	maxWindowLimit  = 4096 // keeps ACK numbers unambiguous across rollover
 	readBufferBytes = 2048 // requests and ACKs are small
@@ -69,9 +74,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.MaxBlockSize == 0 {
 		cfg.MaxBlockSize = DefaultMaxBlockSize
 	}
-	if cfg.MaxBlockSize < minBlockSize || cfg.MaxBlockSize > DefaultMaxBlockSize {
+	if cfg.MaxBlockSize < minBlockSize || cfg.MaxBlockSize > maxBlockSize {
 		root.Close()
-		return nil, fmt.Errorf("tftp: max block size %d outside %d..%d", cfg.MaxBlockSize, minBlockSize, DefaultMaxBlockSize)
+		return nil, fmt.Errorf("tftp: max block size %d outside %d..%d", cfg.MaxBlockSize, minBlockSize, maxBlockSize)
 	}
 	if cfg.MaxWindowSize == 0 {
 		cfg.MaxWindowSize = DefaultMaxWindowSize

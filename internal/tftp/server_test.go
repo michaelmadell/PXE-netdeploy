@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,7 +26,9 @@ func startServer(t *testing.T, dir string, cfg Config) string {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 200 * time.Millisecond
 	}
-	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +78,9 @@ type client struct {
 	// abortAfterOACK sends ERROR 0 after the OACK, as tsize probes do.
 	abortAfterOACK bool
 	readTimeout    time.Duration // default 5s
+	// stopAtTsize stops once tsize bytes have arrived, without waiting for
+	// (or ACKing) a final empty block, as Windows Boot Manager does.
+	stopAtTsize bool
 }
 
 type result struct {
@@ -115,6 +122,7 @@ func (c *client) get(addr, file string) (result, error) {
 	}
 
 	blksize, window := 512, 1
+	tsize := int64(-1)
 	var peer *net.UDPAddr
 	expect := int64(1) // next absolute block wanted
 	inWindow := 0
@@ -164,6 +172,9 @@ func (c *client) get(addr, file string) (result, error) {
 			if v, ok := res.oack["windowsize"]; ok {
 				window, _ = strconv.Atoi(v)
 			}
+			if v, ok := res.oack["tsize"]; ok {
+				tsize, _ = strconv.ParseInt(v, 10, 64)
+			}
 			if c.abortAfterOACK {
 				_, err := conn.WriteToUDP(errorPacket(0, "tsize probe"), peer)
 				return res, err
@@ -184,6 +195,9 @@ func (c *client) get(addr, file string) (result, error) {
 			payload := buf[4:n]
 			out.Write(payload)
 			last := len(payload) < blksize
+			if c.stopAtTsize && tsize >= 0 && int64(out.Len()) == tsize {
+				last = true
+			}
 			inWindow++
 			if last || inWindow == window {
 				if err := ack(expect); err != nil {
@@ -447,5 +461,88 @@ func TestConfigValidation(t *testing.T) {
 			s.Close()
 			t.Errorf("%+v: expected error", cfg)
 		}
+	}
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// Windows Boot Manager stops after tsize bytes and never ACKs the empty
+// final block of boot.sdi (3,170,304 = 387 x 8192). The server must treat
+// that as complete after one timeout, not retry and report a failure.
+func TestClientStopsAtTsizeWithoutEmptyBlock(t *testing.T) {
+	dir := t.TempDir()
+	want := randomBytes(387 * 1024)
+	writeFile(t, dir, "Boot/boot.sdi", want)
+	var logs syncBuffer
+	timeout := 100 * time.Millisecond
+	addr := startServer(t, dir, Config{
+		Timeout: timeout,
+		Logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	c := &client{
+		opts:        map[string]string{"blksize": "1024", "tsize": "0", "windowsize": "16"},
+		stopAtTsize: true,
+	}
+	res, err := c.get(addr, `\Boot\boot.sdi`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(res.data, want) {
+		t.Fatal("content mismatch")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), "tftp transfer") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	out := logs.String()
+	if strings.Contains(out, "transfer failed") || !strings.Contains(out, "transfer complete") {
+		t.Fatalf("want a completed transfer, got logs:\n%s", out)
+	}
+	if !strings.Contains(out, "end=tsize") || strings.Contains(out, "retransmits=1") {
+		t.Errorf("want end=tsize with no retransmits, got:\n%s", out)
+	}
+}
+
+// Without tsize the client can't know the size, so the empty final block
+// is still required: a client that stops early is a failed transfer.
+func TestEmptyFinalBlockRequiredWithoutTsize(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "f", randomBytes(4*512))
+	var logs syncBuffer
+	addr := startServer(t, dir, Config{
+		Timeout: 20 * time.Millisecond, Retries: 1,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	c := &client{
+		opts: map[string]string{"windowsize": "4"},
+		// ACK the four data blocks, then never the empty fifth.
+		skipACK:     func(b int64) bool { return b >= 5 },
+		readTimeout: 300 * time.Millisecond,
+	}
+	c.get(addr, "f")
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), "tftp transfer") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "transfer failed") {
+		t.Fatalf("want a failed transfer, got logs:\n%s", logs.String())
 	}
 }

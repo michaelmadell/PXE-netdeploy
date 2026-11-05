@@ -268,6 +268,9 @@ type transfer struct {
 	windowsize int
 	timeout    time.Duration
 
+	tsizeSent    bool // the OACK told the client the file size
+	endedByTsize bool // see sendFile
+
 	retransmits int
 }
 
@@ -335,9 +338,13 @@ func (t *transfer) run() {
 	if s := elapsed.Seconds(); s > 0 {
 		mbps = float64(size) / s / 1e6
 	}
+	end := "final-ack"
+	if t.endedByTsize {
+		end = "tsize" // client stopped at the size it was told, see sendFile
+	}
 	t.log.Info("tftp transfer complete", "bytes", size, "blocks", blocks,
 		"retransmits", t.retransmits, "duration_ms", elapsed.Milliseconds(),
-		"mb_per_s", strconv.FormatFloat(mbps, 'f', 1, 64))
+		"mb_per_s", strconv.FormatFloat(mbps, 'f', 1, 64), "end", end)
 }
 
 // negotiate applies the client's options and returns those to acknowledge.
@@ -368,6 +375,7 @@ func (t *transfer) negotiate(size int64) []option {
 			t.timeout = time.Duration(n) * time.Second
 			acc = append(acc, option{o.name, o.value})
 		case "tsize":
+			t.tsizeSent = true
 			acc = append(acc, option{o.name, strconv.FormatInt(size, 10)})
 		}
 	}
@@ -405,6 +413,13 @@ func (t *transfer) sendOACK(opts []option) error {
 // sendFile sends the file in windows of t.windowsize blocks. Block numbers
 // are 16-bit on the wire and roll over to 0 after 65535. It returns the
 // number of blocks acknowledged.
+//
+// When the size is a multiple of blksize, RFC 1350 ends the transfer with an
+// empty block. Clients that were told the size (tsize) may stop once they
+// have every byte and never ACK that empty block: Windows Boot Manager does
+// this for boot.sdi (Phase 1 spike). If every data byte has been
+// acknowledged and only the empty block is outstanding, a timeout or a
+// closed client port counts as completion instead of retrying.
 func (t *transfer) sendFile(f io.ReaderAt, size int64) (int64, error) {
 	bs := int64(t.blksize)
 	total := size/bs + 1 // the last block is short, possibly empty
@@ -436,6 +451,10 @@ func (t *transfer) sendFile(f io.ReaderAt, size int64) (int64, error) {
 			// ACK of the block before the window: the client lost the
 			// first block of the window. Resend from base.
 			t.retransmits++
+		case err != nil && t.tsizeSent && base == total && (base-1)*bs == size:
+			// Timeout, or the client closed its port (ICMP unreachable).
+			t.endedByTsize = true
+			return base - 1, nil
 		case isTimeout(err):
 			timeouts++
 			if timeouts > t.s.cfg.Retries {

@@ -71,7 +71,7 @@ documentation if anything fails, and record differences in the findings.
 | 7 | **Real I210 hardware.** Boot the same files on a physical I210 device on an isolated switch. Expect WinPE to have no network. | Confirmed (or disproved) that WinPE lacks a working I210 driver |
 | 8 | **Inject the I210 driver** into a copy of boot.wim with `DISM /Add-Driver`; boot again. | `ipconfig` in WinPE shows a lease from our DHCP |
 | 9 | **HTTP Boot ISO (optional).** Wrap bootmgr + BCD + boot.wim in a small UEFI-bootable ISO and point an HTTP Boot client at it (QEMU/OVMF or the real device). | Recorded whether WinPE starts from the RAM-disk ISO |
-| 10 | **Linux host.** Run tasks 1–3 with netdeployd on Linux (bridge or tap to a QEMU/OVMF VM). | Same result as task 3 |
+| 10 | **Linux host.** Run tasks 1–3 with netdeployd on Linux (a Linux VM on the lab switch serving nd-win, or bridge/tap to a QEMU/OVMF VM). | Same result as task 3 |
 
 ## Implementation notes
 

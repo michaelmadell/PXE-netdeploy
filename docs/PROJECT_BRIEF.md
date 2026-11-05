@@ -9,7 +9,8 @@ each decision lives in the ADRs, and the *what* in the spec.
 | Components, boot flows, roadmap | [architecture.md](architecture.md) |
 | Why each decision was made | [adr/](adr/README.md) |
 | The API (source of truth) | [../api/openapi.yaml](../api/openapi.yaml) |
-| What to build next | [plan/phase-1-spike.md](plan/phase-1-spike.md) |
+| What to build next | [plan/phase-2-handover.md](plan/phase-2-handover.md) |
+| What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | Setup and dev workflow | [dev/getting-started.md](dev/getting-started.md) |
 | Test lab | [dev/test-environments.md](dev/test-environments.md) |
 
@@ -62,7 +63,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0007 | Agent install by default, SMB + setup.exe optional; integrate with existing shares. |
 | 0008 | Secrets are write-only, encrypted at rest, decrypted only for an agent. |
 | 0009 | Separate admin (HTTPS, localhost by default) and content listeners. |
-| 0010 | Unknown PXE clients are ignored by default. |
+| 0010 | Unknown PXE clients are ignored by default. **To be superseded in Phase 2:** unknown clients are the main clients (see the Phase 2 handover). |
 | 0011 | Vite + React + Tailwind v4 + shadcn/ui (not Turbopack, not DaisyUI). |
 | 0012 | Our own read-only TFTP server (pin/tftp lacks RFC 7440 windowsize). |
 
@@ -92,29 +93,33 @@ PowerShell scripts, CI, Hyper-V lab script, docs and ADRs.
 - The product name `netdeploy` (binary `netdeployd`) is still a working name.
   The Go module path is now `github.com/michaelmadell/pxe-netdeploy`.
 
+**Done (Phase 1 spike, 2026-11-05):** Windows 11 WinPE boots under Secure
+Boot on Hyper-V from netdeployd's own full-mode DHCP and TFTP, with both the
+2011- and 2023-signed boot managers, served from a Windows host and from a
+Linux host. `internal/dhcp` and `internal/tftp` (own server, ADR 0012) exist as
+spike code behind flags. Results: [spikes/phase-1-findings.md](spikes/phase-1-findings.md).
+Still open from Phase 1: physical I210 hardware (tasks 7–8, waiting for
+hardware) and HTTP Boot (task 9, optional).
+
 ## Next step
 
-**Phase 1 spike (in progress)**: boot Windows 11 WinPE under Secure Boot on the
-Hyper-V lab VM from netdeployd's own DHCP and TFTP, then repeat on real I210
-hardware. Full plan, tasks and success criteria in
-[plan/phase-1-spike.md](plan/phase-1-spike.md).
-
-- **Code (tasks 1–2):** `internal/dhcp` (full mode, one interface, in-memory
-  leases) and `internal/tftp` (own server, ADR 0012), behind `-dhcp-*` and
-  `-tftp-*` flags on `netdeployd`. Unit and loopback tests pass; untested
-  against real firmware.
-- **Lab runs (tasks 3–10):** follow [spikes/phase-1-runbook.md](spikes/phase-1-runbook.md),
-  record results in [spikes/phase-1-findings.md](spikes/phase-1-findings.md).
+**Phase 2: core server** (DHCP proxy/full, TFTP, content HTTP, settings,
+health). Start from [plan/phase-2-handover.md](plan/phase-2-handover.md): it
+lists the Phase 1 results that constrain the design, the spec values to
+correct, and the first decision to make (unknown clients are now the main
+clients, superseding ADR 0010).
 
 ## Open questions and things to verify
 
 | Item | How it gets answered |
 |---|---|
-| Path bootmgr requests for the BCD when booted directly over PXE | Spike: log every TFTP request |
-| DHCP broadcast reception on Windows with a socket bound to the interface IP | Spike |
-| Whether Hyper-V's Secure Boot templates trust the Windows UEFI CA 2023 | Spike: try the 2023-signed boot manager |
-| Where recent Win11 media keeps the 2023-signed boot manager (`EFI_EX`) | Spike: inspect current ISO and its WIMs |
-| UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Spike on QEMU/OVMF or real hardware (Hyper-V likely has no HTTP Boot) |
+| ~~Path bootmgr requests for the BCD when booted directly over PXE~~ | Answered: `\BCD`, then `\Boot\BCD` |
+| ~~DHCP broadcast reception on Windows with a socket bound to the interface IP~~ | Answered: works |
+| ~~Whether Hyper-V's Secure Boot templates trust the Windows UEFI CA 2023~~ | Answered: `MicrosoftWindows` does; `MicrosoftUEFICertificateAuthority` has no Windows CA at all |
+| ~~Where recent Win11 media keeps the 2023-signed boot manager (`EFI_EX`)~~ | Answered: `Windows\Boot\EFI_EX\bootmgfw_EX.efi` inside boot.wim |
+| UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Phase 1 task 9 (optional, not done): QEMU/OVMF or real hardware |
+| Final TFTP blksize/windowsize defaults; WinPE I210 driver need | Phase 1 tasks 7–8 on physical hardware |
+| Proxy DHCP mode against real firmware | Phase 2 (only full mode was tested) |
 | ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
 | The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator | |

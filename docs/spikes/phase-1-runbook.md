@@ -247,17 +247,100 @@ whether WinPE starts from the RAM disk.
 
 ## Task 10: Linux host
 
-```sh
-GOOS=linux go build -o .tmp/netdeployd ./cmd/netdeployd   # or build on the Linux host
-sudo .tmp/netdeployd -dhcp-iface br-nd -dhcp-pool 10.77.0.100-10.77.0.199 \
-  -tftp-root .tmp/spike 2>&1 | tee .tmp/logs/task10-linux.log
+Run netdeployd in a Linux VM attached to the `NetDeployLab` switch and boot
+nd-win from it. Same client as task 3, so any difference is the Linux server
+path: DHCP binds `0.0.0.0:67` with `SO_BINDTODEVICE` instead of the
+interface address.
+
+### 10.1 Linux VM (once, elevated PowerShell)
+
+Any current Ubuntu Server LTS ISO works. Two NICs: Default Switch for
+internet (install, copying files), `NetDeployLab` for serving.
+
+```powershell
+$vm = 'nd-linux'
+New-VM -Name $vm -Generation 2 -MemoryStartupBytes 2GB -SwitchName 'Default Switch' `
+  -NewVHDPath (Join-Path (Get-VMHost).VirtualHardDiskPath "$vm.vhdx") -NewVHDSizeBytes 20GB
+Add-VMNetworkAdapter -VMName $vm -SwitchName NetDeployLab -Name lab
+# Ubuntu's boot loader is signed by the third-party CA (shim), which the
+# MicrosoftWindows template doesn't trust:
+Set-VMFirmware -VMName $vm -SecureBootTemplate MicrosoftUEFICertificateAuthority
+Add-VMDvdDrive -VMName $vm -Path C:\path\to\ubuntu-server.iso
+Set-VMFirmware -VMName $vm -FirstBootDevice (Get-VMDvdDrive -VMName $vm)
+# Hyper-V's DHCP Guard drops DHCP offers from a VM; it must be Off (the default):
+Get-VMNetworkAdapter -VMName $vm | Select-Object Name, SwitchName, MacAddress, DhcpGuard
+Start-VM $vm; vmconnect localhost $vm
 ```
 
-`br-nd` is a bridge with `10.77.0.1/24` and the VM's tap attached. Run QEMU
-with `OVMF_CODE.secboot.fd`, a copy of the Microsoft-keys vars file, a
-`virtio-net` or `e1000e` NIC on the tap, and network boot first. On Linux the
-DHCP socket binds `0.0.0.0:67` to the device, so note any difference from
-Windows.
+Install with OpenSSH server enabled; let the Default Switch NIC use DHCP and
+leave the lab NIC unconfigured. After install, find which interface is the lab
+NIC by MAC (`ip -br link` in the VM vs `MacAddress` above; usually `eth1`) and
+give it a static address with no DHCP client:
+
+```sh
+sudo tee /etc/netplan/60-lab.yaml >/dev/null <<'EOF2'
+network:
+  version: 2
+  ethernets:
+    eth1:
+      dhcp4: false
+      addresses: [10.77.0.2/24]
+EOF2
+sudo chmod 600 /etc/netplan/60-lab.yaml
+sudo netplan apply
+ip -br addr show eth1      # expect 10.77.0.2/24
+```
+
+`10.77.0.2` because the host keeps `10.77.0.1` on the same switch.
+
+### 10.2 Copy the binary and boot files (PowerShell, repo root)
+
+Stop netdeployd on the Windows host first: only one DHCP server on the switch.
+
+```powershell
+$env:GOOS = 'linux'; $env:GOARCH = 'amd64'
+go build -o .tmp\linux\netdeployd ./cmd/netdeployd
+Remove-Item Env:GOOS, Env:GOARCH
+
+$ip = '<nd-linux Default Switch address>'   # `ip -br addr` in the VM
+ssh user@$ip 'mkdir -p ~/spike/Boot ~/spike/EFI/Microsoft/Boot/Fonts'
+scp .tmp\linux\netdeployd user@${ip}:~/
+scp .tmp\spike\bootmgfw.efi .tmp\spike\bootmgfw_EX.efi user@${ip}:~/spike/
+scp .tmp\spike\Boot\BCD .tmp\spike\Boot\boot.sdi .tmp\spike\Boot\boot.wim user@${ip}:~/spike/Boot/
+scp .tmp\spike\EFI\Microsoft\Boot\Fonts\wgl4_boot.ttf user@${ip}:~/spike/EFI/Microsoft/Boot/Fonts/
+```
+
+(`boot-setup.wim` isn't needed.)
+
+### 10.3 Run and boot
+
+In the VM:
+
+```sh
+chmod +x ~/netdeployd
+sudo ~/netdeployd -data ~/nd-data \
+  -dhcp-iface eth1 -dhcp-pool 10.77.0.100-10.77.0.199 \
+  -tftp-root ~/spike -tftp-addr 10.77.0.2:69 -boot-file bootmgfw_EX.efi \
+  2>&1 | tee ~/task10-linux.log
+```
+
+Then on the host: `Start-VM nd-win`.
+
+What to check, compared with the Windows run:
+
+| Line | Expect |
+|---|---|
+| `dhcp listener started` | `iface=eth1 bind=0.0.0.0:67 server_ip=10.77.0.2` |
+| `dhcp tx type=OFFER` | `siaddr=10.77.0.2` |
+| TFTP sequence | Same paths as on Windows (`\BCD`, `\Boot\BCD`, policies, font, boot.sdi + boot.wim in parallel) |
+| boot.wim `tftp transfer complete` | Note duration; Linux VM to VM goes through the vSwitch, not host memory |
+| Result | WinPE command prompt; `ipconfig` shows a `10.77.0.x` lease with DHCP server `10.77.0.2` |
+
+Bring the log back with `scp user@${ip}:~/task10-linux.log .tmp\logs\`.
+
+If nothing arrives: check `DhcpGuard` is Off, that no netdeployd is still
+running on the host, and that `sudo ss -ulpn | grep -E ':(67|69) '` shows
+netdeployd.
 
 ## What to send back
 

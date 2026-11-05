@@ -42,7 +42,7 @@ Mark every result **tested** (with the date and setup) or **untested**.
 | 7 | I210, stock WinPE | | |
 | 8 | I210, driver injected | | |
 | 9 | HTTP Boot ISO (optional) | | |
-| 10 | Linux host | | |
+| 10 | Linux host | **Pass** (tested 2026-11-05) | Ubuntu VM on the lab switch (`10.77.0.2`) served nd-win: same Secure Boot boot to WinPE as from Windows |
 
 ## TFTP requests seen
 
@@ -137,6 +137,23 @@ Chosen defaults:
 ## HTTP Boot
 
 ## Linux host
+
+Tested 2026-11-05: netdeployd built with `GOOS=linux`, running in an Ubuntu
+Server VM (Hyper-V Gen 2, two NICs: Default Switch, and `NetDeployLab` as
+`eth1` with static `10.77.0.2/24`), serving nd-win (`MicrosoftWindows`
+template, `bootmgfw_EX.efi`).
+
+- DHCP: `bind=0.0.0.0:67` on `eth1` (`SO_BINDTODEVICE`) receives the PXE and
+  WinPE broadcasts; offers carry `siaddr=10.77.0.2`. Both socket strategies
+  work: interface IP on Windows, wildcard plus device binding on Linux.
+- TFTP: identical request sequence to the Windows host, including `\BCD` then
+  `\Boot\BCD`, the optional policy files, the font, parallel boot.sdi and
+  boot.wim, and `end=tsize` on boot.sdi.
+- boot.wim at 8192/8: 2.67 s, 217.5 MB/s, 0 retransmits (VM to VM through the
+  vSwitch, versus 2.40 s host to VM).
+- Hyper-V DHCP Guard was off (default); with it on, the VM's offers would be
+  dropped.
+- Not tested: a physical Linux host, or QEMU/OVMF.
 
 ## Answers to the brief's open questions
 

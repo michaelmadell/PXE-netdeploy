@@ -1,0 +1,16 @@
+# Spec linting: `just lint`
+extends:
+  - recommended
+apis:
+  main:
+    root: api/openapi.yaml
+rules:
+  # Event is documented for the SSE stream, which OpenAPI can't type directly.
+  no-unused-components: warn
+  # Agent check-in and health are intentionally unauthenticated.
+  security-defined: warn
+  # tus endpoints return headers-only success responses.
+  operation-2xx-response: error
+  # getHealth is public and takes no input, so it has no 4xx to document.
+  # Every other operation does; keep this as a warning to catch new ones.
+  operation-4xx-response: warn

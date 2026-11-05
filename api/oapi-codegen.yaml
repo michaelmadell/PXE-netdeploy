@@ -1,0 +1,14 @@
+# Server-side code generation. Run via `just gen` (from the repo root).
+# Docs: https://github.com/oapi-codegen/oapi-codegen
+package: api
+output: internal/api/api.gen.go
+generate:
+  models: true
+  std-http-server: true   # Go 1.22+ net/http ServeMux routing, no router dependency
+  strict-server: true     # typed request/response objects per operation
+  embedded-spec: true     # lets us serve/validate the spec at runtime later
+compatibility:
+  # Always name enum constants <Type><Value> (e.g. HealthStatusOk). Without this,
+  # names are only prefixed when values collide, so adding an enum value anywhere
+  # in the spec could rename existing constants and break unrelated code.
+  always-prefix-enum-values: true

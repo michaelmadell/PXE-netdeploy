@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "Redocly.openapi-vs-code",
+    "golang.go",
+    "redhat.vscode-yaml",
+    "ms-vscode.powershell",
+    "bradlc.vscode-tailwindcss"
+  ]
+}

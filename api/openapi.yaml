@@ -1,0 +1,2777 @@
+openapi: 3.0.3
+info:
+  title: Deployment Framework API
+  version: 0.1.0
+  description: |
+    Network OS deployment (PXE / UEFI HTTP Boot) with Secure Boot support.
+
+    Draft v0 (OpenAPI 3.0.3 for generator compatibility). Two audiences:
+
+    * **Admin API** (`bearerAuth`): used by the web UI and automation.
+    * **Agent API** (`agentAuth`): used by the WinPE agent during a deployment.
+
+    ## Conventions
+    * All IDs are opaque ULID strings.
+    * Lists use cursor pagination: `?limit=&cursor=` → `{ items, nextCursor }`.
+    * Errors use RFC 9457 `application/problem+json` with a stable `code`.
+    * Long-running work (ISO import, driver import, boot image build) returns
+      `202 Accepted` with a `Job`. Progress via `GET /jobs/{id}` or `GET /events` (SSE).
+    * Create/command `POST`s accept an `Idempotency-Key` header; a replay with the
+      same key returns the original response instead of doing the work twice.
+    * Mutations of existing resources require `If-Match` with the resource `etag`;
+      a stale etag returns `412`.
+    * Boot files and image content are served outside the API under `/content/...`
+      (HTTP/HTTPS) and over TFTP. URLs to them appear in resources as `contentUrl`.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: system
+    description: System-level operations and health checks.
+  - name: uploads
+    description: Resumable file uploads using the tus protocol.
+  - name: images
+    description: Imported OS media (ISOs), the source for boot and install images.
+  - name: drivers
+    description: Driver packages and the groups that combine them.
+  - name: boot-images
+    description: Custom boot images built from available builders.
+  - name: unattend
+    description: Templates that render autounattend.xml for a deployment.
+  - name: profiles
+    description: Deployment profiles defining client configurations.
+  - name: clients
+    description: Managed client machines.
+  - name: deployments
+    description: Deployment records and status.
+  - name: jobs
+    description: Long-running background jobs.
+  - name: smb-targets
+    description: SMB shares used by the `smb` install method.
+  - name: secrets
+    description: Encrypted, write-only values (passwords, join credentials, ODJ blobs, Autopilot files).
+  - name: settings
+    description: Global settings for the deployment framework.
+  - name: dhcp
+    description: Leases handed out by the built-in DHCP server (configuration lives in settings).
+  - name: tokens
+    description: Admin API tokens.
+  - name: agent
+    description: Called by the WinPE agent only. Never exposed to admin tokens.
+
+paths:
+  # ---------------------------------------------------------------- system
+  /system/health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      security: []
+      summary: Liveness and per-service health (DHCP, TFTP, HTTP, storage).
+      responses:
+        "200":
+          description: Healthy or degraded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Unhealthy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /system/capabilities:
+    get:
+      tags: [system]
+      operationId: getCapabilities
+      summary: What this host can do (builders available, host OS, SMB support).
+      description: |
+        The UI uses this to show which boot image builders are available.
+        On Windows hosts with the ADK/DISM present, `dism` is available; `wimlib`
+        is available wherever wimlib is installed (bundled on Linux builds).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capabilities" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /events:
+    get:
+      tags: [system]
+      operationId: streamEvents
+      summary: Server-sent events for job progress and deployment status.
+      responses:
+        "200":
+          description: SSE stream. Each event's `data` is an `Event` JSON object.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- uploads (tus)
+  /uploads:
+    post:
+      tags: [uploads]
+      operationId: createUpload
+      summary: Create a resumable upload (tus 1.0.0 creation extension).
+      description: |
+        Resumable uploads follow the tus protocol, not plain JSON. Clients should use
+        a tus client library (e.g. tus-js-client). Once complete, pass the `uploadId`
+        to an import endpoint (`POST /images`, `POST /driver-packages`).
+        Incomplete uploads expire after a configurable period.
+      parameters:
+        - { name: Tus-Resumable, in: header, required: true, schema: { type: string, enum: ["1.0.0"] } }
+        - { name: Upload-Length, in: header, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: Upload-Metadata, in: header, required: false, schema: { type: string } }
+      responses:
+        "201":
+          description: Created. `Location` header holds the upload URL.
+          headers:
+            Location: { schema: { type: string } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "413": { $ref: "#/components/responses/Problem" }
+
+  /uploads/{uploadId}:
+    parameters:
+      - $ref: "#/components/parameters/UploadId"
+    head:
+      tags: [uploads]
+      operationId: getUploadOffset
+      summary: Current offset (for resuming).
+      responses:
+        "200":
+          description: OK
+          headers:
+            Upload-Offset: { schema: { type: integer } }
+            Upload-Length: { schema: { type: integer } }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [uploads]
+      operationId: appendUpload
+      summary: Append a chunk.
+      parameters:
+        - { name: Upload-Offset, in: header, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/offset+octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "204":
+          description: Chunk accepted.
+          headers:
+            Upload-Offset: { schema: { type: integer } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [uploads]
+      operationId: deleteUpload
+      summary: Abandon an upload.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- images
+  /images:
+    get:
+      tags: [images]
+      operationId: listImages
+      summary: List imported images.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: kind, in: query, schema: { $ref: "#/components/schemas/ImageKind" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImagePage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [images]
+      operationId: importImage
+      summary: Import an ISO from a completed upload.
+      description: |
+        Extracts the ISO, detects its kind, and fills in `details`. For Windows media
+        this means enumerating editions, recording the install image format
+        (wim/esd/swm), and extracting every boot manager found (including any
+        2023-signed `EFI_EX` variant inside the WIMs) with its signer.
+
+        Deduplication: if an image with the same SHA-256 already exists, the import
+        job finishes immediately with `resourceId` set to the existing image and no
+        second copy is stored. (The hash is only known once the upload is read, so
+        this is reported through the job rather than as an immediate `200`.)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImageImport" }
+      responses:
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /images/{imageId}:
+    parameters:
+      - $ref: "#/components/parameters/ImageId"
+    get:
+      tags: [images]
+      operationId: getImage
+      summary: Get details of a specific image.
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Image" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [images]
+      operationId: updateImage
+      summary: Update details of a specific image.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImageUpdate" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Image" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [images]
+      operationId: deleteImage
+      summary: Delete a specific image.
+      description: "Fails with `409` (`code: image_in_use`) if referenced by a boot image or profile."
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- drivers
+  /driver-packages:
+    get:
+      tags: [drivers]
+      operationId: listDriverPackages
+      summary: List available driver packages.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: class, in: query, schema: { type: string }, description: "INF class, e.g. Net, SCSIAdapter." }
+        - { name: role, in: query, schema: { $ref: "#/components/schemas/DriverRole" } }
+        - { name: hardwareId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverPackagePage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [drivers]
+      operationId: importDriverPackage
+      summary: Import a driver archive from a completed upload.
+      description: |
+        Accepted formats: zip, cab, 7z. Vendor `.exe` and `.msi` installers are
+        rejected with `400` (`code: unsupported_archive`); extract them first
+        (most vendors document an extract-only switch).
+
+        Every INF is parsed for class, role, provider, version, architecture,
+        targeted OS versions and hardware IDs, and its catalog signature is checked.
+        Identical packages (same SHA-256) are deduplicated as for images.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uploadId, name]
+              properties:
+                uploadId: { type: string }
+                name: { type: string }
+      responses:
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /driver-packages/{driverPackageId}:
+    parameters:
+      - { name: driverPackageId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [drivers]
+      operationId: getDriverPackage
+      summary: Get details of a specific driver package.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DriverPackage" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [drivers]
+      operationId: updateDriverPackage
+      summary: Rename the package or enable/disable individual INFs.
+      description: |
+        Disabled INFs are skipped when the package is injected. Changing which INFs
+        are enabled marks dependent boot images `stale`.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DriverPackageUpdate" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DriverPackage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [drivers]
+      operationId: deleteDriverPackage
+      summary: Delete a specific driver package.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /driver-groups:
+    get:
+      tags: [drivers]
+      operationId: listDriverGroups
+      summary: List available driver groups.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverGroupPage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [drivers]
+      operationId: createDriverGroup
+      summary: Create a new driver group.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DriverGroupInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DriverGroup" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /driver-groups/{driverGroupId}:
+    parameters:
+      - { name: driverGroupId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [drivers]
+      operationId: getDriverGroup
+      summary: Get details of a specific driver group.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DriverGroup" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [drivers]
+      operationId: replaceDriverGroup
+      summary: Replace a specific driver group.
+      description: Changing membership marks dependent boot images `stale`.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DriverGroupInput" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DriverGroup" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [drivers]
+      operationId: deleteDriverGroup
+      summary: Delete a specific driver group.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- boot images
+  /boot-images:
+    get:
+      tags: [boot-images]
+      operationId: listBootImages
+      summary: List available boot images.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootImagePage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [boot-images]
+      operationId: createBootImage
+      summary: Define a boot image (does not build it).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BootImageInput" }
+      responses:
+        "201":
+          description: Created in `draft` state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootImage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /boot-images/{bootImageId}:
+    parameters:
+      - $ref: "#/components/parameters/BootImageId"
+    get:
+      tags: [boot-images]
+      operationId: getBootImage
+      summary: Get details of a specific boot image.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootImage" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [boot-images]
+      operationId: replaceBootImage
+      summary: Replace a specific boot image.
+      description: Changing inputs marks the image `stale` until rebuilt.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BootImageInput" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootImage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [boot-images]
+      operationId: deleteBootImage
+      summary: Delete a specific boot image.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /boot-images/{bootImageId}/build:
+    parameters:
+      - $ref: "#/components/parameters/BootImageId"
+    post:
+      tags: [boot-images]
+      operationId: buildBootImage
+      summary: Build (or rebuild) the boot image.
+      description: |
+        If a build with an identical `inputHash` already exists, returns `200` with the
+        existing image instead of rebuilding. Only one build per boot image runs at a
+        time; a second request while building returns `409` (`code: build_in_progress`).
+        Builds are queued and run one at a time per host by default (DISM mount
+        directories do not tolerate parallel builds well).
+        Fails with `422` (`code: builder_unavailable`) if the requested builder is not
+        available on this host.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force: { type: boolean, default: false, description: Rebuild even if inputs are unchanged. }
+      responses:
+        "200":
+          description: Already up to date.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootImage" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- unattend
+  /unattend-templates:
+    get:
+      tags: [unattend]
+      operationId: listUnattendTemplates
+      summary: List available unattend templates.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnattendTemplatePage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [unattend]
+      operationId: createUnattendTemplate
+      summary: Create a new unattend template.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UnattendTemplateInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnattendTemplate" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /unattend-templates/{templateId}:
+    parameters:
+      - { name: templateId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [unattend]
+      operationId: getUnattendTemplate
+      summary: Get details of a specific unattend template.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnattendTemplate" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [unattend]
+      operationId: replaceUnattendTemplate
+      summary: Replace a specific unattend template.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UnattendTemplateInput" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnattendTemplate" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [unattend]
+      operationId: deleteUnattendTemplate
+      summary: Delete a specific unattend template.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /unattend-templates/{templateId}/render:
+    parameters:
+      - { name: templateId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [unattend]
+      operationId: renderUnattendTemplate
+      summary: Preview a rendered unattend file.
+      description: |
+        Renders with the same data an agent would get, except every secret value is
+        replaced by `********`. Pass `profileId` (and optionally `clientId`) to
+        preview a real combination; `variables` are applied last, for experiments.
+        `installMethod` selects which passes are rendered: `agent` strips the
+        `windowsPE` pass, `smb` renders the full autounattend.xml.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profileId: { type: string, nullable: true }
+                clientId: { type: string, nullable: true }
+                installMethod: { $ref: "#/components/schemas/InstallMethod" }
+                variables: { $ref: "#/components/schemas/Variables" }
+      responses:
+        "200":
+          description: Rendered XML.
+          content:
+            application/xml:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- profiles
+  /profiles:
+    get:
+      tags: [profiles]
+      operationId: listProfiles
+      summary: List available profiles.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfilePage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [profiles]
+      operationId: createProfile
+      summary: Create a new profile.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /profiles/{profileId}:
+    parameters:
+      - $ref: "#/components/parameters/ProfileId"
+    get:
+      tags: [profiles]
+      operationId: getProfile
+      summary: Get details of a specific profile.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [profiles]
+      operationId: replaceProfile
+      summary: Replace a specific profile.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileInput" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [profiles]
+      operationId: deleteProfile
+      summary: Delete a specific profile.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /profiles/{profileId}/validate:
+    parameters:
+      - $ref: "#/components/parameters/ProfileId"
+    post:
+      tags: [profiles]
+      operationId: validateProfile
+      summary: Check a profile is deployable and report problems.
+      description: |
+        Example findings: boot image not built or stale; `smb` method without an
+        `smbTargetId`; wimlib-built boot image containing boot-critical storage
+        drivers; `unsigned` drivers in the boot image (error); drivers whose
+        `targetOsVersions` exclude the WinPE or install build (warning); only a
+        PCA 2011-signed boot manager available (clients that have revoked it will
+        refuse to boot); host DISM older than the image build (warning);
+        optional components requested without DISM or a matching ADK (error);
+        identity mode missing a required secret, or a secret of the wrong kind
+        (error); template whose `identityModes` excludes the profile's mode (error);
+        computer-name pattern that can exceed 15 characters (warning, checked
+        against each client's data at scheduling time); `ad`/`odj` profile assigned
+        to clients without an ODJ blob (warning, listed per client).
+      responses:
+        "200":
+          description: Validation result (always 200; check `ok`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationResult" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- clients
+  /clients:
+    get:
+      tags: [clients]
+      operationId: listClients
+      summary: List available clients.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: mac, in: query, schema: { $ref: "#/components/schemas/MacAddress" } }
+        - { name: profileId, in: query, schema: { type: string } }
+        - { name: approved, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientPage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [clients]
+      operationId: createClient
+      summary: Create a new client.
+      description: "`409` (`code: mac_taken`) if the MAC is already registered."
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /clients/{clientId}:
+    parameters:
+      - $ref: "#/components/parameters/ClientId"
+    get:
+      tags: [clients]
+      operationId: getClient
+      summary: Get details of a specific client.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [clients]
+      operationId: replaceClient
+      summary: Replace a specific client.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientInput" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [clients]
+      operationId: deleteClient
+      summary: Delete a specific client.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- deployments
+  /deployments:
+    get:
+      tags: [deployments]
+      operationId: listDeployments
+      summary: List deployments.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: clientId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/DeploymentStatus" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentPage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [deployments]
+      operationId: scheduleDeployment
+      summary: Arm a client for deployment on its next network boot (WDS "pending" style).
+      description: |
+        Snapshots the profile (and the current versions of its secrets) at scheduling
+        time so later edits or rotations do not change an in-flight deployment. The
+        computer name is rendered and validated here; an invalid name returns `422`
+        (`code: invalid_computer_name`). `409` (`code: deployment_active`) if the client already
+        has a pending or running deployment.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId]
+              properties:
+                clientId: { type: string }
+                profileId:
+                  type: string
+                  description: Overrides the client's assigned profile for this run.
+      responses:
+        "201":
+          description: Scheduled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /deployments/{deploymentId}:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    get:
+      tags: [deployments]
+      operationId: getDeployment
+      summary: Get details of a specific deployment.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /deployments/{deploymentId}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    post:
+      tags: [deployments]
+      operationId: cancelDeployment
+      summary: Cancel a specific deployment.
+      description: Idempotent; cancelling a finished deployment returns it unchanged.
+      responses:
+        "200":
+          description: Cancelled (or already finished).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /deployments/{deploymentId}/logs:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    get:
+      tags: [deployments]
+      operationId: getDeploymentLogs
+      summary: Get logs of a specific deployment.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogEntryPage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- jobs
+  /jobs:
+    get:
+      tags: [jobs]
+      operationId: listJobs
+      summary: List jobs.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/JobStatus" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobPage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /jobs/{jobId}:
+    parameters:
+      - { name: jobId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Get details of a specific job.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /jobs/{jobId}/cancel:
+    parameters:
+      - { name: jobId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [jobs]
+      operationId: cancelJob
+      summary: Cancel a specific job.
+      responses:
+        "200":
+          description: Cancellation requested (or job already finished).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- smb targets
+  /smb-targets:
+    get:
+      tags: [smb-targets]
+      operationId: listSmbTargets
+      summary: List SMB targets.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/SmbTarget" } }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [smb-targets]
+      operationId: createSmbTarget
+      summary: Create a new SMB target.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SmbTargetInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SmbTarget" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /smb-targets/{smbTargetId}:
+    parameters:
+      - { name: smbTargetId, in: path, required: true, schema: { type: string } }
+    put:
+      tags: [smb-targets]
+      operationId: replaceSmbTarget
+      summary: Replace a specific SMB target.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SmbTargetInput" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SmbTarget" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [smb-targets]
+      operationId: deleteSmbTarget
+      summary: Delete a specific SMB target.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /smb-targets/{smbTargetId}/test:
+    parameters:
+      - { name: smbTargetId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [smb-targets]
+      operationId: testSmbTarget
+      summary: Check the server can write to `localPath` and the share is reachable.
+      responses:
+        "200":
+          description: Result (check `ok`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationResult" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- secrets
+  /secrets:
+    get:
+      tags: [secrets]
+      operationId: listSecrets
+      summary: List secrets.
+      description: Metadata only. Values are never returned by any admin endpoint.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: kind, in: query, schema: { $ref: "#/components/schemas/SecretKind" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretPage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [secrets]
+      operationId: createSecret
+      summary: Create a new secret.
+      description: |
+        For file-based kinds (`odj-blob`, `autopilot-json`, `provisioning-package`)
+        pass `uploadId` instead of `value`. Values are encrypted at rest (DPAPI on
+        Windows, a key file on Linux).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecretInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /secrets/{secretId}:
+    parameters:
+      - $ref: "#/components/parameters/SecretId"
+    get:
+      tags: [secrets]
+      operationId: getSecret
+      summary: Get details of a specific secret.
+      responses:
+        "200":
+          description: Metadata only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [secrets]
+      operationId: updateSecretMetadata
+      summary: Update metadata of a specific secret.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [secrets]
+      operationId: deleteSecret
+      summary: Delete a specific secret.
+      description: "`409` (`code: secret_in_use`) while referenced by a profile or client."
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /secrets/{secretId}/value:
+    parameters:
+      - $ref: "#/components/parameters/SecretId"
+    put:
+      tags: [secrets]
+      operationId: replaceSecretValue
+      summary: Rotate the value. Write-only; there is no GET for this path.
+      description: Deployments scheduled before the rotation keep the value they were scheduled with.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecretValue" }
+      responses:
+        "200":
+          description: Rotated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- settings
+  /settings:
+    get:
+      tags: [settings]
+      operationId: getSettings
+      summary: Get the current settings.
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "401": { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [settings]
+      operationId: replaceSettings
+      summary: Replace the current settings.
+      description: |
+        Applied atomically: the new configuration is validated and every listener
+        is bound before the old one is released. If anything fails (unknown
+        interface, port in use, invalid pool), the running configuration is kept
+        and `422` is returned with one `errors[]` entry per failure, e.g.
+        `{ field: "interfaces[0].dhcp", message: "UDP 67 in use by svchost.exe (SharedAccess)" }`.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          description: Applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /settings/content-ca:
+    get:
+      tags: [settings]
+      operationId: getContentCaCertificate
+      summary: CA certificate for the HTTPS content listener (to enrol in firmware for HTTPS boot).
+      responses:
+        "200":
+          description: "PEM, or DER with `Accept: application/pkix-cert`."
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+            application/pkix-cert:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404":
+          description: HTTPS content is not configured.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  # ---------------------------------------------------------------- dhcp
+  /dhcp/leases:
+    get:
+      tags: [dhcp]
+      operationId: listDhcpLeases
+      summary: Current leases on interfaces running `full` DHCP.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: interface, in: query, schema: { type: string } }
+        - { name: mac, in: query, schema: { $ref: "#/components/schemas/MacAddress" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DhcpLeasePage"
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- tokens
+  /tokens:
+    get:
+      tags: [tokens]
+      operationId: listTokens
+      summary: List API tokens.
+      responses:
+        "200":
+          description: OK (secrets never returned after creation).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ApiToken" } }
+        "401": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [tokens]
+      operationId: createToken
+      summary: Create a new API token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                expiresAt: { type: string, nullable: true, format: date-time }
+      responses:
+        "201":
+          description: Created. `secret` is shown exactly once.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiToken"
+                  - type: object
+                    required: [secret]
+                    properties:
+                      secret: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /tokens/{tokenId}:
+    parameters:
+      - { name: tokenId, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [tokens]
+      operationId: revokeToken
+      summary: Revoke a specific API token.
+      responses:
+        "204": { description: Revoked. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  # ---------------------------------------------------------------- agent
+  /agent/check-in:
+    post:
+      tags: [agent]
+      operationId: agentCheckIn
+      security: []
+      summary: First call from WinPE. Exchanges hardware identity for a deployment token.
+      description: |
+        Unauthenticated by necessity (WinPE has no prior secret). The server only
+        issues a token if (a) the MAC belongs to a client with a `pending` deployment
+        and (b) the request's source IP matches the address recently leased/offered
+        to that MAC. Tokens are scoped to one deployment and expire.
+        Threat model note: anyone able to spoof a MAC on the deployment LAN can
+        obtain that deployment's config, so treat unattend secrets accordingly.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentIdentity" }
+      responses:
+        "200":
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, deploymentId, expiresAt]
+                properties:
+                  token: { type: string }
+                  deploymentId: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404":
+          description: "No pending deployment for this machine (`code: no_pending_deployment`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /agent/deployment:
+    get:
+      tags: [agent]
+      operationId: agentGetDeployment
+      security:
+        - agentAuth: []
+      summary: Everything the agent needs to perform the install.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentDeploymentPlan" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /agent/progress:
+    post:
+      tags: [agent]
+      operationId: agentReportProgress
+      summary: Report progress of the current deployment stage.
+      security:
+        - agentAuth: []
+      description: |
+        Stages move forward only; a report for an earlier stage than the current one
+        is ignored (safe under retries).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProgress" }
+      responses:
+        "204": { description: Recorded. }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /agent/logs:
+    post:
+      tags: [agent]
+      operationId: agentUploadLogs
+      summary: Upload logs for the current deployment stage.
+      security:
+        - agentAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entries]
+              properties:
+                entries: { type: array, maxItems: 1000, items: { $ref: "#/components/schemas/LogEntry" } }
+      responses:
+        "204": { description: Recorded. }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /agent/complete:
+    post:
+      tags: [agent]
+      operationId: agentComplete
+      summary: Complete the current deployment with the final result.
+      security:
+        - agentAuth: []
+      description: Final result. Idempotent; the token is revoked afterwards.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [result]
+              properties:
+                result: { type: string, enum: [succeeded, failed] }
+                message: { type: string }
+      responses:
+        "204": { description: Recorded. }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Admin API token.
+    agentAuth:
+      type: http
+      scheme: bearer
+      description: Short-lived, single-deployment token from `/agent/check-in`.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string }
+    UploadId:
+      name: uploadId
+      in: path
+      required: true
+      schema: { type: string }
+    ImageId:
+      name: imageId
+      in: path
+      required: true
+      schema: { type: string }
+    BootImageId:
+      name: bootImageId
+      in: path
+      required: true
+      schema: { type: string }
+    ProfileId:
+      name: profileId
+      in: path
+      required: true
+      schema: { type: string }
+    ClientId:
+      name: clientId
+      in: path
+      required: true
+      schema: { type: string }
+    SecretId:
+      name: secretId
+      in: path
+      required: true
+      schema: { type: string }
+    DeploymentId:
+      name: deploymentId
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Problem:
+      description: Error (RFC 9457).
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    JobAccepted:
+      description: Accepted; work continues in the background.
+      headers:
+        Location: { schema: { type: string }, description: URL of the job. }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Job" }
+
+  schemas:
+    # ---------- common
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri-reference, default: "about:blank" }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          type: string
+          description: Stable machine-readable code, e.g. `image_in_use`, `build_in_progress`.
+        errors:
+          type: array
+          description: Field-level validation errors.
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    BootImagePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/BootImage" } }
+        nextCursor: { type: string, nullable: true }
+
+    ClientPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Client" } }
+        nextCursor: { type: string, nullable: true }
+
+    DeploymentPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Deployment" } }
+        nextCursor: { type: string, nullable: true }
+
+    DhcpLeasePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DhcpLease" } }
+        nextCursor: { type: string, nullable: true }
+
+    DriverGroupPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DriverGroup" } }
+        nextCursor: { type: string, nullable: true }
+
+    DriverPackagePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DriverPackage" } }
+        nextCursor: { type: string, nullable: true }
+
+    ImagePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Image" } }
+        nextCursor: { type: string, nullable: true }
+
+    JobPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Job" } }
+        nextCursor: { type: string, nullable: true }
+
+    LogEntryPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/LogEntry" } }
+        nextCursor: { type: string, nullable: true }
+
+    ProfilePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Profile" } }
+        nextCursor: { type: string, nullable: true }
+
+    SecretPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Secret" } }
+        nextCursor: { type: string, nullable: true }
+
+    UnattendTemplatePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/UnattendTemplate" } }
+        nextCursor: { type: string, nullable: true }
+
+    Meta:
+      type: object
+      required: [id, etag, createdAt, updatedAt]
+      properties:
+        id: { type: string, readOnly: true }
+        etag: { type: string, readOnly: true }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+
+    Variables:
+      type: object
+      description: Template variables (string values only, to keep rendering predictable).
+      additionalProperties: { type: string }
+
+    MacAddress:
+      type: string
+      pattern: "^([0-9a-f]{2}:){5}[0-9a-f]{2}$"
+      description: Lower-case, colon-separated. The server normalises input.
+
+    Architecture:
+      type: string
+      enum: [x64, arm64]
+
+    ValidationResult:
+      type: object
+      required: [ok, findings]
+      properties:
+        ok: { type: boolean }
+        findings:
+          type: array
+          items:
+            type: object
+            required: [severity, code, message]
+            properties:
+              severity: { type: string, enum: [error, warning, info] }
+              code: { type: string }
+              message: { type: string }
+
+    # ---------- system
+    Health:
+      type: object
+      required: [status, services]
+      properties:
+        status: { type: string, enum: [ok, degraded, down] }
+        services:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/ServiceHealth" }
+
+    ServiceHealth:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, disabled, error] }
+        detail: { type: string }
+        bindFailures:
+          type: array
+          items: { $ref: "#/components/schemas/BindFailure" }
+
+    Capabilities:
+      type: object
+      required: [hostOs, builders, bcdTool, version]
+      properties:
+        version: { type: string }
+        hostOs: { type: string, enum: [windows, linux] }
+        builders:
+          type: array
+          items:
+            type: object
+            required: [name, available]
+            properties:
+              name: { $ref: "#/components/schemas/BuilderName" }
+              available: { type: boolean }
+              version:
+                type: string
+                description: |
+                  Tool version (DISM version for `dism`). DISM cannot reliably
+                  service images newer than itself; validation compares this with
+                  the source image build.
+              reason: { type: string, description: "Why unavailable, if not available." }
+        adk:
+          type: object
+          description: Windows ADK / WinPE add-on, needed only for optional components.
+          properties:
+            installed: { type: boolean }
+            version: { type: string, nullable: true }
+        bcdTool:
+          type: object
+          description: Tool used to write BCD stores (`bcdedit` on Windows, `hivex` on Linux).
+          required: [name, available]
+          properties:
+            name: { type: string, enum: [bcdedit, hivex] }
+            available: { type: boolean }
+            reason: { type: string }
+
+    Event:
+      type: object
+      required: [type, at]
+      properties:
+        type: { type: string, enum: [job.updated, deployment.updated, bootImage.updated, image.updated] }
+        at: { type: string, format: date-time }
+        resourceId: { type: string }
+        data: { type: object }
+
+    # ---------- images
+    ImageKind:
+      type: string
+      enum: [windows, linux, other]
+
+    SecureBootSigner:
+      type: string
+      enum: [windows-pca-2011, windows-uefi-ca-2023, uefi-ca-2011, uefi-ca-2023, unsigned, unknown]
+
+    ImageImport:
+      type: object
+      required: [uploadId, name]
+      properties:
+        uploadId: { type: string }
+        name: { type: string }
+        retainIso:
+          type: boolean
+          default: false
+          description: |
+            Keep the original ISO alongside the extracted files. Only needed for
+            features that serve the whole ISO (e.g. future UEFI HTTP Boot of ISOs).
+
+    ImageUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        notes: { type: string }
+
+    Image:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - type: object
+          required: [name, kind, status, retainIso]
+          properties:
+            name: { type: string }
+            notes: { type: string }
+            kind: { $ref: "#/components/schemas/ImageKind" }
+            status: { type: string, enum: [importing, ready, failed] }
+            error:
+              nullable: true
+              type: object
+              allOf:
+                - $ref: "#/components/schemas/Problem"
+              description: Why the import failed (when `status` is `failed`).
+            sizeBytes: { type: integer }
+            sha256: { type: string }
+            retainIso: { type: boolean }
+            details:
+              description: Kind-specific metadata. Absent until the import finishes.
+              oneOf:
+                - $ref: "#/components/schemas/WindowsImageDetails"
+                - $ref: "#/components/schemas/OtherImageDetails"
+              discriminator:
+                propertyName: kind
+                mapping:
+                  windows: "#/components/schemas/WindowsImageDetails"
+                  other: "#/components/schemas/OtherImageDetails"
+                  # linux: added in the Linux phase
+
+    WindowsImageDetails:
+      type: object
+      required: [kind, architecture, installImageFormat, editions, bootManagers, bootImageIndexes]
+      properties:
+        kind: { type: string, enum: [windows] }
+        architecture: { $ref: "#/components/schemas/Architecture" }
+        installImageFormat:
+          type: string
+          enum: [wim, esd, swm]
+          description: "`swm` = split WIM (install.swm, install2.swm, ...)."
+        editions:
+          type: array
+          items: { $ref: "#/components/schemas/WindowsEdition" }
+        bootImageIndexes:
+          type: array
+          description: Images inside boot.wim (index 1 = WinPE, 2 = Windows Setup on standard media).
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              name: { type: string }
+        bootManagers:
+          type: array
+          description: Every boot manager found on the media and inside its WIMs.
+          items: { $ref: "#/components/schemas/BootManager" }
+
+    WindowsEdition:
+      type: object
+      required: [index, name]
+      properties:
+        index: { type: integer, minimum: 1 }
+        name: { type: string, description: "Display name, e.g. Windows 11 Pro." }
+        editionId: { type: string, description: "e.g. Professional, Enterprise." }
+        build: { type: string, description: "e.g. 26100.1742" }
+        architecture: { $ref: "#/components/schemas/Architecture" }
+        languages: { type: array, items: { type: string }, description: "e.g. en-GB." }
+        defaultLanguage: { type: string }
+        sizeBytes: { type: integer, description: Expanded size of this edition. }
+
+    BootManager:
+      type: object
+      required: [signer, sourcePath, sha256]
+      properties:
+        signer: { $ref: "#/components/schemas/SecureBootSigner" }
+        sourcePath:
+          type: string
+          description: Where it was found, e.g. `efi/boot/bootx64.efi` or `boot.wim:2/Windows/Boot/EFI_EX/bootmgfw_EX.efi`.
+        sha256: { type: string }
+        architecture: { $ref: "#/components/schemas/Architecture" }
+
+    OtherImageDetails:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [other] }
+        bootFiles:
+          type: array
+          description: EFI binaries found, with signers, for manual boot configuration.
+          items: { $ref: "#/components/schemas/BootManager" }
+
+    # ---------- drivers
+    DriverRole:
+      type: string
+      enum: [network, storage, other]
+      description: |
+        Derived from the INF class: `Net` → network; `SCSIAdapter`, `HDC` → storage;
+        everything else → other. Storage drivers are boot-critical.
+
+    DriverSignature:
+      type: string
+      enum: [whql, vendor, unsigned, unknown]
+      description: |
+        `whql` = catalog signed by Microsoft (Windows Hardware Compatibility);
+        `vendor` = catalog signed by the vendor's own certificate;
+        `unsigned` = no catalog or no valid signature;
+        `unknown` = catalog present but the chain could not be fully verified on
+        this host (full verification is only reliable on Windows).
+        Boot images reject `unsigned` drivers: x64 WinPE under Secure Boot won't load them.
+
+    DriverInf:
+      type: object
+      required: [id, path, class, role, enabled, signature]
+      properties:
+        id: { type: string, readOnly: true }
+        path: { type: string, description: Path of the INF inside the package. }
+        class: { type: string, description: "INF class, e.g. Net, SCSIAdapter, HDC." }
+        role: { $ref: "#/components/schemas/DriverRole" }
+        bootCritical:
+          type: boolean
+          readOnly: true
+          description: "Equals `role == storage`: must be present before the agent runs."
+        provider: { type: string }
+        version: { type: string }
+        driverDate: { type: string, format: date }
+        architecture: { $ref: "#/components/schemas/Architecture" }
+        targetOsVersions:
+          type: array
+          description: |
+            From the INF's [Manufacturer] decorations, e.g. `10.0...22000`
+            (Windows 11 21H2+). Empty means no OS version restriction.
+          items: { type: string }
+        hardwareIds: { type: array, items: { type: string } }
+        signature: { $ref: "#/components/schemas/DriverSignature" }
+        signer: { type: string, nullable: true, description: Certificate subject of the catalog signer. }
+        enabled:
+          type: boolean
+          default: true
+          description: Disabled INFs are skipped when the package is injected.
+
+    DriverPackage:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - type: object
+          required: [name, status, infs]
+          properties:
+            name: { type: string }
+            status: { type: string, enum: [importing, ready, failed] }
+            error:
+              nullable: true
+              type: object
+              allOf:
+                - $ref: "#/components/schemas/Problem"
+            sha256: { type: string }
+            sizeBytes: { type: integer }
+            infs:
+              type: array
+              items: { $ref: "#/components/schemas/DriverInf" }
+
+    DriverPackageUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        infs:
+          type: array
+          description: Only the INFs being changed; unknown INF ids return `400`.
+          items:
+            type: object
+            required: [id, enabled]
+            properties:
+              id: { type: string }
+              enabled: { type: boolean }
+
+    DriverGroupInput:
+      type: object
+      required: [name, driverPackageIds]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        driverPackageIds: { type: array, items: { type: string }, uniqueItems: true }
+
+    DriverGroup:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - $ref: "#/components/schemas/DriverGroupInput"
+
+    # ---------- boot images
+    BuilderName:
+      type: string
+      enum: [dism, wimlib]
+
+    WinPeOptionalComponent:
+      type: string
+      description: WinPE optional component name (DISM + matching ADK only).
+      enum:
+        - WinPE-WMI
+        - WinPE-NetFx
+        - WinPE-Scripting
+        - WinPE-PowerShell
+        - WinPE-StorageWMI
+        - WinPE-DismCmdlets
+        - WinPE-SecureStartup
+        - WinPE-EnhancedStorage
+
+    BootImageInput:
+      type: object
+      required: [name, sourceImageId, architecture, serverUrls]
+      properties:
+        name: { type: string }
+        sourceImageId: { type: string, description: A `windows` Image. }
+        sourceIndex:
+          type: integer
+          default: 2
+          description: Index inside boot.wim (2 = Windows Setup on standard media).
+        architecture: { $ref: "#/components/schemas/Architecture" }
+        driverGroupIds: { type: array, items: { type: string }, uniqueItems: true }
+        agentVersion: { type: string, description: Defaults to the bundled agent. }
+        serverUrls:
+          type: array
+          minItems: 1
+          items: { type: string, format: uri }
+          description: |
+            Baked into the image as the agent's config; tried in order. Changing
+            the server's address therefore marks images `stale`.
+        builder:
+          type: string
+          enum: [auto, dism, wimlib]
+          default: auto
+          description: |
+            `auto` prefers `dism` when available, else `wimlib`. With `wimlib`,
+            drivers are staged as files and loaded by the agent via `drvload`.
+        optionalComponents:
+          type: array
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/WinPeOptionalComponent" }
+          description: Requires the `dism` builder and an ADK matching the image build. Empty by default.
+        bootmgr:
+          type: string
+          enum: [auto, windows-pca-2011, windows-uefi-ca-2023]
+          default: auto
+          description: |
+            Which signed boot manager to serve, chosen from the source image's
+            `bootManagers`. `auto` serves the 2023-signed one when the image has it,
+            otherwise the 2011-signed one. Fails validation if the requested
+            variant isn't present in the source image.
+        tftp:
+          type: object
+          description: Written into the BCD; controls how bootmgr downloads boot.wim over TFTP.
+          properties:
+            blockSize:
+              type: integer
+              minimum: 512
+              maximum: 16384
+              default: 1456
+              description: "`ramdisktftpblocksize`. Keep below the path MTU unless the network handles IP fragmentation."
+            windowSize:
+              type: integer
+              minimum: 1
+              maximum: 64
+              default: 8
+              description: "`ramdisktftpwindowsize`. Larger is faster on clean networks."
+        produceHttpBootIso:
+          type: boolean
+          default: false
+          description: |
+            Also build a small bootable ISO (bootmgr + BCD + boot.wim) for UEFI HTTP
+            Boot, which the firmware loads as a RAM disk. Firmware support varies.
+
+    BootArtifact:
+      type: object
+      required: [kind, sha256, sizeBytes, contentUrl]
+      properties:
+        kind: { type: string, enum: [wim, bcd, bootmgr, http-boot-iso] }
+        sha256: { type: string }
+        sizeBytes: { type: integer }
+        contentUrl: { type: string, description: HTTP(S) URL; the TFTP path is derived from it. }
+        tftpPath: { type: string, nullable: true }
+
+    BootImage:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - $ref: "#/components/schemas/BootImageInput"
+        - type: object
+          required: [status]
+          properties:
+            status: { type: string, enum: [draft, building, ready, stale, failed] }
+            inputHash:
+              type: string
+              readOnly: true
+              description: |
+                Hash of every build input: source image + index, enabled INFs of the
+                selected driver groups, agent version, serverUrls, builder,
+                optional components, bootmgr choice, TFTP settings, ISO flag.
+            builtWith: { $ref: "#/components/schemas/BuilderName" }
+            builtAt: { type: string, nullable: true, format: date-time }
+            selectedBootManager:
+              nullable: true
+              type: object
+              allOf:
+                - $ref: "#/components/schemas/BootManager"
+              description: The boot manager actually used by the last build.
+            artifacts:
+              type: array
+              items: { $ref: "#/components/schemas/BootArtifact" }
+            warnings: { type: array, items: { type: string } }
+            error:
+              nullable: true
+              type: object
+              allOf:
+                - $ref: "#/components/schemas/Problem"
+            lastJobId: { type: string, nullable: true }
+
+    # ---------- unattend
+    UnattendTemplateInput:
+      type: object
+      required: [name, content, identityModes]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        content:
+          type: string
+          description: |
+            Go `text/template` producing autounattend.xml. Available data:
+            `.Identity`, `.OsSettings`, `.ComputerName`, `.Client`, `.Deployment`,
+            `.Vars`. Every inserted value is XML-escaped automatically; inserting
+            raw XML requires the explicit `raw` function.
+        identityModes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/IdentityMode" }
+          description: Identity modes this template knows how to render.
+        variableDefaults: { $ref: "#/components/schemas/Variables" }
+        requiredVariables: { type: array, items: { type: string } }
+
+    UnattendTemplate:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - $ref: "#/components/schemas/UnattendTemplateInput"
+        - type: object
+          required: [builtIn]
+          properties:
+            builtIn:
+              type: boolean
+              readOnly: true
+              description: Shipped default (one per identity mode). Read-only; clone it to customise.
+
+    # ---------- profiles
+    InstallMethod:
+      type: string
+      enum: [agent, smb]
+
+    ProfileInput:
+      type: object
+      required: [name, bootImageId, installImageId, editionIndex, installMethod, identity]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        bootImageId: { type: string }
+        installImageId: { type: string }
+        editionIndex: { type: integer, minimum: 1 }
+        osDriverGroupIds:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+          description: Drivers injected into the installed OS (separate from boot image drivers).
+        unattendTemplateId:
+          type: string
+          nullable: true
+          description: Null uses the built-in template for the profile's identity mode.
+        variables:
+          allOf:
+            - $ref: "#/components/schemas/Variables"
+          description: "Precedence: template `variableDefaults` < profile `variables` < client `variables`."
+        installMethod: { $ref: "#/components/schemas/InstallMethod" }
+        smbTargetId:
+          type: string
+          nullable: true
+          description: Required when `installMethod` is `smb`.
+        identity: { $ref: "#/components/schemas/Identity" }
+        osSettings: { $ref: "#/components/schemas/OsSettings" }
+
+    Profile:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - $ref: "#/components/schemas/ProfileInput"
+
+    IdentityMode:
+      type: string
+      enum: [none, local, ad, entra]
+
+    Identity:
+      description: How the finished machine is owned and signed into.
+      oneOf:
+        - $ref: "#/components/schemas/IdentityNone"
+        - $ref: "#/components/schemas/IdentityLocal"
+        - $ref: "#/components/schemas/IdentityAd"
+        - $ref: "#/components/schemas/IdentityEntra"
+      discriminator:
+        propertyName: mode
+        mapping:
+          none: "#/components/schemas/IdentityNone"
+          local: "#/components/schemas/IdentityLocal"
+          ad: "#/components/schemas/IdentityAd"
+          entra: "#/components/schemas/IdentityEntra"
+
+    IdentityNone:
+      type: object
+      required: [mode]
+      description: No accounts are created; OOBE stays interactive for the end user.
+      properties:
+        mode: { type: string, enum: [none] }
+        skipEula: { type: boolean, default: true }
+
+    IdentityLocal:
+      type: object
+      required: [mode, accounts]
+      properties:
+        mode: { type: string, enum: [local] }
+        accounts:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [name, group, passwordSecretId]
+            properties:
+              name: { type: string, maxLength: 20 }
+              displayName: { type: string }
+              group: { type: string, enum: [Administrators, Users] }
+              passwordSecretId: { type: string, description: Secret of kind `password`. }
+        autoLogon:
+          type: object
+          nullable: true
+          properties:
+            account: { type: string, description: "Must match one of `accounts[].name`." }
+            count: { type: integer, minimum: 1, maximum: 10, default: 1 }
+        hideOobe: { type: boolean, default: true }
+
+    IdentityAd:
+      type: object
+      required: [mode, joinMethod]
+      properties:
+        mode: { type: string, enum: [ad] }
+        joinMethod:
+          type: string
+          enum: [odj, credentials]
+          description: |
+            `odj` (recommended): offline domain join; each client needs an ODJ blob
+            in `secretRefs.odjBlob` (from `djoin /provision`). No credentials reach
+            the client. `credentials`: online join during specialize; needs
+            line-of-sight to a DC and puts the join credential on the machine
+            until cleanup.
+        domain: { type: string, description: Required for `credentials`. }
+        organizationalUnit: { type: string, nullable: true, description: "Distinguished name, e.g. OU=Labs,DC=corp,DC=example" }
+        joinCredentialSecretId:
+          type: string
+          nullable: true
+          description: Secret of kind `domain-credential`. Required for `credentials`.
+        localAdmin:
+          type: object
+          nullable: true
+          description: Optional break-glass local administrator.
+          properties:
+            name: { type: string, maxLength: 20 }
+            passwordSecretId: { type: string }
+
+    IdentityEntra:
+      type: object
+      required: [mode, method]
+      properties:
+        mode: { type: string, enum: [entra] }
+        method:
+          type: string
+          enum: [autopilot-registered, autopilot-json, provisioning-package]
+          description: |
+            `autopilot-registered`: device already registered in Intune; nothing is
+            injected, OOBE hands over to Autopilot once online.
+            `autopilot-json`: agent writes the referenced AutopilotConfigurationFile.json
+            into Windows/Provisioning/Autopilot of the applied image.
+            `provisioning-package`: agent applies the referenced bulk-enrolment
+            .ppkg offline with DISM.
+        fileSecretId:
+          type: string
+          nullable: true
+          description: Secret of kind `autopilot-json` or `provisioning-package`, matching `method`.
+
+    OsSettings:
+      type: object
+      properties:
+        computerNamePattern:
+          type: string
+          nullable: true
+          description: |
+            Template for the computer name, e.g. `LAB-{{ .Client.Serial | last 6 }}`.
+            Rendered names must be 1-15 characters, letters/digits/hyphens, not all
+            digits; violations fail the deployment at scheduling time. Null lets
+            Windows generate a name.
+        uiLanguage: { type: string, default: en-GB }
+        systemLocale: { type: string, default: en-GB }
+        userLocale: { type: string, default: en-GB }
+        inputLocale: { type: string, default: "0809:00000809", description: "Keyboard layout, e.g. 0809:00000809 (UK)." }
+        timeZone: { type: string, default: GMT Standard Time, description: Windows time zone ID. }
+        productKeySecretId:
+          type: string
+          nullable: true
+          description: Secret of kind `product-key`. Null uses the edition's default/KMS behaviour.
+
+    # ---------- secrets
+    SecretKind:
+      type: string
+      enum: [password, product-key, domain-credential, odj-blob, autopilot-json, provisioning-package]
+
+    SecretValue:
+      type: object
+      description: Exactly one of `value`, `credential` or `uploadId`, depending on kind.
+      properties:
+        value:
+          type: string
+          writeOnly: true
+          description: For `password` and `product-key`.
+        credential:
+          type: object
+          writeOnly: true
+          description: For `domain-credential`.
+          required: [username, password]
+          properties:
+            username: { type: string, description: "e.g. CORP\\svc-join or svc-join@corp.example" }
+            password: { type: string }
+        uploadId:
+          type: string
+          description: For `odj-blob`, `autopilot-json` and `provisioning-package`.
+
+    SecretInput:
+      allOf:
+        - type: object
+          required: [name, kind]
+          properties:
+            name: { type: string }
+            description: { type: string }
+            kind: { $ref: "#/components/schemas/SecretKind" }
+        - $ref: "#/components/schemas/SecretValue"
+
+    Secret:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - type: object
+          required: [name, kind, valueUpdatedAt]
+          properties:
+            name: { type: string }
+            description: { type: string }
+            kind: { $ref: "#/components/schemas/SecretKind" }
+            valueUpdatedAt: { type: string, format: date-time }
+            hint:
+              type: string
+              nullable: true
+              description: Non-sensitive hint, e.g. the username of a domain credential or a file name.
+
+    # ---------- clients
+    ClientInput:
+      type: object
+      required: [mac]
+      properties:
+        mac: { $ref: "#/components/schemas/MacAddress" }
+        smbiosUuid: { type: string, nullable: true, format: uuid }
+        serial: { type: string, nullable: true }
+        hostname: { type: string, nullable: true }
+        profileId: { type: string, nullable: true }
+        variables: { $ref: "#/components/schemas/Variables" }
+        reservedIp:
+          type: string
+          nullable: true
+          format: ipv4
+          description: Fixed address on interfaces running `full` DHCP.
+        approved:
+          type: boolean
+          default: true
+          description: |
+            Clients auto-created by the `register` unknown-client policy start
+            unapproved and are never booted until approved (WDS "pending devices").
+        secretRefs:
+          type: object
+          description: |
+            Per-machine secrets, keyed by purpose. Currently `odjBlob` (used when the
+            profile's identity is `ad` with `joinMethod: odj`).
+          properties:
+            odjBlob: { type: string, nullable: true, description: Secret id of kind `odj-blob`. }
+
+    Client:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - $ref: "#/components/schemas/ClientInput"
+        - type: object
+          properties:
+            lastSeenAt: { type: string, nullable: true, format: date-time }
+            lastIp: { type: string, nullable: true }
+            lastArch: { nullable: true, type: string, allOf: [{ $ref: "#/components/schemas/ClientArch" }] }
+            source: { type: string, enum: [manual, registered], readOnly: true }
+
+    # ---------- deployments
+    DeploymentStatus:
+      type: string
+      enum: [pending, booting, running, succeeded, failed, cancelled]
+
+    DeploymentStage:
+      type: string
+      enum: [checked-in, partitioning, applying-image, injecting-drivers, configuring, finalizing, rebooting]
+
+    Deployment:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - type: object
+          required: [clientId, profileId, status]
+          properties:
+            clientId: { type: string }
+            profileId: { type: string }
+            profileSnapshot: { $ref: "#/components/schemas/ProfileInput" }
+            status: { $ref: "#/components/schemas/DeploymentStatus" }
+            stage: { $ref: "#/components/schemas/DeploymentStage" }
+            percent: { type: integer, minimum: 0, maximum: 100 }
+            startedAt: { type: string, nullable: true, format: date-time }
+            finishedAt: { type: string, nullable: true, format: date-time }
+            message: { type: string }
+
+    LogEntry:
+      type: object
+      required: [at, level, message]
+      properties:
+        at: { type: string, format: date-time }
+        level: { type: string, enum: [debug, info, warn, error] }
+        message: { type: string, maxLength: 8192 }
+        source: { type: string }
+
+    # ---------- jobs
+    JobStatus:
+      type: string
+      enum: [queued, running, succeeded, failed, cancelled]
+
+    Job:
+      type: object
+      required: [id, kind, status, createdAt]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [image.import, driverPackage.import, bootImage.build, content.publish] }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        resourceId: { type: string, nullable: true }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string }
+        error: { nullable: true, type: object, allOf: [{ $ref: "#/components/schemas/Problem" }] }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, nullable: true, format: date-time }
+        finishedAt: { type: string, nullable: true, format: date-time }
+
+    # ---------- smb
+    SmbTargetInput:
+      type: object
+      required: [name, uncPath, localPath]
+      properties:
+        name: { type: string }
+        uncPath: { type: string, description: 'As seen by clients, e.g. \\deploy01\images' }
+        localPath: { type: string, description: Where this server writes the share's content. }
+        username: { type: string, nullable: true }
+        password:
+          type: string
+          nullable: true
+          writeOnly: true
+          description: Stored encrypted; never returned.
+
+    SmbTarget:
+      allOf:
+        - $ref: "#/components/schemas/Meta"
+        - type: object
+          required: [name, uncPath, localPath]
+          properties:
+            name: { type: string }
+            uncPath: { type: string }
+            localPath: { type: string }
+            username: { type: string, nullable: true }
+            hasPassword: { type: boolean }
+
+    # ---------- settings
+    BindFailure:
+      type: object
+      required: [interface, protocol, port, message]
+      properties:
+        interface: { type: string }
+        protocol: { type: string, enum: [udp, tcp] }
+        port: { type: integer }
+        message: { type: string }
+        ownerProcess:
+          type: string
+          nullable: true
+          description: Process holding the port, when the OS can tell us (e.g. `svchost.exe (SharedAccess)`, `WDSServer`).
+
+    ClientArch:
+      type: string
+      description: |
+        Derived from DHCP option 93. `uefi-x64` = 7/9, `uefi-x64-http` = 16,
+        `uefi-arm64` = 11, `uefi-arm64-http` = 19, `bios` = 0.
+      enum: [bios, uefi-x64, uefi-x64-http, uefi-arm64, uefi-arm64-http]
+
+    Settings:
+      type: object
+      required: [admin, interfaces]
+      properties:
+        etag: { type: string, readOnly: true }
+        admin:
+          type: object
+          description: |
+            Admin API + web UI listener. Always HTTPS; a self-signed certificate is
+            generated on first run. Bind it to a management address so machines on
+            the deployment network cannot reach the admin API.
+          required: [bindAddress, port]
+          properties:
+            bindAddress: { type: string, description: "IP to listen on; `0.0.0.0` for all (not recommended).", default: 127.0.0.1 }
+            port: { type: integer, default: 8443 }
+            certificatePem: { type: string, nullable: true, description: Null keeps the generated certificate. }
+            privateKeyPem: { type: string, nullable: true, writeOnly: true }
+        interfaces:
+          type: array
+          description: Deployment-network interfaces. Each runs its own DHCP mode and content services.
+          items: { $ref: "#/components/schemas/InterfaceSettings" }
+        tftp:
+          type: object
+          description: Global TFTP limits; boot images request values up to these.
+          properties:
+            maxBlockSize: { type: integer, minimum: 512, maximum: 65464, default: 16384 }
+            maxWindowSize: { type: integer, minimum: 1, maximum: 64, default: 64 }
+            timeoutSeconds: { type: integer, minimum: 1, maximum: 60, default: 5 }
+        contentHttps:
+          type: object
+          description: TLS for the content listener on interfaces with `services.https` enabled.
+          properties:
+            certificatePem: { type: string, nullable: true, description: Null generates a certificate from an internal CA (download via `/settings/content-ca`). }
+            privateKeyPem: { type: string, nullable: true, writeOnly: true }
+        unknownClients:
+          type: object
+          description: What happens when a machine with no pending deployment network-boots.
+          properties:
+            policy:
+              type: string
+              enum: [ignore, register, default-profile]
+              default: ignore
+              description: |
+                `ignore`: no answer; firmware falls through to the next boot device.
+                `register`: record MAC/arch/UUID as a new client awaiting approval,
+                without booting it. `default-profile`: schedule `defaultProfileId`
+                automatically. `ignore` is the safe default on shared networks.
+            defaultProfileId: { type: string, nullable: true }
+        architectures:
+          type: object
+          description: Which client architectures are answered at all.
+          properties:
+            bios: { type: boolean, default: false, description: Windows 11 requires UEFI. }
+            uefiX64: { type: boolean, default: true }
+            uefiArm64: { type: boolean, default: true }
+            httpBoot: { type: boolean, default: true, description: Answer UEFI HTTP Boot (HTTPClient) requests. }
+
+    InterfaceSettings:
+      type: object
+      required: [name, dhcp, services]
+      properties:
+        name: { type: string, description: 'OS interface name, e.g. `Ethernet 2` or `enp3s0`.' }
+        advertisedAddress:
+          type: string
+          nullable: true
+          format: ipv4
+          description: |
+            Address clients use to reach this server (matters with several NICs or
+            NAT). Null uses the interface's primary IPv4 address. Boot image
+            `serverUrls` default from this.
+        services:
+          type: object
+          properties:
+            tftp: { type: boolean, default: true }
+            http: { type: boolean, default: true }
+            httpPort: { type: integer, default: 80 }
+            https: { type: boolean, default: false }
+            httpsPort: { type: integer, default: 443 }
+        dhcp:
+          type: object
+          required: [mode]
+          properties:
+            mode:
+              type: string
+              enum: ["off", proxy, full]
+              default: proxy
+              description: |
+                `off`: no DHCP; see `externalDhcpGuidance` for what to configure on
+                your own server. `proxy`: answers PXE/HTTP boot clients only, never
+                assigns addresses. `full`: address pool with persisted leases.
+            listenOn67:
+              type: boolean
+              default: true
+              description: "`proxy` only. Set false when a real DHCP server on this same host owns UDP 67; the proxy then uses 4011 only."
+            pool:
+              type: object
+              nullable: true
+              description: Required for `full`.
+              required: [start, end, subnetMask]
+              properties:
+                start: { type: string, format: ipv4 }
+                end: { type: string, format: ipv4 }
+                subnetMask: { type: string, format: ipv4 }
+                router: { type: string, nullable: true, format: ipv4 }
+                dnsServers: { type: array, items: { type: string, format: ipv4 } }
+                domainName: { type: string, nullable: true }
+                leaseSeconds: { type: integer, minimum: 60, default: 3600 }
+                pingCheck: { type: boolean, default: true, description: Ping an address before offering it. }
+        externalDhcpGuidance:
+          type: array
+          readOnly: true
+          description: For `off` mode, the options to set on an external DHCP server, per architecture.
+          items:
+            type: object
+            properties:
+              arch: { $ref: "#/components/schemas/ClientArch" }
+              nextServer: { type: string, description: Option 66 / siaddr. }
+              bootFile: { type: string, description: Option 67 (a URL for HTTP boot). }
+              vendorClass: { type: string, description: "Option 60 value to return (PXEClient or HTTPClient)." }
+
+    DhcpLease:
+      type: object
+      required: [mac, ip, interface, expiresAt]
+      properties:
+        mac: { $ref: "#/components/schemas/MacAddress" }
+        ip: { type: string, format: ipv4 }
+        interface: { type: string }
+        hostname: { type: string, nullable: true }
+        arch: { nullable: true, type: string, allOf: [{ $ref: "#/components/schemas/ClientArch" }] }
+        clientId: { type: string, nullable: true, description: 'Matching registered client, if any.' }
+        reserved: { type: boolean }
+        expiresAt: { type: string, format: date-time }
+
+    # ---------- tokens
+    ApiToken:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, nullable: true, format: date-time }
+        lastUsedAt: { type: string, nullable: true, format: date-time }
+
+    # ---------- agent
+    AgentIdentity:
+      type: object
+      required: [macs]
+      properties:
+        macs: { type: array, minItems: 1, items: { $ref: "#/components/schemas/MacAddress" } }
+        smbiosUuid: { type: string, nullable: true }
+        serial: { type: string, nullable: true }
+        manufacturer: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        agentVersion: { type: string }
+
+    AgentDeploymentPlan:
+      type: object
+      required: [deploymentId, installMethod, image, editionIndex]
+      properties:
+        deploymentId: { type: string }
+        installMethod: { $ref: "#/components/schemas/InstallMethod" }
+        image:
+          type: object
+          required: [contentUrl, sha256]
+          properties:
+            contentUrl: { type: string, description: HTTP(S) URL of install.wim/esd (agent mode). }
+            sha256: { type: string }
+            sizeBytes: { type: integer }
+        editionIndex: { type: integer }
+        unattendUrl:
+          type: string
+          nullable: true
+          description: |
+            Rendered with real secret values; only fetchable with this deployment's
+            agent token, and only until the deployment finishes.
+        unattendDestination:
+          type: string
+          enum: [panther, setup-argument]
+          description: |
+            `panther`: agent writes it to `Windows/Panther/unattend.xml` of the applied
+            image (agent mode). `setup-argument`: passed to setup.exe via `/unattend` (smb mode).
+        identityFiles:
+          type: array
+          description: Files the agent places or applies after the image is applied.
+          items:
+            type: object
+            required: [kind, contentUrl, sha256]
+            properties:
+              kind: { type: string, enum: [odj-blob, autopilot-json, provisioning-package] }
+              contentUrl: { type: string }
+              sha256: { type: string }
+        cleanup:
+          type: object
+          description: Agent installs a SetupComplete step that removes these after setup.
+          properties:
+            removeUnattend: { type: boolean, default: true }
+        osDrivers:
+          type: array
+          items:
+            type: object
+            properties:
+              contentUrl: { type: string }
+              sha256: { type: string }
+        smb:
+          type: object
+          nullable: true
+          description: Present when `installMethod` is `smb`.
+          properties:
+            uncPath: { type: string }
+            username: { type: string, nullable: true }
+            password: { type: string, nullable: true }
+            setupPath: { type: string, description: Path to setup.exe relative to the share. }
+        disk:
+          type: object
+          properties:
+            layout: { type: string, enum: [uefi-gpt-default], default: uefi-gpt-default }
+            targetDiskIndex: { type: integer, default: 0 }
+
+    AgentProgress:
+      type: object
+      required: [stage]
+      properties:
+        stage: { $ref: "#/components/schemas/DeploymentStage" }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string, maxLength: 1024 }

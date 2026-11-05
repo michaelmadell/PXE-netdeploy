@@ -1,0 +1,19 @@
+# Build output
+/dist/
+/.tmp/
+/web/dist/
+
+# Runtime data (database, content store, certificates, keys)
+/data/
+
+# Dependencies and caches
+node_modules/
+web/node_modules/.tmp/
+*.tsbuildinfo
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

@@ -13,14 +13,18 @@ hides the problems you will hit in production.
 - firewall rules for UDP 67/69/4011 and TCP 80/443 on that adapter only;
 - a Gen 2 VM with Secure Boot, a vTPM, static memory, and network boot first.
 
-Two Secure Boot templates cover the two real-world trust configurations:
+Two Secure Boot templates, each trusting **one** Microsoft CA:
 
 ```powershell
-just lab -VMName nd-win  -SecureBootTemplate MicrosoftWindows                   # Windows CA only
-just lab -VMName nd-shim -SecureBootTemplate MicrosoftUEFICertificateAuthority  # + third-party CA
+just lab -VMName nd-win  -SecureBootTemplate MicrosoftWindows                   # Windows CA (PCA 2011) only
+just lab -VMName nd-shim -SecureBootTemplate MicrosoftUEFICertificateAuthority  # third-party CA only
 ```
 
-The Windows boot path must work on **both**. Shim/iPXE paths will only work on the second.
+The `MicrosoftUEFICertificateAuthority` template replaces the Windows CA rather
+than adding to it, so Windows boot managers are refused there (confirmed in the
+Phase 1 spike). Use `nd-win` for the Windows path and `nd-shim` for shim/iPXE
+(Phase 6). Most real PCs trust both CAs, which no Hyper-V template reproduces:
+test that configuration on physical hardware.
 
 Remove a VM with `just lab -VMName nd-win -Remove`.
 

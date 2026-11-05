@@ -11,9 +11,12 @@
   `full` DHCP on that interface. Nothing else hands out addresses on the switch,
   so every DHCP answer the VM sees comes from netdeployd.
 
-  -SecureBootTemplate lets you test both real-world trust configurations:
-    MicrosoftWindows                    Windows CA only (like Secured-core PCs)
-    MicrosoftUEFICertificateAuthority   also trusts the third-party CA (shim, iPXE)
+  -SecureBootTemplate picks what the VM's firmware trusts:
+    MicrosoftWindows                    Windows Production PCA 2011 (Windows boot managers)
+    MicrosoftUEFICertificateAuthority   Microsoft UEFI CA 2011 only (shim, iPXE). This
+                                        REPLACES the Windows CA, so no Windows boot
+                                        manager boots on it. Real PCs usually trust both;
+                                        no Hyper-V template does.
 
 .EXAMPLE
   ./scripts/hyperv-lab.ps1

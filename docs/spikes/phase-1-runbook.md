@@ -27,11 +27,16 @@ Commit `go.mod` and `go.sum` with the spike code.
 ```powershell
 just lab                                                                    # nd-win: Windows CA only (elevated)
 just lab -VMName nd-shim -SecureBootTemplate MicrosoftUEFICertificateAuthority
-Get-NetUDPEndpoint -LocalPort 67, 69 -ErrorAction SilentlyContinue          # must be empty
+Get-NetUDPEndpoint -LocalPort 67, 69 -ErrorAction SilentlyContinue |
+  Select-Object LocalAddress, LocalPort, OwningProcess
 ```
 
-If 67 is taken, stop Internet Connection Sharing: `Stop-Service SharedAccess`.
-If 69 is taken, WDS or another TFTP server is running.
+Only a socket on `0.0.0.0` or `10.77.0.1` conflicts with netdeployd. A socket
+on another adapter's address is fine: the Hyper-V Default Switch's DHCP
+(Internet Connection Sharing, `SharedAccess`) listens on its own address,
+e.g. `172.31.224.1:67`. Leave it running; stopping it breaks networking for
+VMs on the Default Switch. If 69 is taken, WDS or another TFTP server is
+running.
 
 ### Spike TFTP root
 
@@ -39,11 +44,11 @@ If 69 is taken, WDS or another TFTP server is running.
 $iso = 'C:\path\to\Win11.iso'
 $root = '.tmp\spike'
 $d = (Mount-DiskImage $iso -PassThru | Get-Volume).DriveLetter + ':'
-New-Item -ItemType Directory -Force "$root\Boot\Fonts", .tmp\logs | Out-Null
+New-Item -ItemType Directory -Force "$root\Boot", "$root\EFI\Microsoft\Boot\Fonts", .tmp\logs | Out-Null
 Copy-Item "$d\efi\boot\bootx64.efi" "$root\bootmgfw.efi"
 Copy-Item "$d\boot\boot.sdi"       "$root\Boot\boot.sdi"
 Copy-Item "$d\sources\boot.wim"    "$root\Boot\boot.wim"
-Copy-Item "$d\efi\microsoft\boot\fonts\*" "$root\Boot\Fonts\"   # Boot Manager may ask for these
+Copy-Item "$d\efi\microsoft\boot\fonts\*" "$root\EFI\Microsoft\Boot\Fonts\"   # Boot Manager asks for \EFI\Microsoft\Boot\Fonts\*.ttf
 ```
 
 Build `Boot\BCD` with the `bcdedit` script in the plan (elevated, run inside
@@ -61,9 +66,24 @@ Dismount-WindowsImage -Path .tmp\wim -Discard
 ```
 
 Record the index used and whether `EFI_EX` exists (an open question).
-Check the signer of each boot manager:
-`Get-AuthenticodeSignature $root\bootmgfw*.efi | Format-List SignerCertificate`
-(the issuer shows "Windows Production PCA 2011" or "Windows UEFI CA 2023").
+Check the signer embedded in each boot manager. Don't rely on
+`Get-AuthenticodeSignature` alone: if Windows has the file's hash in a
+catalog it reports the catalog signer (2011), not the embedded signature
+that UEFI checks.
+
+```powershell
+$files = Get-ChildItem $root\bootmgfw*.efi
+Get-FileHash $files | Select-Object Hash, Path
+$files | ForEach-Object {
+  [pscustomobject]@{
+    File   = $_.Name
+    Issuer = [Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($_.FullName).Issuer
+  }
+}
+```
+
+The issuer is "Microsoft Windows Production PCA 2011" or "Windows UEFI CA 2023".
+Signing-certificate expiry dates don't matter to Secure Boot.
 
 ## Tasks 1–3: boot WinPE on nd-win
 
@@ -91,7 +111,8 @@ What to look for in the log, in order:
 | `tftp transfer complete resolved=Boot/boot.wim ... duration_ms` | RAM disk loaded; note blksize, windowsize, duration |
 | `dhcp rx` without `arch` after boot | WinPE's own DHCP client |
 
-Done when the Windows Setup screen appears.
+Done when the Windows Setup screen appears. Then build the
+[plain WinPE boot image](#plain-winpe-boot-image-after-task-3) below.
 
 If the VM shows "No offer received", try in this order and note which fixed it:
 
@@ -102,9 +123,44 @@ If the VM shows "No offer received", try in this order and note which fixed it:
 If boot.wim stalls or restarts at about 95 MB (block 65535 at blksize 1456),
 block-number rollover is the suspect; record the log lines around it.
 
+## Plain WinPE boot image (after task 3)
+
+Setup on the media's `boot.wim` shows "Windows Deployment Services client
+functionality is being partly deprecated" and restarts when you click OK.
+That is expected: since Windows 11, Microsoft blocks running the media's
+Setup when network-booted ("WDS mode"); custom boot images are unaffected
+(https://aka.ms/WDSSupport). Tasks 4 onwards use plain WinPE, which is
+index 1 of the same WIM and boots to a command prompt.
+
+Elevated PowerShell, repo root:
+
+```powershell
+# 1. Index 1 should be "Microsoft Windows PE", index 2 "Microsoft Windows Setup"
+Get-WindowsImage -ImagePath .tmp\spike\Boot\boot.wim | Select-Object ImageIndex, ImageName, ImageSize
+
+# 2. Keep the original; export index 1 as the new, bootable boot.wim
+Rename-Item .tmp\spike\Boot\boot.wim boot-setup.wim
+Export-WindowsImage -SourceImagePath .tmp\spike\Boot\boot-setup.wim -SourceIndex 1 `
+  -DestinationImagePath .tmp\spike\Boot\boot.wim -SetBootable
+
+# 3. Expect one image and a smaller file
+Get-WindowsImage -ImagePath .tmp\spike\Boot\boot.wim | Select-Object ImageIndex, ImageName
+(Get-Item .tmp\spike\Boot\boot.wim).Length / 1MB
+```
+
+The BCD doesn't change (same file name). Boot nd-win again with the task 3
+command: a command prompt (`X:\windows\system32\cmd.exe`) should appear, and
+`ipconfig` should show a `10.77.0.x` lease from netdeployd. Note the new
+boot.wim size for task 6.
+
 ## Task 4: nd-shim
 
 Same command, log to `.tmp\logs\task4-nd-shim.log`, `Start-VM nd-shim`.
+
+Expected result: Secure Boot violation. The `MicrosoftUEFICertificateAuthority`
+template trusts only the third-party CA and removes the Windows CA, so the
+firmware refuses `bootmgfw.efi`. Evidence to keep: the log shows the
+`bootmgfw.efi` transfer complete and no request for the BCD afterwards.
 
 ## Task 5: 2023-signed boot manager
 
@@ -149,7 +205,7 @@ Windows 11.
 
 ```powershell
 Copy-Item .tmp\spike\Boot\boot.wim .tmp\spike\Boot\boot-orig.wim
-Mount-WindowsImage -ImagePath .tmp\spike\Boot\boot.wim -Index 2 -Path .tmp\wim
+Mount-WindowsImage -ImagePath .tmp\spike\Boot\boot.wim -Index 1 -Path .tmp\wim
 Add-WindowsDriver -Path .tmp\wim -Driver C:\path\to\e1r68x64.inf
 Dismount-WindowsImage -Path .tmp\wim -Save
 ```

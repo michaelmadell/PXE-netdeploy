@@ -24,6 +24,8 @@ be served. Block numbers roll over to 0 after 65535.
 - About 600 lines we maintain, covered by loopback tests (windowing, lost
   ACKs, rollover, tsize probes, path escapes).
 - Per-client BCD selection plugs in at path resolution.
-- Rollover to 0 (not 1) and windowed transfers still need confirming against
-  real Boot Manager in the Phase 1 spike.
+- Rollover to 0 and windowed transfers work with real Windows Boot Manager
+  (Phase 1 spike: 582 MB boot.wim, 71,009 blocks, 0 retransmits).
+- Boot Manager stops at `tsize` without ACKing an empty final block; the
+  server treats that as complete (found in the spike).
 - No write support; nothing in the design needs it.

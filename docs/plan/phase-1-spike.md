@@ -65,7 +65,7 @@ documentation if anything fails, and record differences in the findings.
 | 1 | **DHCP, full mode, one interface.** Pool on the lab subnet; answer UEFI x64 clients (option 93 = 7 or 9) with next-server and boot file `bootmgfw.efi`. Log every packet's MAC, arch and message type. | VM gets an address and starts downloading the boot file |
 | 2 | **TFTP, read-only.** Serve a directory, case-insensitive, `\` → `/` normalised, `blksize` and `tsize` options, `windowsize` if the library supports it. Log every requested path and transfer time. | Boot manager loads and requests further files |
 | 3 | **Boot WinPE (Windows-CA-only VM).** Follow the requested paths; adjust layout or BCD until WinPE starts. | Windows Setup screen appears |
-| 4 | **Repeat on the third-party-CA VM.** | Same result |
+| 4 | **Repeat on the third-party-CA VM.** | Recorded result. *Refused, as expected: that template removes the Windows CA (see findings).* |
 | 5 | **2023-signed boot manager.** Serve `bootmgfw_EX.efi` instead. | Recorded whether each VM template accepts it |
 | 6 | **Transfer tuning.** Time the boot.wim download at a few block/window sizes (e.g. 1456/1, 1456/8, 8192/8, 16384/16). | Table of results; default settings chosen |
 | 7 | **Real I210 hardware.** Boot the same files on a physical I210 device on an isolated switch. Expect WinPE to have no network. | Confirmed (or disproved) that WinPE lacks a working I210 driver |

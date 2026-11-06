@@ -287,3 +287,31 @@ func TestConfigValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestTakeLeasesKeepsBindingsAcrossReconfigure(t *testing.T) {
+	old, now := testServer(t, nil)
+	mac := net.HardwareAddr{0, 0x1b, 0x21, 1, 2, 3}
+	old.mu.Lock()
+	ip, ok := old.pool.offer(mac.String(), nil, *now)
+	if !ok || !old.pool.bind(mac.String(), ip, time.Hour, *now) {
+		t.Fatal("setup: no lease")
+	}
+	old.mu.Unlock()
+
+	same, _ := testServer(t, func(c *Config) { c.LeaseTime = 10 * time.Minute })
+	if !same.TakeLeases(old) {
+		t.Fatal("same pool range: leases not taken")
+	}
+	same.mu.Lock()
+	other := net.HardwareAddr{0, 0x1b, 0x21, 9, 9, 9}
+	got, _ := same.pool.offer(other.String(), ip, *now)
+	same.mu.Unlock()
+	if got.Equal(ip) {
+		t.Fatalf("new server offered %v, which %v still holds", ip, mac)
+	}
+
+	moved, _ := testServer(t, func(c *Config) { c.PoolEnd = net.IPv4(10, 77, 0, 101) })
+	if moved.TakeLeases(old) {
+		t.Error("different pool range: leases should not carry over")
+	}
+}

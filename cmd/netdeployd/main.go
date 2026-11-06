@@ -1,27 +1,25 @@
-// Command netdeployd is the deployment server: admin API + UI, and (Phase 1
-// spike) DHCP and TFTP enabled by flags. Content listeners land later.
+// Command netdeployd is the deployment server: admin API + UI, DHCP and TFTP.
+// Everything except the data directory and logging comes from the stored
+// settings (GET/PUT /api/v1/settings); see -h for the bootstrap flags.
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
-	"strings"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
-	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
+	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/server"
-	"github.com/michaelmadell/pxe-netdeploy/internal/tftp"
+	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
+	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 	"github.com/michaelmadell/pxe-netdeploy/web"
 )
 
@@ -29,49 +27,22 @@ import (
 var version = "dev"
 
 type options struct {
-	adminAddr string
 	dataDir   string
-
-	// Phase 1 spike: network boot services, off unless their flags are set.
-	dhcpIface          string
-	dhcpServerIP       string
-	dhcpPool           string
-	dhcpRouter         string
-	dhcpDNS            string
-	dhcpLease          time.Duration
-	dhcpPXEClientClass bool
-	bootFile           string
-	httpBootURL        string
-
-	tftpRoot          string
-	tftpAddr          string
-	tftpMaxBlockSize  int
-	tftpMaxWindowSize int
-	tftpTimeout       time.Duration
+	adminAddr string // empty: use Settings.admin
+	dev       settings.Dev
 }
 
 func main() {
 	var o options
-	flag.StringVar(&o.adminAddr, "admin-addr", "127.0.0.1:8443", "admin API/UI listen address (HTTPS)")
-	flag.StringVar(&o.dataDir, "data", "./data", "data directory (database, content store, certificates)")
+	flag.StringVar(&o.dataDir, "data", "./data", "data directory (database, certificates)")
+	flag.StringVar(&o.adminAddr, "admin-addr", "", "recovery override for the admin listener, e.g. 127.0.0.1:8443; normally set in settings")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
 
-	flag.StringVar(&o.dhcpIface, "dhcp-iface", "", "serve DHCP (full mode) on this interface, e.g. \"vEthernet (NetDeployLab)\"; empty disables DHCP")
-	flag.StringVar(&o.dhcpServerIP, "dhcp-server-ip", "", "this host's address on -dhcp-iface (default: the interface's first IPv4 address)")
-	flag.StringVar(&o.dhcpPool, "dhcp-pool", "", "address pool as start-end, e.g. 10.77.0.100-10.77.0.199 (required with -dhcp-iface)")
-	flag.StringVar(&o.dhcpRouter, "dhcp-router", "", "default gateway to hand out (optional)")
-	flag.StringVar(&o.dhcpDNS, "dhcp-dns", "", "comma-separated DNS servers to hand out (optional)")
-	flag.DurationVar(&o.dhcpLease, "dhcp-lease", dhcp.DefaultLeaseTime, "lease time")
-	flag.BoolVar(&o.dhcpPXEClientClass, "dhcp-pxeclient-class", false, "add option 60 \"PXEClient\" to PXE replies")
-	flag.StringVar(&o.bootFile, "boot-file", "bootmgfw.efi", "boot file for UEFI x64 PXE clients")
-	flag.StringVar(&o.httpBootURL, "http-boot-url", "", "boot URL for UEFI x64 HTTP Boot clients (optional)")
-
-	flag.StringVar(&o.tftpRoot, "tftp-root", "", "serve this directory read-only over TFTP; empty disables TFTP")
-	flag.StringVar(&o.tftpAddr, "tftp-addr", "0.0.0.0:69", "TFTP listen address")
-	flag.IntVar(&o.tftpMaxBlockSize, "tftp-max-blksize", tftp.DefaultMaxBlockSize, "largest TFTP blksize to accept (8..65464); larger client requests are lowered to this")
-	flag.IntVar(&o.tftpMaxWindowSize, "tftp-max-windowsize", tftp.DefaultMaxWindowSize, "largest TFTP windowsize to accept (1..4096); larger client requests are lowered to this")
-	flag.DurationVar(&o.tftpTimeout, "tftp-timeout", tftp.DefaultTimeout, "TFTP retransmit timeout")
+	// Temporary until boot images provide boot content (Phase 2 step 4).
+	flag.StringVar(&o.dev.TFTPRoot, "tftp-root", "", "TEMPORARY: directory served read-only over TFTP on interfaces with services.tftp")
+	flag.StringVar(&o.dev.BootFile, "boot-file", "bootmgfw.efi", "TEMPORARY: DHCP boot file for UEFI x64 PXE clients")
+	flag.StringVar(&o.dev.HTTPBootURL, "http-boot-url", "", "TEMPORARY: DHCP boot URL for UEFI x64 HTTP Boot clients")
 	flag.Parse()
 
 	var level slog.Level
@@ -92,25 +63,67 @@ func main() {
 	}
 }
 
-// service is a long-running listener started by run.
-type service struct {
-	name  string
-	serve func(ctx context.Context) error
-}
-
 func run(o options) error {
-	if err := os.MkdirAll(o.dataDir, 0o750); err != nil {
-		return err
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var override netip.AddrPort
+	if o.adminAddr != "" {
+		var err error
+		if override, err = netip.ParseAddrPort(o.adminAddr); err != nil {
+			return fmt.Errorf("-admin-addr %q: want ip:port, e.g. 127.0.0.1:8443", o.adminAddr)
+		}
 	}
 
-	tlsCfg, err := certs.LoadOrCreateAdminTLS(o.dataDir)
+	st, err := store.Open(ctx, o.dataDir, store.Options{})
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	generated, err := certs.LoadOrCreateAdminTLS(o.dataDir)
 	if err != nil {
 		return err
 	}
 
-	mux := http.NewServeMux()
+	// The admin handler needs the Server, which needs the Manager, which
+	// serves the handler: build the handler last and forward to it.
+	var handler http.Handler
+	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r)
+	}), netsvc.Options{})
+	svc := settings.NewService(settings.Options{
+		Store:              st,
+		Network:            network,
+		Dev:                o.dev,
+		AdminOverride:      override,
+		GeneratedAdminCert: &generated.Certificates[0],
+	})
+	impl := server.New(version, svc, network)
+	if handler, err = adminHandler(impl); err != nil {
+		return err
+	}
 
-	impl := server.New(version)
+	if err := svc.Start(ctx); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	slog.Info("shutting down")
+	<-network.Done()
+	return nil
+}
+
+func adminHandler(impl *server.Server) (http.Handler, error) {
+	spec, err := api.GetSwagger()
+	if err != nil {
+		return nil, fmt.Errorf("load embedded spec: %w", err)
+	}
+	validate, err := server.RequestValidator(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	mux := http.NewServeMux()
 	strict := api.NewStrictHandlerWithOptions(impl, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  server.RequestError,
 		ResponseErrorHandlerFunc: server.ResponseError,
@@ -123,153 +136,5 @@ func run(o options) error {
 	// Unknown /api paths get a JSON 404 instead of falling through to the SPA.
 	mux.HandleFunc("/api/", server.NotFound)
 	mux.Handle("/", web.Handler())
-
-	srv := &http.Server{
-		Addr:              o.adminAddr,
-		Handler:           server.Recover(server.Logging(mux)),
-		TLSConfig:         tlsCfg,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	services, err := networkServices(o, impl)
-	if err != nil {
-		return err
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-
-	var wg sync.WaitGroup
-	for _, svc := range services {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := svc.serve(ctx)
-			if err != nil {
-				impl.SetService(svc.name, api.ServiceHealthStatusError, err.Error())
-				cancel(fmt.Errorf("%s: %w", svc.name, err))
-			}
-		}()
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		slog.Info("admin listener started", "addr", "https://"+o.adminAddr, "version", version)
-		errCh <- srv.ListenAndServeTLS("", "")
-	}()
-
-	var runErr error
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, http.ErrServerClosed) {
-			runErr = err
-		}
-		cancel(nil)
-	case <-ctx.Done():
-		runErr = context.Cause(ctx)
-		if errors.Is(runErr, context.Canceled) {
-			runErr = nil
-		}
-		slog.Info("shutting down")
-	}
-
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelShutdown()
-	if err := srv.Shutdown(shutdownCtx); err != nil && runErr == nil {
-		runErr = err
-	}
-	wg.Wait()
-	return runErr
-}
-
-// networkServices builds the DHCP and TFTP services enabled by flags.
-func networkServices(o options, impl *server.Server) ([]service, error) {
-	var out []service
-
-	if o.tftpRoot != "" {
-		ts, err := tftp.New(tftp.Config{
-			Root:          o.tftpRoot,
-			MaxBlockSize:  o.tftpMaxBlockSize,
-			MaxWindowSize: o.tftpMaxWindowSize,
-			Timeout:       o.tftpTimeout,
-		})
-		if err != nil {
-			return nil, err
-		}
-		impl.SetService("tftp", api.ServiceHealthStatusOk, "spike: serving "+o.tftpRoot+" on "+o.tftpAddr)
-		out = append(out, service{"tftp", func(ctx context.Context) error {
-			defer ts.Close()
-			return ts.ListenAndServe(ctx, o.tftpAddr)
-		}})
-	}
-
-	if o.dhcpIface != "" {
-		cfg, err := dhcpConfig(o)
-		if err != nil {
-			return nil, err
-		}
-		ds, err := dhcp.New(cfg)
-		if err != nil {
-			return nil, err
-		}
-		if o.tftpRoot == "" {
-			slog.Warn("DHCP is enabled without -tftp-root: PXE clients will get a boot file nobody serves")
-		}
-		impl.SetService("dhcp", api.ServiceHealthStatusOk, "spike: full mode on "+o.dhcpIface+", pool "+o.dhcpPool)
-		out = append(out, service{"dhcp", ds.ListenAndServe})
-	} else if o.dhcpPool != "" {
-		return nil, errors.New("-dhcp-pool needs -dhcp-iface")
-	}
-	return out, nil
-}
-
-func dhcpConfig(o options) (dhcp.Config, error) {
-	cfg := dhcp.Config{
-		Interface:      o.dhcpIface,
-		LeaseTime:      o.dhcpLease,
-		BootFileUEFI:   o.bootFile,
-		HTTPBootURL:    o.httpBootURL,
-		PXEClientClass: o.dhcpPXEClientClass,
-	}
-	var err error
-	if o.dhcpServerIP != "" {
-		if cfg.ServerIP, err = parseIPv4("-dhcp-server-ip", o.dhcpServerIP); err != nil {
-			return cfg, err
-		}
-	}
-	start, end, ok := strings.Cut(o.dhcpPool, "-")
-	if !ok {
-		return cfg, fmt.Errorf("-dhcp-pool %q: want start-end, e.g. 10.77.0.100-10.77.0.199", o.dhcpPool)
-	}
-	if cfg.PoolStart, err = parseIPv4("-dhcp-pool", strings.TrimSpace(start)); err != nil {
-		return cfg, err
-	}
-	if cfg.PoolEnd, err = parseIPv4("-dhcp-pool", strings.TrimSpace(end)); err != nil {
-		return cfg, err
-	}
-	if o.dhcpRouter != "" {
-		if cfg.Router, err = parseIPv4("-dhcp-router", o.dhcpRouter); err != nil {
-			return cfg, err
-		}
-	}
-	if o.dhcpDNS != "" {
-		for _, d := range strings.Split(o.dhcpDNS, ",") {
-			ip, err := parseIPv4("-dhcp-dns", strings.TrimSpace(d))
-			if err != nil {
-				return cfg, err
-			}
-			cfg.DNS = append(cfg.DNS, ip)
-		}
-	}
-	return cfg, nil
-}
-
-func parseIPv4(flagName, s string) (net.IP, error) {
-	ip := net.ParseIP(s).To4()
-	if ip == nil {
-		return nil, fmt.Errorf("%s: %q is not an IPv4 address", flagName, s)
-	}
-	return ip, nil
+	return server.Recover(server.Logging(validate(mux))), nil
 }

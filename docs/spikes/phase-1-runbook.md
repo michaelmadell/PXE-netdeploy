@@ -8,6 +8,11 @@ the findings.
 Commands are PowerShell 7 on the Windows host, from the repo root, unless a
 task says otherwise.
 
+> **The `-dhcp-*`, `-tftp-addr` and `-tftp-max-*` flags below no longer
+> exist** (removed in Phase 2 step 2). This runbook records how Phase 1 was
+> run. To re-run a task now, configure the interface and TFTP caps through
+> settings: see [running-the-lab.md](../dev/running-the-lab.md).
+
 ## 0. One-time preparation
 
 ### Dependencies

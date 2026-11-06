@@ -1,10 +1,11 @@
 // Package dhcp is netdeployd's DHCP server.
 //
-// Phase 1 spike: full mode only, one interface, in-memory leases. Every
-// client on the interface gets an address (WinPE needs one after boot);
-// UEFI x64 PXE clients also get the boot file, and UEFI x64 HTTP Boot
-// clients get a boot URL when one is configured. Proxy mode, per-client
-// policy (ADR 0010) and persistence arrive in Phase 2.
+// Full mode only, one Server per interface, in-memory leases (kept across
+// settings changes by TakeLeases). Every client on the interface gets an
+// address (WinPE needs one after boot); UEFI x64 PXE clients also get the
+// boot file, and UEFI x64 HTTP Boot clients get a boot URL when one is
+// configured. Proxy mode, the ADR 0013 boot decision and persisted leases
+// arrive in Phase 2 step 3.
 package dhcp
 
 import (
@@ -16,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
@@ -84,6 +86,13 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 	return newServer(cfg)
+}
+
+// Check validates a fully specified cfg (ServerIP and Netmask set) without
+// touching interfaces or sockets.
+func Check(cfg Config) error {
+	_, err := newServer(cfg)
+	return err
 }
 
 // newServer validates a fully specified cfg without touching interfaces.
@@ -187,12 +196,22 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 // Serve handles packets from conn until ctx ends.
 func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
+	var cur atomic.Pointer[Server]
+	cur.Store(s)
+	return ServeSwappable(ctx, conn, &cur)
+}
+
+// ServeSwappable handles packets from conn with whichever Server cur holds
+// when each packet arrives, until ctx ends (which closes conn). Storing a new
+// Server in cur reconfigures the listener without rebinding its socket.
+func ServeSwappable(ctx context.Context, conn net.PacketConn, cur *atomic.Pointer[Server]) error {
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 
 	buf := make([]byte, 1500)
 	for {
 		n, peer, err := conn.ReadFrom(buf)
+		s := cur.Load()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
@@ -215,6 +234,24 @@ func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
 			s.log.Error("dhcp send failed", "to", dst.String(), "mac", req.ClientHWAddr.String(), "err", err)
 		}
 	}
+}
+
+// TakeLeases copies old's leases and offers into s when both serve the same
+// pool range, so a settings change doesn't forget who holds which address.
+// It reports whether anything was copied. Call it before s starts serving.
+func (s *Server) TakeLeases(old *Server) bool {
+	if old == nil || old == s {
+		return false
+	}
+	old.mu.Lock()
+	defer old.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old.pool.start != s.pool.start || old.pool.end != s.pool.end {
+		return false
+	}
+	s.pool = old.pool.clone()
+	return true
 }
 
 // Handle returns the reply to req, or nil for no reply. It logs the request

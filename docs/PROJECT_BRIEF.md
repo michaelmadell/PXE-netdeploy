@@ -6,6 +6,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 
 | For | Read |
 |---|---|
+| Running the server in the lab | [dev/running-the-lab.md](dev/running-the-lab.md) |
 | Components, boot flows, roadmap | [architecture.md](architecture.md) |
 | Why each decision was made | [adr/](adr/README.md) |
 | The API (source of truth) | [../api/openapi.yaml](../api/openapi.yaml) |
@@ -112,7 +113,8 @@ health). Start from [plan/phase-2-handover.md](plan/phase-2-handover.md): it
 lists the Phase 1 results that constrain the design, the spec values to
 correct, and the decisions to make. Decision 1 (unknown clients) is done:
 ADR 0013. Decision 2 (TFTP defaults) is done. Decision 3 (storage) is
-ADR 0014; `internal/store` is being built.
+ADR 0014, built in `internal/store`. Step 2 (settings and atomic apply) is
+done; next is step 3, DHCP proxy mode and persisted leases.
 
 ## Open questions and things to verify
 
@@ -127,7 +129,7 @@ ADR 0014; `internal/store` is being built.
 | Proxy DHCP mode against real firmware | Phase 2 (only full mode was tested) |
 | ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
-| The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator | |
+| ~~The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator~~ | Done (Phase 2 step 2): `server.RequestValidator`, 400 with per-field `errors[]` |
 | Raw Go error text appears in problem `detail` fields | |
 
 ## Suggested skills for the next session

@@ -3,11 +3,12 @@ package server
 
 import (
 	"context"
-	"maps"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
+	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 )
 
 // Server implements api.StrictServerInterface.
@@ -19,52 +20,92 @@ import (
 type Server struct {
 	api.StrictServerInterface
 
-	version string
-	started time.Time
-
-	mu       sync.Mutex
-	services map[string]api.ServiceHealth
+	version  string
+	started  time.Time
+	settings *settings.Service
+	network  *netsvc.Manager
 }
 
-// New returns a Server. Network services start out disabled; the code that
-// starts them reports their state with SetService.
-func New(version string) *Server {
-	notYet := "not implemented yet"
-	notEnabled := "not enabled"
-	return &Server{
-		version: version,
-		started: time.Now(),
-		services: map[string]api.ServiceHealth{
-			"admin":   {Status: api.ServiceHealthStatusOk},
-			"dhcp":    {Status: api.ServiceHealthStatusDisabled, Detail: &notEnabled},
-			"tftp":    {Status: api.ServiceHealthStatusDisabled, Detail: &notEnabled},
-			"content": {Status: api.ServiceHealthStatusDisabled, Detail: &notYet},
-		},
-	}
+// New returns a Server. settings and network may be nil in tests of
+// operations that don't use them.
+func New(version string, s *settings.Service, network *netsvc.Manager) *Server {
+	return &Server{version: version, started: time.Now(), settings: s, network: network}
 }
 
-// SetService records the state of a network service for GetHealth.
-func (s *Server) SetService(name string, status api.ServiceHealthStatus, detail string) {
-	h := api.ServiceHealth{Status: status}
-	if detail != "" {
-		h.Detail = &detail
-	}
-	s.mu.Lock()
-	s.services[name] = h
-	s.mu.Unlock()
-}
-
-// GetHealth reports per-service health. Overall status is "ok" unless a
-// service is in error.
+// GetHealth reports per-service health from the running listeners, plus
+// configuration warnings. Overall status is "degraded" if any service is in
+// error.
 func (s *Server) GetHealth(_ context.Context, _ api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
-	s.mu.Lock()
-	services := maps.Clone(s.services)
-	s.mu.Unlock()
+	services := map[string]api.ServiceHealth{
+		"content": disabled("not implemented yet (Phase 2 step 5)"),
+	}
+	if s.network != nil {
+		for name, st := range s.network.Status() {
+			services[name] = serviceHealth(st)
+		}
+	}
 	status := api.HealthStatusOk
 	for _, h := range services {
 		if h.Status == api.ServiceHealthStatusError {
 			status = api.HealthStatusDegraded
 		}
 	}
-	return api.GetHealth200JSONResponse{Status: status, Services: services}, nil
+	out := api.GetHealth200JSONResponse{Status: status, Services: services}
+	if w := s.warnings(); len(w) > 0 {
+		out.Warnings = &w
+	}
+	return out, nil
+}
+
+func serviceHealth(st netsvc.Status) api.ServiceHealth {
+	if len(st.Failures) > 0 {
+		fs := make([]api.BindFailure, len(st.Failures))
+		msgs := make([]string, len(st.Failures))
+		for i, f := range st.Failures {
+			fs[i] = api.BindFailure{Interface: f.Interface, Message: f.Message, Port: f.Port, Protocol: api.BindFailureProtocol(f.Protocol)}
+			msgs[i] = f.Message
+		}
+		detail := strings.Join(msgs, "; ")
+		return api.ServiceHealth{Status: api.ServiceHealthStatusError, Detail: &detail, BindFailures: &fs}
+	}
+	if len(st.Running) > 0 {
+		detail := strings.Join(st.Running, ", ")
+		if st.Note != "" {
+			detail += " (" + st.Note + ")"
+		}
+		return api.ServiceHealth{Status: api.ServiceHealthStatusOk, Detail: &detail}
+	}
+	if st.Note != "" {
+		return disabled(st.Note)
+	}
+	return disabled("not configured on any interface")
+}
+
+func disabled(detail string) api.ServiceHealth {
+	return api.ServiceHealth{Status: api.ServiceHealthStatusDisabled, Detail: &detail}
+}
+
+type warning = struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func (s *Server) warnings() []warning {
+	if s.settings == nil {
+		return nil
+	}
+	cfg, _ := s.settings.Current()
+	var w []warning
+	if s.settings.AdminOverridden() {
+		w = append(w, warning{"admin_address_overridden", "The -admin-addr flag replaces the stored admin address; remove it once settings are fixed."})
+	}
+	if !cfg.BootPrompt.RequirePassword {
+		w = append(w, warning{"boot_prompt_password_disabled", "Debug mode: the boot prompt needs no password, so anyone at a network-booted machine can re-image it."})
+	} else if cfg.BootPrompt.PasswordHash == "" {
+		w = append(w, warning{"boot_prompt_no_password", "No boot prompt password is set: only deployments scheduled through the API can run."})
+	}
+	if len(cfg.Interfaces) > 0 && cfg.BootPrompt.DefaultProfileID == "" {
+		w = append(w, warning{"no_default_profile", "No default profile: clients without a profile of their own are not answered."})
+	}
+	return w
 }

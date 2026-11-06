@@ -11,19 +11,31 @@ import (
 // problem is an RFC 9457 error body. It mirrors the Problem schema; it is
 // hand-written here so error paths work even before an operation is generated.
 type problem struct {
-	Type   string `json:"type"`
-	Title  string `json:"title"`
-	Status int    `json:"status"`
-	Detail string `json:"detail,omitempty"`
-	Code   string `json:"code"`
+	Type   string         `json:"type"`
+	Title  string         `json:"title"`
+	Status int            `json:"status"`
+	Detail string         `json:"detail,omitempty"`
+	Code   string         `json:"code"`
+	Errors []problemField `json:"errors,omitempty"`
+}
+
+type problemField struct {
+	Field   string `json:"field,omitempty"`
+	Message string `json:"message"`
 }
 
 func writeProblem(w http.ResponseWriter, status int, code, title, detail string) {
+	writeProblemFields(w, status, code, title, detail, nil)
+}
+
+func writeProblemFields(w http.ResponseWriter, status int, code, title, detail string, fields []fieldError) {
+	p := problem{Type: "about:blank", Title: title, Status: status, Detail: detail, Code: code}
+	for _, f := range fields {
+		p.Errors = append(p.Errors, problemField{Field: f.field, Message: f.message})
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(problem{
-		Type: "about:blank", Title: title, Status: status, Detail: detail, Code: code,
-	})
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // RequestError handles requests the generated code could not decode or validate.

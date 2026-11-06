@@ -9,6 +9,7 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20261014062924-c6bb46ad3f3a
 	github.com/oapi-codegen/runtime v1.8.0
 	github.com/oklog/ulid/v2 v2.1.2
+	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.61.1
 )
 
@@ -36,7 +37,7 @@ require (
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

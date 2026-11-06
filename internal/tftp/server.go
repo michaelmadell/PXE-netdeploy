@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,7 +60,10 @@ type Server struct {
 	cfg  Config
 	root *os.Root
 	log  *slog.Logger
-	wg   sync.WaitGroup
+
+	mu      sync.Mutex
+	retired bool
+	wg      sync.WaitGroup // running transfers
 }
 
 // New validates cfg and opens the root directory.
@@ -100,6 +104,27 @@ func New(cfg Config) (*Server, error) {
 // Close releases the root directory. Call it after Serve returns.
 func (s *Server) Close() error { return s.root.Close() }
 
+// Retire stops s taking new transfers, waits for its running ones, then
+// closes its root. Use it on a Server replaced in ServeSwappable.
+func (s *Server) Retire() error {
+	s.mu.Lock()
+	s.retired = true
+	s.mu.Unlock()
+	s.wg.Wait()
+	return s.Close()
+}
+
+// acquire registers a new transfer unless s is retired.
+func (s *Server) acquire() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retired {
+		return false
+	}
+	s.wg.Add(1)
+	return true
+}
+
 // ListenAndServe listens on addr (e.g. "0.0.0.0:69") and serves until ctx ends.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	conn, err := net.ListenPacket("udp4", addr)
@@ -114,9 +139,20 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 // Serve reads requests from conn until ctx ends, then waits for running
 // transfers to stop. Each transfer runs on its own socket (a new TID).
 func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
+	var cur atomic.Pointer[Server]
+	cur.Store(s)
+	return ServeSwappable(ctx, conn, &cur)
+}
+
+// ServeSwappable reads requests from conn and starts each transfer on
+// whichever Server cur holds at that moment, until ctx ends (which closes
+// conn and cancels running transfers). Storing a new Server in cur
+// reconfigures the listener without rebinding; transfers already running
+// finish on the Server they started on, so Retire the old one.
+func ServeSwappable(ctx context.Context, conn net.PacketConn, cur *atomic.Pointer[Server]) error {
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	defer s.wg.Wait()
+	defer func() { cur.Load().wg.Wait() }()
 
 	localIP := net.IPv4zero
 	if a, ok := conn.LocalAddr().(*net.UDPAddr); ok && a.IP != nil {
@@ -132,7 +168,7 @@ func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
 			}
 			// UDP read errors (e.g. an ICMP unreachable surfaced by the OS)
 			// don't affect other clients. Keep serving.
-			s.log.Warn("tftp read error", "err", err)
+			cur.Load().log.Warn("tftp read error", "err", err)
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
@@ -141,7 +177,11 @@ func (s *Server) Serve(ctx context.Context, conn net.PacketConn) error {
 			continue
 		}
 		pkt := append([]byte(nil), buf[:n]...)
-		s.wg.Add(1)
+		s := cur.Load()
+		for !s.acquire() {
+			// Retired between Load and acquire: its replacement is in cur.
+			s = cur.Load()
+		}
 		go func() {
 			defer s.wg.Done()
 			s.handle(ctx, localIP, remote, pkt)

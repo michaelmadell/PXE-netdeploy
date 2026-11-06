@@ -39,6 +39,9 @@ SQLite via `modernc.org/sqlite` (no cgo). This records how it is used.
 - Recording a sighting (`lastSeenAt` etc.) doesn't change a client's version,
   so a booting machine never invalidates an admin's `If-Match`.
 - Store tests use real SQLite in a temp directory, no mocks.
-- TLS private keys stay as files in the data directory until secrets
-  (ADR 0008) arrive in Phase 5; the boot prompt password is stored as an
-  argon2id hash inside the settings document.
+- The generated admin certificate and key stay as files in the data
+  directory. Custom certificates uploaded through `PUT /settings` (admin and
+  content HTTPS) are stored in the settings document, so they change in the
+  same transaction as the rest of the settings (amended 2026-11-06, Phase 2
+  step 2). Both move to encrypted storage with secrets (ADR 0008) in Phase 5.
+  The boot prompt password is stored as an argon2id hash in the document.

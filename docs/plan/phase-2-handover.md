@@ -134,7 +134,8 @@ From the roadmap: core server with DHCP (proxy and full), TFTP, content HTTP,
 settings and health. Suggested order, each designed then built:
 
 1. **Decision 1 + client model** (ADR, spec, store): needed by DHCP and TFTP.
-2. **Settings store and atomic apply** (`GET/PUT /settings`, ETag, 422 with
+2. **Settings store and atomic apply** (**done 2026-11-06**: `internal/settings`,
+   `internal/netsvc`, request validator; see running-the-lab.md) (`GET/PUT /settings`, ETag, 422 with
    per-field errors, bind-before-release as the spec describes). Replaces the
    spike flags; keep flags only for bootstrap (data dir, admin address).
 3. **DHCP**: per-interface modes `off` / `proxy` / `full`; proxy on 67 and
@@ -174,8 +175,9 @@ deployments) depend on this; keep their interfaces in mind but don't build them.
   `bootmgfw_EX.efi` (2023), `Boot\BCD` (ramdisk 16384/16), `Boot\boot.sdi`,
   `Boot\boot.wim` (plain WinPE, index 1 exported, 581.7 MB),
   `Boot\boot-setup.wim` (original), `EFI\Microsoft\Boot\Fonts\`.
-- Known-good run:
-  `go run .\cmd\netdeployd\ -dhcp-iface 'vEthernet (NetDeployLab)' -dhcp-pool 10.77.0.100-10.77.0.199 -tftp-root .tmp\spike -tftp-addr 10.77.0.1:69 -boot-file bootmgfw_EX.efi`
+- Known-good run (Phase 1, flags since removed):
+  `go run .\cmd\netdeployd\ -dhcp-iface 'vEthernet (NetDeployLab)' -dhcp-pool 10.77.0.100-10.77.0.199 -tftp-root .tmp\spike -tftp-addr 10.77.0.1:69 -boot-file bootmgfw_EX.efi`.
+  Since Phase 2 step 2: [running-the-lab.md](../dev/running-the-lab.md).
 
 ## Gotchas met in Phase 1
 

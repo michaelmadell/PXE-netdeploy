@@ -794,10 +794,18 @@ export interface paths {
         /**
          * Replace the current settings.
          * @description Applied atomically: the new configuration is validated and every listener
-         *     is bound before the old one is released. If anything fails (unknown
-         *     interface, port in use, invalid pool), the running configuration is kept
-         *     and `422` is returned with one `errors[]` entry per failure, e.g.
+         *     is bound before the old one is released; a listener whose address doesn't
+         *     change keeps its socket. If anything fails (unknown interface, port in
+         *     use, invalid pool), the running configuration is kept and `422` is
+         *     returned with one `errors[]` entry per failure, e.g.
          *     `{ field: "interfaces[0].dhcp", message: "UDP 67 in use by svchost.exe (SharedAccess)" }`.
+         *     Schema violations return `400` with the same `errors[]` shape.
+         *
+         *     Read-only fields (`etag`, `hasPassword`, `externalDhcpGuidance`) are
+         *     ignored. Write-only fields keep their current value when omitted or null.
+         *     Moving the admin listener binds the new address first and closes the old
+         *     one a few seconds after this response; the `-admin-addr` flag overrides
+         *     `admin` if you lock yourself out.
          */
         put: operations["replaceSettings"];
         post?: never;
@@ -3854,6 +3862,7 @@ export interface operations {
             /** @description Applied. */
             200: {
                 headers: {
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {

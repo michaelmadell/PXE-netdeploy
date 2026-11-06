@@ -20,8 +20,9 @@ type lease struct {
 	bound   bool
 }
 
-// pool is an in-memory address pool. Phase 1 spike only: leases are lost on
-// restart. Not safe for concurrent use; Server serialises access.
+// pool is an in-memory address pool. Leases are lost on restart until
+// Phase 2 step 3 persists them. Not safe for concurrent use; Server
+// serialises access.
 type pool struct {
 	start, end uint32
 	byMAC      map[string]*lease
@@ -37,6 +38,25 @@ func newPool(start, end net.IP) *pool {
 		byIP:     map[uint32]*lease{},
 		declined: map[uint32]time.Time{},
 	}
+}
+
+func (p *pool) clone() *pool {
+	c := &pool{
+		start:    p.start,
+		end:      p.end,
+		byMAC:    make(map[string]*lease, len(p.byMAC)),
+		byIP:     make(map[uint32]*lease, len(p.byIP)),
+		declined: make(map[uint32]time.Time, len(p.declined)),
+	}
+	for mac, l := range p.byMAC {
+		cp := *l
+		c.byMAC[mac] = &cp
+		c.byIP[cp.ip] = &cp
+	}
+	for ip, until := range p.declined {
+		c.declined[ip] = until
+	}
+	return c
 }
 
 func (p *pool) contains(ip uint32) bool { return ip >= p.start && ip <= p.end }

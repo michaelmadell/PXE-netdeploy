@@ -3,7 +3,6 @@ package dhcp
 import (
 	"context"
 	"net"
-	"os"
 	"testing"
 	"time"
 )
@@ -18,11 +17,9 @@ func TestChecksum(t *testing.T) {
 	}
 }
 
-// TestICMPPinger needs raw sockets (root); it is skipped otherwise.
+// TestICMPPinger needs raw sockets (root on Linux, an elevated shell on
+// Windows); it is skipped when the socket can't be opened.
 func TestICMPPinger(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root for raw ICMP")
-	}
 	ctx := context.Background()
 	alive, err := icmpPinger{}.Ping(ctx, net.IPv4(127, 0, 0, 1), time.Second)
 	if err != nil {

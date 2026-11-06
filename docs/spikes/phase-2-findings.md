@@ -60,8 +60,38 @@ Still untested:
 
 Other observations:
 
-- `GET /clients` returns 500 because the operation isn't implemented yet
-  (the scaffolding panics and `Recover` logs the stack). The store side
-  exists; the endpoints are small.
+- `GET /clients` returned 500 because the operation wasn't implemented yet
+  (the scaffolding panics and `Recover` logs the stack). Implemented the same
+  day.
 - ~20 "tftp request refused" warnings per boot for optional files, as in
-  Phase 1. Step 4 logs those at debug.
+  Phase 1. Since step 4 they are logged at debug.
+
+## Decision: no adaptive TFTP window (2026-11-06)
+
+Phase 1 suggested shrinking the window after a lost block. Not done: under
+RFC 7440 the receiver ACKs after a full window or when its own timeout
+expires. If the server sends fewer blocks than the negotiated window, Boot
+Manager waits out its timeout before ACKing, every window, which costs more
+than the loss it was meant to avoid. The negotiated window can't be changed
+mid-transfer. Revisit with the I210 timing runs (Phase 1 tasks 7–8): if loss
+is common on real hardware, the fix is a lower `maxWindowSize`, not a dynamic
+one.
+
+## Full mode regression after step 4 (Hyper-V, 2026-11-06)
+
+**Pass.** Same VM (`00:15:5d:00:85:09`), full mode on `vEthernet (NetDeployLab)`,
+netdeployd restarted between two boots. Log: `.tmp\logs\step4-full.log`
+(second run only; the first was overwritten).
+
+- **Leases survive a restart:** `dhcp leases loaded count=1` at startup; the
+  firmware and then WinPE got the same `10.77.0.100` back.
+- **Per-client TFTP selection on a real boot:** every TFTP request logged
+  `mac=00:15:5d:00:85:09 boot_session=dhcp`.
+- **Optional-file misses are quiet:** all 17 (`\BCD`, `.p7b` policies,
+  `boot.stl` twice, `UnlockToken.pol`) at debug; no TFTP warnings.
+- boot.wim 581.7 MB in 2.66 s (218.5 MB/s), 0 retransmits; WinPE started.
+- **Not observed:** `boot_session=lease` (needs netdeployd restarted between a
+  client's DHCP and its TFTP; covered by `TestClientRoot`), and the ICMP ping
+  check, because `.100` already had a lease and isn't pinged. The ping check on
+  Windows is checked by `go test -run TestICMPPinger -v ./internal/dhcp` in an
+  elevated shell (result: pending).

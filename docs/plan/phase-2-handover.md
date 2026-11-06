@@ -119,6 +119,10 @@ the architecture roadmap updated. The table below is the original brief.
 
 ### 3. Storage
 
+**Decided 2026-11-06:** [ADR 0014](../adr/0014-sqlite-store.md). Phase 2
+slice: settings, clients, deployments, DHCP leases, idempotency keys;
+`internal/store`. The notes below are the original brief.
+
 Phase 2 needs persisted settings and leases (`full` mode: "persisted
 leases"). ADR 0003 names SQLite via `modernc.org/sqlite` (no cgo); there's no
 schema yet. Decide the Phase 2 slice: settings, leases, clients (needed by

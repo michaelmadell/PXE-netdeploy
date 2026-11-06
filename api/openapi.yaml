@@ -911,10 +911,15 @@ paths:
       tags: [clients]
       operationId: deleteClient
       summary: Delete a specific client.
+      description: |
+        Also deletes the client's deployment history. `409`
+        (`code: deployment_active`) while it has a `pending` or `running`
+        deployment; cancel that first.
       responses:
         "204": { description: Deleted. }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
 
   # ---------------------------------------------------------------- deployments
   /deployments:

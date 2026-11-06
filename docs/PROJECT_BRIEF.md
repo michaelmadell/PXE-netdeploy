@@ -69,6 +69,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0011 | Vite + React + Tailwind v4 + shadcn/ui (not Turbopack, not DaisyUI). |
 | 0012 | Our own read-only TFTP server (pin/tftp lacks RFC 7440 windowsize). |
 | 0013 | Every PXE client boots WinPE. Armed deployments run after a countdown; otherwise a password prompt (one global password, debug switch to disable) times out to the local disk, so there are no re-image loops. |
+| 0014 | SQLite store: settings as one JSON document, STRICT tables with the invariants in the schema, embedded forward-only migrations, hand-written SQL. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -110,7 +111,8 @@ hardware) and HTTP Boot (task 9, optional).
 health). Start from [plan/phase-2-handover.md](plan/phase-2-handover.md): it
 lists the Phase 1 results that constrain the design, the spec values to
 correct, and the decisions to make. Decision 1 (unknown clients) is done:
-ADR 0013; next are the spec corrections and storage.
+ADR 0013. Decision 2 (TFTP defaults) is done. Decision 3 (storage) is
+ADR 0014; `internal/store` is being built.
 
 ## Open questions and things to verify
 

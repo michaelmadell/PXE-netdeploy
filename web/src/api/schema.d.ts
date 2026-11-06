@@ -495,7 +495,12 @@ export interface paths {
         /** Replace a specific client. */
         put: operations["replaceClient"];
         post?: never;
-        /** Delete a specific client. */
+        /**
+         * Delete a specific client.
+         * @description Also deletes the client's deployment history. `409`
+         *     (`code: deployment_active`) while it has a `pending` or `running`
+         *     deployment; cancel that first.
+         */
         delete: operations["deleteClient"];
         options?: never;
         head?: never;
@@ -3297,6 +3302,7 @@ export interface operations {
             };
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
         };
     };
     listDeployments: {

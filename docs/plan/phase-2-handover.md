@@ -72,6 +72,10 @@ All tested 2026-11-05 unless marked. Details and evidence in the findings.
 
 ### 1. Unknown-client policy (supersedes ADR 0010)
 
+**Decided 2026-11-05:** [ADR 0013](../adr/0013-boot-prompt-password-gate.md)
+(every PXE client boots WinPE; password gate). Spec updated. The notes below
+are the original brief.
+
 **New requirement from the developer:** unknown clients are the *main*
 clients that will boot. Known clients also boot when a deployment is being
 re-tested.
@@ -106,7 +110,7 @@ the design must settle:
 | `Settings.tftp.maxWindowSize` default | 64 | 8 (provisional) |
 | `Settings.tftp.timeoutSeconds` default | 5 | Code uses 1 s; Boot Manager behaved well with 1 s. Pick one and justify |
 | `BootImage.tftp.blockSize` maximum | 16384 | 16384/16 failed on Hyper-V; maybe cap lower or warn |
-| `Settings.unknownClients.policy` default | `ignore` | See decision 1 |
+| ~~`Settings.unknownClients.policy` default~~ | ~~`ignore`~~ | Done: replaced by `Settings.bootPrompt` (ADR 0013) |
 | `architecture.md` roadmap, Phase 1 row | "from our proxyDHCP" | Spike used full mode; proxy untested |
 
 ### 3. Storage

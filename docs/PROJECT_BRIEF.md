@@ -63,9 +63,10 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0007 | Agent install by default, SMB + setup.exe optional; integrate with existing shares. |
 | 0008 | Secrets are write-only, encrypted at rest, decrypted only for an agent. |
 | 0009 | Separate admin (HTTPS, localhost by default) and content listeners. |
-| 0010 | Unknown PXE clients are ignored by default. **To be superseded in Phase 2:** unknown clients are the main clients (see the Phase 2 handover). |
+| 0010 | ~~Unknown PXE clients are ignored by default.~~ Superseded by 0013. |
 | 0011 | Vite + React + Tailwind v4 + shadcn/ui (not Turbopack, not DaisyUI). |
 | 0012 | Our own read-only TFTP server (pin/tftp lacks RFC 7440 windowsize). |
+| 0013 | Every PXE client boots WinPE. Armed deployments run after a countdown; otherwise a password prompt (one global password, debug switch to disable) times out to the local disk, so there are no re-image loops. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -106,8 +107,8 @@ hardware) and HTTP Boot (task 9, optional).
 **Phase 2: core server** (DHCP proxy/full, TFTP, content HTTP, settings,
 health). Start from [plan/phase-2-handover.md](plan/phase-2-handover.md): it
 lists the Phase 1 results that constrain the design, the spec values to
-correct, and the first decision to make (unknown clients are now the main
-clients, superseding ADR 0010).
+correct, and the decisions to make. Decision 1 (unknown clients) is done:
+ADR 0013; next are the spec corrections and storage.
 
 ## Open questions and things to verify
 

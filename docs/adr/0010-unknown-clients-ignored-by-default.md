@@ -1,6 +1,6 @@
 # 10. Unknown clients are ignored by default
 
-Status: accepted
+Status: superseded by [0013](0013-boot-prompt-password-gate.md)
 
 ## Context
 A proxy DHCP server answers PXE requests from any machine on the segment. On a

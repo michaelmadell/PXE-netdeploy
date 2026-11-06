@@ -46,6 +46,8 @@ HTTP and HTTPS content, and identity modes (none, local accounts, AD, Entra).
   the reasoning, get agreement, then edit the files. Go one area at a time.
 - **Record decisions.** Anything a future reader would question gets an ADR.
   Reversals get a new ADR that supersedes the old one.
+- **No co-author trailers.** Commit messages in this repo never include
+  `Co-Authored-By` lines (or any other AI attribution).
 - **Be explicit about what's verified.** Mark things as tested, untested, or
   "to verify in a spike". Several items below are still unverified.
 

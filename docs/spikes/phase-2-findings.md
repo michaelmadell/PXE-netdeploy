@@ -94,4 +94,7 @@ netdeployd restarted between two boots. Log: `.tmp\logs\step4-full.log`
   client's DHCP and its TFTP; covered by `TestClientRoot`), and the ICMP ping
   check, because `.100` already had a lease and isn't pinged. The ping check on
   Windows is checked by `go test -run TestICMPPinger -v ./internal/dhcp` in an
-  elevated shell (result: pending).
+  elevated shell: **PASS** (2026-11-06, Windows host, elevated): raw ICMP
+  works, `127.0.0.1` answers and a TEST-NET address doesn't, so the Go net
+  package strips the IPv4 header on Windows too and full mode's ping check is
+  real there.

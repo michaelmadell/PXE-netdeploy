@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
@@ -26,20 +27,35 @@ type Server struct {
 	settings *settings.Service
 	network  *netsvc.Manager
 	store    *store.Store
+	events   *events.Bus
 }
 
 // New returns a Server. Dependencies may be nil in tests of operations that
 // don't use them.
-func New(version string, s *settings.Service, network *netsvc.Manager, st *store.Store) *Server {
-	return &Server{version: version, started: time.Now(), settings: s, network: network, store: st}
+func New(version string, s *settings.Service, network *netsvc.Manager, st *store.Store, bus *events.Bus) *Server {
+	return &Server{version: version, started: time.Now(), settings: s, network: network, store: st, events: bus}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
 // configuration warnings. Overall status is "degraded" if any service is in
 // error.
-func (s *Server) GetHealth(_ context.Context, _ api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
-	services := map[string]api.ServiceHealth{
-		"content": disabled("not implemented yet (Phase 2 step 5)"),
+func (s *Server) GetHealth(ctx context.Context, _ api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
+	return api.GetHealth200JSONResponse(s.health(ctx)), nil
+}
+
+// health builds the Health object (GET /system/health, health.updated).
+func (s *Server) health(ctx context.Context) api.Health {
+	services := map[string]api.ServiceHealth{}
+	if s.store != nil {
+		pctx, cancel := context.WithTimeout(ctx, time.Second)
+		err := s.store.Ping(pctx)
+		cancel()
+		if err != nil {
+			detail := err.Error()
+			services["store"] = api.ServiceHealth{Status: api.ServiceHealthStatusError, Detail: &detail}
+		} else {
+			services["store"] = api.ServiceHealth{Status: api.ServiceHealthStatusOk}
+		}
 	}
 	if s.network != nil {
 		for name, st := range s.network.Status() {
@@ -52,11 +68,11 @@ func (s *Server) GetHealth(_ context.Context, _ api.GetHealthRequestObject) (api
 			status = api.HealthStatusDegraded
 		}
 	}
-	out := api.GetHealth200JSONResponse{Status: status, Services: services}
+	out := api.Health{Status: status, Services: services}
 	if w := s.warnings(); len(w) > 0 {
 		out.Warnings = &w
 	}
-	return out, nil
+	return out
 }
 
 func serviceHealth(st netsvc.Status) api.ServiceHealth {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"runtime"
 	"strconv"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
+	"github.com/michaelmadell/pxe-netdeploy/internal/content"
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 	"github.com/michaelmadell/pxe-netdeploy/internal/tftp"
@@ -42,7 +45,11 @@ type Options struct {
 	AdminOverride netip.AddrPort
 	// GeneratedAdminCert is used when no custom admin certificate is set.
 	GeneratedAdminCert *tls.Certificate
-	Logger             *slog.Logger
+	// Agent serves /api/v1/agent/ on content listeners (ADR 0009). Nil: 404.
+	Agent http.Handler
+	// Events receives client sightings and lease changes from DHCP.
+	Events *events.Bus
+	Logger *slog.Logger
 }
 
 // Service is the running configuration: it loads settings at startup,
@@ -56,6 +63,9 @@ type Service struct {
 	version int64
 
 	sessions *boot.Sessions
+
+	contentMu sync.Mutex
+	content   map[string]*content.Handler // per interface, reused across applies
 }
 
 // Errors from Replace.
@@ -234,11 +244,19 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 		ip := primary.Addr()
 		path := fmt.Sprintf("interfaces[%d]", i)
 
+		if in.Services.HTTP {
+			p.HTTP = append(p.HTTP, netsvc.HTTPPlan{
+				Interface: in.Name, Bind: netip.AddrPortFrom(ip, uint16(in.Services.HTTPPort)),
+				Handler: s.contentHandler(in.Name), Field: path + ".services.httpPort",
+			})
+		}
 		if in.Services.TFTP {
 			wantTFTP = true
 			if s.opts.Dev.TFTPRoot != "" {
+				c := tftpCfg
+				c.ClientRoot = s.clientRoot(in.Name)
 				p.TFTP = append(p.TFTP, netsvc.TFTPPlan{
-					Interface: in.Name, Bind: netip.AddrPortFrom(ip, 69), Config: tftpCfg, Field: path + ".services.tftp",
+					Interface: in.Name, Bind: netip.AddrPortFrom(ip, 69), Config: c, Field: path + ".services.tftp",
 				})
 			}
 		}
@@ -270,6 +288,9 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 	if wantTFTP && s.opts.Dev.TFTPRoot == "" {
 		p.Notes["tftp"] = "enabled on interfaces but no boot content yet: start with -tftp-root until boot images arrive (Phase 2 step 4)"
 	}
+	if len(p.HTTP) > 0 && s.opts.Dev.TFTPRoot == "" {
+		p.Notes["content"] = "no boot content yet (-tftp-root); only the agent API is served"
+	}
 	return p
 }
 
@@ -283,9 +304,10 @@ func (s *Service) dhcpConfig(cfg Config, in Interface, primary netip.Prefix) dhc
 		Netmask:     mask,
 		Archs:       &dhcp.Archs{BIOS: cfg.Architectures.BIOS, UEFIX64: cfg.Architectures.UEFIX64, UEFIArm64: cfg.Architectures.UEFIArm64, HTTPBoot: cfg.Architectures.HTTPBoot},
 		MACPrefixes: in.MACPrefixes,
-		Booter:      boot.Static{File: s.opts.Dev.BootFile, URL: s.opts.Dev.HTTPBootURL},
+		Booter:      s.booter(),
 		Store:       s.opts.Store,
 		Sessions:    s.Sessions(),
+		Events:      s.opts.Events,
 		Logger:      s.opts.Logger,
 	}
 	if in.DHCP.Mode == DHCPProxy {
@@ -306,6 +328,59 @@ func (s *Service) dhcpConfig(cfg Config, in Interface, primary netip.Prefix) dhc
 		c.DNS = append(c.DNS, as4(d))
 	}
 	return c
+}
+
+// contentHandler returns iface's content handler, creating it once so its
+// opened directories are reused across settings changes.
+func (s *Service) contentHandler(iface string) *content.Handler {
+	s.contentMu.Lock()
+	defer s.contentMu.Unlock()
+	if s.content == nil {
+		s.content = map[string]*content.Handler{}
+	}
+	h, ok := s.content[iface]
+	if !ok {
+		h = content.New(content.Config{
+			DefaultRoot: s.opts.Dev.TFTPRoot,
+			ClientRoot:  s.clientRoot(iface),
+			Agent:       s.opts.Agent,
+			Logger:      s.opts.Logger,
+		})
+		s.content[iface] = h
+	}
+	return h
+}
+
+// booter decides what clients boot. Until profiles and boot images exist
+// (Phase 4) everyone gets the temporary -tftp-root / -boot-file content.
+func (s *Service) booter() boot.Booter {
+	return boot.Static{File: s.opts.Dev.BootFile, URL: s.opts.Dev.HTTPBootURL, Root: s.opts.Dev.TFTPRoot}
+}
+
+// clientRoot tells TFTP on iface which content serves a client IP (ADR
+// 0006): the boot session DHCP recorded, else (full mode, after a restart)
+// the client's lease, else the default content. With DHCP off nothing tells
+// clients apart, so they all get the default.
+func (s *Service) clientRoot(iface string) func(netip.Addr) (string, []any) {
+	return func(ip netip.Addr) (string, []any) {
+		if sess, ok := s.sessions.Lookup(iface, ip); ok {
+			return sess.Answer.Root, []any{"mac", sess.MAC, "boot_session", "dhcp"}
+		}
+		if s.opts.Store != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if l, err := s.opts.Store.LeaseByIP(ctx, iface, ip); err == nil {
+				arch := boot.ArchUEFIX64
+				if l.Arch != nil {
+					arch = boot.Arch(*l.Arch)
+				}
+				if ans, ok, _ := s.booter().Boot(ctx, boot.Request{Interface: iface, MAC: l.MAC, Arch: arch}); ok {
+					return ans.Root, []any{"mac", l.MAC, "boot_session", "lease"}
+				}
+			}
+		}
+		return "", []any{"boot_session", "none"}
+	}
 }
 
 // Sessions is the boot session table shared by every DHCP listener (and

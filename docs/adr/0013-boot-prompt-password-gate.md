@@ -56,7 +56,10 @@ any interactive gate has to run in WinPE, in our agent.
   plus the countdown. To measure on I210 hardware.
 - The password crosses the deployment network over plain HTTP unless content
   HTTPS is enabled, which needs the internal CA in the boot image (Phase 4
-  builder). Documented; HTTPS is recommended.
+  builder). Documented; HTTPS is recommended. (2026-11-06: content HTTPS was
+  moved to Phase 6, so until then the password is sent in clear. Use a
+  dedicated deployment network, and treat the password as protecting against
+  accidents, not an attacker on that network.)
 - On a shared network, anyone at a PXE-first machine can see the prompt; the
   password is the only gate. `macPrefixes` limits who is answered at all.
 - To verify in a spike: setting `BootNext` / `BootOrder` from WinPE (Go,

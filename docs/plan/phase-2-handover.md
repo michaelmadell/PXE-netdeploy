@@ -145,12 +145,21 @@ settings and health. Suggested order, each designed then built:
    4011 (`listenOn67`); persisted leases with `pingCheck`; reservations;
    `GET /dhcp/leases`; architecture filters from `Settings.architectures`;
    `externalDhcpGuidance` for `off`; policy hook from decision 1.
-4. **TFTP**: virtual tree (per-client BCD at `\Boot\BCD` via IP to MAC
+4. **TFTP** (**done 2026-11-06**: per-client content via `tftp.Config.ClientRoot`
+   from boot sessions, else the lease table, else the default; `\BCD` never
+   served; optional misses at debug; adaptive window not done, see
+   phase-2-findings.md. Also `/clients` CRUD and Idempotency-Key): virtual tree (per-client BCD at `\Boot\BCD` via IP to MAC
    mapping; boot image files from the store); quiet logging for known-optional
    files; settings-driven caps; optional adaptive window.
-5. **Content HTTP** listener per interface (ADR 0009), serving boot files and
-   WIMs; HTTPS optional.
-6. **Health and events**: real per-service status, `/events` if cheap.
+5. **Content HTTP** (**done 2026-11-06**, HTTP only: `internal/content` serves
+   `/content/boot/` per client and the agent API, nothing else; HTTPS moved to
+   Phase 6 by decision, `services.https: true` is refused until then) listener
+   per interface (ADR 0009), serving boot files and WIMs; HTTPS optional.
+6. **Health and events** (**done 2026-11-06**: `store` health check,
+   `/events` SSE with `client.updated`, `lease.updated`, `settings.updated`,
+   `health.updated`): real per-service status, `/events` if cheap.
+
+**Phase 2 is complete.** Next: [phase-3-handover.md](phase-3-handover.md).
 
 Phase 3 (imports, uploads) and Phase 4 (boot image builder, agent,
 deployments) depend on this; keep their interfaces in mind but don't build them.

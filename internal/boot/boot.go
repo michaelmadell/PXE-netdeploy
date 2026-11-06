@@ -33,10 +33,13 @@ type Request struct {
 	Arch      Arch
 }
 
-// Answer is what to send a client: a TFTP path for PXE, a URL for HTTP Boot.
+// Answer is what to send a client: a TFTP path for PXE, a URL for HTTP Boot,
+// and the directory TFTP serves that client from (its boot image's content;
+// empty means the server's default).
 type Answer struct {
 	File string
 	URL  string
+	Root string
 }
 
 // Booter decides what a client boots. ok=false means it gets no boot answer
@@ -51,6 +54,7 @@ type Booter interface {
 type Static struct {
 	File string // TFTP path for UEFI x64 PXE
 	URL  string // URL for UEFI x64 HTTP Boot
+	Root string // TFTP content directory for every client
 }
 
 // Boot implements Booter.
@@ -58,12 +62,12 @@ func (s Static) Boot(_ context.Context, r Request) (Answer, bool, string) {
 	switch r.Arch {
 	case ArchUEFIX64:
 		if s.File != "" {
-			return Answer{File: s.File}, true, ""
+			return Answer{File: s.File, Root: s.Root}, true, ""
 		}
 		return Answer{}, false, "no boot file configured"
 	case ArchUEFIX64HTTP:
 		if s.URL != "" {
-			return Answer{URL: s.URL}, true, ""
+			return Answer{URL: s.URL, Root: s.Root}, true, ""
 		}
 		return Answer{}, false, "no HTTP boot URL configured"
 	}

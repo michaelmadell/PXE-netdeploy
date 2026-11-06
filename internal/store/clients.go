@@ -42,15 +42,18 @@ type Client struct {
 	UpdatedAt  time.Time
 }
 
+// ErrInvalidMAC: not a 48-bit MAC address.
+var ErrInvalidMAC = errors.New("store: invalid mac")
+
 // NormalizeMAC returns mac as lower-case colon-separated hex. It accepts the
 // forms net.ParseMAC does (colons, hyphens, dotted) but only 48-bit addresses.
 func NormalizeMAC(mac string) (string, error) {
 	hw, err := net.ParseMAC(strings.TrimSpace(mac))
 	if err != nil {
-		return "", fmt.Errorf("store: invalid mac %q: %w", mac, err)
+		return "", fmt.Errorf("%w %q: %v", ErrInvalidMAC, mac, err)
 	}
 	if len(hw) != 6 {
-		return "", fmt.Errorf("store: invalid mac %q: not a 48-bit address", mac)
+		return "", fmt.Errorf("%w %q: not a 48-bit address", ErrInvalidMAC, mac)
 	}
 	return hw.String(), nil
 }

@@ -186,3 +186,12 @@ func uniqueViolation(err error, target string) bool {
 	}
 	return false
 }
+
+// Ping checks the database answers a query (health).
+func (s *Store) Ping(ctx context.Context) error {
+	var one int
+	if err := s.r.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		return fmt.Errorf("store: ping: %w", err)
+	}
+	return nil
+}

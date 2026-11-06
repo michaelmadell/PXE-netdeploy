@@ -28,6 +28,7 @@ import (
 	"github.com/insomniacslk/dhcp/iana"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
@@ -102,6 +103,7 @@ type Config struct {
 	// sightings (tests). Sessions nil uses a private table.
 	Store    *store.Store
 	Sessions *boot.Sessions
+	Events   *events.Bus // client.updated (seen/created) and lease.updated; nil: none
 
 	Logger *slog.Logger
 }
@@ -481,9 +483,13 @@ func (s *Server) sighting(ctx context.Context, mac string, ip net.IP, arch boot.
 		s.log.Error("dhcp could not record client", "mac", mac, "err", err)
 		return
 	}
+	change := "seen"
 	if created {
+		change = "created"
 		s.log.Info("new client discovered", "mac", mac, "client_id", c.ID, "arch", string(arch))
 	}
+	s.cfg.Events.Publish(events.Event{Type: events.ClientUpdated, ResourceID: c.ID,
+		Data: map[string]string{"id": c.ID, "mac": mac, "change": change}})
 }
 
 func (s *Server) session(ip net.IP, mac string, arch boot.Arch, ans boot.Answer) {

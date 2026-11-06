@@ -162,7 +162,7 @@ func Validate(cfg Config, host Host) []FieldError {
 			eps = append(eps, endpoint{"tcp", ip, in.Services.HTTPPort, path + ".services.httpPort", "HTTP content on " + in.Name})
 		}
 		if in.Services.HTTPS {
-			eps = append(eps, endpoint{"tcp", ip, in.Services.HTTPSPort, path + ".services.httpsPort", "HTTPS content on " + in.Name})
+			errs.add(path+".services.https", "HTTPS content is planned for Phase 6; use http for now")
 		}
 	}
 

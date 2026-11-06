@@ -57,7 +57,12 @@ Notes:
   before they're offered. Without raw-socket privilege the check is skipped
   with one warning in the log.
 - Every PXE / HTTP Boot client that passes the filters appears in
-  `/clients` with `source: discovered`.
+  `GET /clients` with `source: discovered`.
+- TFTP picks each client's content from its DHCP boot session
+  (`boot_session=dhcp` in the log), the lease table after a restart
+  (`lease`), or the default (`none`, e.g. with DHCP `off`). Until boot images
+  exist everything is `-tftp-root`. `\BCD` is never served, and misses of
+  the optional files Boot Manager probes for are logged at debug only.
 - A `PUT` that can't bind a port returns `422 bind_failed` and leaves the
   running configuration as it was. At startup, the same failure doesn't stop
   the server: health shows `error` with `bindFailures` so you can fix it.
@@ -66,6 +71,26 @@ Notes:
 - Moving `admin` binds the new address first and closes the old one 5 s
   after the response. If you lock yourself out, start with
   `-admin-addr 127.0.0.1:8443` and fix `admin`.
+
+## Content HTTP listener (Phase 2 step 5)
+
+Each interface with `services.http` (default port 80) gets a content listener
+on its address. It serves only `/content/boot/{path}` (the requesting
+client's boot content, chosen as for TFTP) and the agent API; the admin API
+answers `404` there. HTTPS is planned for Phase 6 (`services.https: true` is
+refused). If port 80 is taken on the host (IIS, for example), set `httpPort`.
+
+Check from `nd-linux`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{size_download} %{speed_download}\n' http://10.77.0.1/content/boot/Boot/boot.wim
+curl -s -o /dev/null -w '%{http_code} %{size_download}\n' -H 'Range: bytes=0-1023' http://10.77.0.1/content/boot/Boot/boot.wim
+curl -s -o /dev/null -w '%{http_code}\n' http://10.77.0.1/api/v1/settings   # 404: admin API isn't here
+```
+
+Status: tested on Linux loopback (2026-11-06: 200 MB at ~1 GB/s, byte-for-byte
+identical; `Range` 206; admin path 404) and across the lab switch from
+`nd-linux` (2026-11-06: all three checks as expected).
 
 ## Proxy mode against real firmware (Phase 2 step 3)
 

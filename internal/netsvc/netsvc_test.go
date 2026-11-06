@@ -266,3 +266,56 @@ func TestAdminMoveKeepsOldListenerForGrace(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestContentListenerSwapsHandler(t *testing.T) {
+	s := newSockets()
+	plan := basePlan(t, testCert(t), tftpRoot(t))
+	text := func(body string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, body) })
+	}
+	plan.HTTP = []HTTPPlan{{Interface: "lab0", Bind: netip.MustParseAddrPort("10.77.0.1:80"), Handler: text("one"), Field: "interfaces[0].services.httpPort"}}
+	m := start(t, s, plan)
+
+	addr := func() string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for _, u := range m.http {
+			return u.ln.Addr().String()
+		}
+		return ""
+	}
+	body := func() string {
+		resp, err := http.Get("http://" + addr() + "/")
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	if got := body(); got != "one" {
+		t.Fatalf("first handler: %q", got)
+	}
+
+	plan.HTTP[0].Handler = text("two")
+	if err := m.Apply(plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := body(); got != "two" {
+		t.Errorf("after swap: %q", got)
+	}
+	if n := s.count("tcp 10.77.0.1:80"); n != 1 {
+		t.Errorf("content socket opened %d times, want 1 (kept across the swap)", n)
+	}
+	if st := m.Status()["content"]; len(st.Running) != 1 {
+		t.Errorf("status %+v", st)
+	}
+
+	plan.HTTP = nil
+	if err := m.Apply(plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.Status()["content"]; len(st.Running) != 0 {
+		t.Errorf("listener not stopped: %+v", st)
+	}
+}

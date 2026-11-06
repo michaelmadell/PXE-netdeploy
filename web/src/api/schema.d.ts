@@ -50,7 +50,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Server-sent events for job progress and deployment status. */
+        /**
+         * Server-sent events for job progress and deployment status.
+         * @description A server-sent event stream: each message has `event: <Event.type>` and
+         *     `data: <Event as JSON>`, and a comment line is sent every 15 s to keep the
+         *     connection open. Events are notifications to re-fetch something, not a
+         *     log: nothing is stored, `Last-Event-ID` is not supported, and a client
+         *     that falls more than 64 events behind is disconnected. After any
+         *     reconnect, re-read the resources you show.
+         */
         get: operations["streamEvents"];
         put?: never;
         post?: never;
@@ -472,7 +480,12 @@ export interface paths {
         put?: never;
         /**
          * Create a new client.
-         * @description `409` (`code: mac_taken`) if the MAC is already registered.
+         * @description Creates a `manual` client. `409` (`code: mac_taken`) if the MAC is already
+         *     registered, `409` (`code: reserved_ip_taken`) if another client has the
+         *     `reservedIp`. `422` (`code: invalid_client`, one `errors[]` entry per field)
+         *     for a malformed `mac` or `reservedIp`, or a non-null `profileId` (until
+         *     profiles exist, Phase 4) or `secretRefs.odjBlob` (until secrets exist,
+         *     Phase 5).
          */
         post: operations["createClient"];
         delete?: never;
@@ -492,7 +505,12 @@ export interface paths {
         };
         /** Get details of a specific client. */
         get: operations["getClient"];
-        /** Replace a specific client. */
+        /**
+         * Replace a specific client.
+         * @description `If-Match` with the client's `etag`; `412` if it changed. Network boots
+         *     update `lastSeenAt`, `lastIp` and `lastArch` without changing the etag.
+         *     Same `409` and `422` cases as `POST /clients`.
+         */
         put: operations["replaceClient"];
         post?: never;
         /**
@@ -822,7 +840,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** CA certificate for the HTTPS content listener (to enrol in firmware for HTTPS boot). */
+        /**
+         * CA certificate for the HTTPS content listener (to enrol in firmware for HTTPS boot).
+         * @description Content HTTPS is planned for Phase 6; until then this always returns `404` (`code: content_https_not_available`).
+         */
         get: operations["getContentCaCertificate"];
         put?: never;
         post?: never;
@@ -1137,7 +1158,10 @@ export interface components {
         Variables: {
             [key: string]: string;
         };
-        /** @description Lower-case, colon-separated. The server normalises input. */
+        /**
+         * @description Six hex pairs separated by `:` or `-`, any case. The server normalises
+         *     input; responses are always lower-case and colon-separated.
+         */
         MacAddress: string;
         /** @enum {string} */
         Architecture: "x64" | "arm64";
@@ -1204,10 +1228,22 @@ export interface components {
         };
         Event: {
             /** @enum {string} */
-            type: "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated";
+            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated";
             /** Format: date-time */
             at: string;
             resourceId?: string;
+            /**
+             * @description Depends on `type`:
+             *     * `client.updated`: `{id, mac, change}`, `change` one of `created`,
+             *       `updated`, `deleted`, `seen` (a network boot; at most every 30 s per
+             *       MAC). `resourceId` is the client id.
+             *     * `lease.updated`: `{interface, ip, mac, change}`, `change` one of
+             *       `bound`, `released`, `declined` (full-mode DHCP).
+             *     * `settings.updated`: `{etag}`.
+             *     * `health.updated`: the `Health` object, after listeners change.
+             *     * `job.updated`, `deployment.updated`, `bootImage.updated`,
+             *       `image.updated`: from Phase 3 onwards.
+             */
             data?: Record<string, never>;
         };
         /** @enum {string} */
@@ -1656,6 +1692,7 @@ export interface components {
             smbiosUuid?: string | null;
             serial?: string | null;
             hostname?: string | null;
+            /** @description Must be null until profiles exist (Phase 4). */
             profileId?: string | null;
             variables?: components["schemas"]["Variables"];
             /**
@@ -1668,7 +1705,7 @@ export interface components {
              *     profile's identity is `ad` with `joinMethod: odj`).
              */
             secretRefs?: {
-                /** @description Secret id of kind `odj-blob`. */
+                /** @description Secret id of kind `odj-blob`. Must be null until secrets exist (Phase 5). */
                 odjBlob?: string | null;
             };
         };
@@ -1819,7 +1856,7 @@ export interface components {
                  */
                 timeoutSeconds: number;
             };
-            /** @description TLS for the content listener on interfaces with `services.https` enabled. */
+            /** @description TLS for the content listener on interfaces with `services.https` enabled (Phase 6; stored but unused until then). */
             contentHttps?: {
                 /** @description Null generates a certificate from an internal CA (download via `/settings/content-ca`). */
                 certificatePem?: string | null;
@@ -1901,7 +1938,10 @@ export interface components {
                 http: boolean;
                 /** @default 80 */
                 httpPort: number;
-                /** @default false */
+                /**
+                 * @description Content over HTTPS. Planned for Phase 6; `true` is refused with `422` until then.
+                 * @default false
+                 */
                 https: boolean;
                 /** @default 443 */
                 httpsPort: number;
@@ -3242,6 +3282,7 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             409: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     getClient: {
@@ -3297,7 +3338,9 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
             412: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     deleteClient: {
@@ -3905,7 +3948,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Problem"];
-            /** @description HTTPS content is not configured. */
+            /** @description HTTPS content is not configured (always, until Phase 6). */
             404: {
                 headers: {
                     [name: string]: unknown;

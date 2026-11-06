@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 )
@@ -33,6 +34,8 @@ func (s *Server) ReplaceSettings(ctx context.Context, req api.ReplaceSettingsReq
 	var berr *netsvc.BindError
 	switch {
 	case err == nil:
+		s.events.Publish(events.Event{Type: events.SettingsUpdated, Data: map[string]string{"etag": tag}})
+		s.events.Publish(events.Event{Type: events.HealthUpdated, Data: s.health(ctx)})
 		return api.ReplaceSettings200JSONResponse{Body: out, Headers: api.ReplaceSettings200ResponseHeaders{ETag: tag}}, nil
 	case errors.Is(err, settings.ErrPreconditionFailed):
 		return api.ReplaceSettings412ApplicationProblemPlusJSONResponse(newProblem(http.StatusPreconditionFailed,

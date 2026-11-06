@@ -32,6 +32,7 @@ type Plan struct {
 	Admin AdminPlan
 	DHCP  []DHCPPlan
 	TFTP  []TFTPPlan
+	HTTP  []HTTPPlan
 	// Notes explain services that are configured but not running (e.g. TFTP
 	// with no boot content yet), keyed by service name, for health.
 	Notes map[string]string
@@ -63,6 +64,17 @@ type TFTPPlan struct {
 }
 
 func (p TFTPPlan) key() string { return p.Bind.String() }
+
+// HTTPPlan is one content HTTP listener (ADR 0009). Handler is swapped in
+// place when the address doesn't change.
+type HTTPPlan struct {
+	Interface string
+	Bind      netip.AddrPort
+	Handler   http.Handler
+	Field     string // settings field it comes from, for errors
+}
+
+func (p HTTPPlan) key() string { return p.Bind.String() }
 
 // BindFailure is a listener that could not be started (api BindFailure).
 type BindFailure struct {
@@ -119,6 +131,7 @@ type Manager struct {
 	admin  *adminUnit
 	dhcp   map[string]*dhcpUnit
 	tftp   map[string]*tftpUnit
+	http   map[string]*httpUnit
 	status map[string]Status
 	done   chan struct{} // closed when everything has stopped
 }
@@ -152,6 +165,7 @@ func New(handler http.Handler, opts Options) *Manager {
 		handler: handler,
 		dhcp:    map[string]*dhcpUnit{},
 		tftp:    map[string]*tftpUnit{},
+		http:    map[string]*httpUnit{},
 		status:  map[string]Status{},
 		done:    make(chan struct{}),
 	}
@@ -247,6 +261,7 @@ type prepared struct {
 	dhcpSwap  map[string]*dhcp.Server // kept units: their next server
 	tftpNew   map[string]*tftpUnit
 	tftpSwap  map[string]*tftp.Server
+	httpNew   map[string]*httpUnit
 	failures  []BindFailure
 	opened    []func()
 	tftpFresh []*tftp.Server // servers created for swaps, closed by discard
@@ -267,6 +282,7 @@ func (m *Manager) prepare(plan Plan) (*prepared, error) {
 	p := &prepared{
 		dhcpNew: map[string]*dhcpUnit{}, dhcpSwap: map[string]*dhcp.Server{},
 		tftpNew: map[string]*tftpUnit{}, tftpSwap: map[string]*tftp.Server{},
+		httpNew: map[string]*httpUnit{},
 	}
 	fail := func(svc, iface, proto string, port uint16, field string, err error) {
 		p.failures = append(p.failures, BindFailure{
@@ -339,6 +355,20 @@ func (m *Manager) prepare(plan Plan) (*prepared, error) {
 		u.cur.Store(srv)
 		p.tftpNew[k] = u
 	}
+
+	for _, hp := range plan.HTTP {
+		k := hp.key()
+		if _, ok := m.http[k]; ok {
+			continue // handler swapped in commit
+		}
+		ln, err := m.opts.ListenTCP(hp.Bind)
+		if err != nil {
+			fail("content", hp.Interface, "tcp", hp.Bind.Port(), hp.Field, err)
+			continue
+		}
+		p.opened = append(p.opened, func() { ln.Close() })
+		p.httpNew[k] = newHTTPUnit(hp.Interface+" http://"+hp.Bind.String(), ln, m.log)
+	}
 	return p, nil
 }
 
@@ -346,7 +376,7 @@ func (m *Manager) prepare(plan Plan) (*prepared, error) {
 func (m *Manager) commit(p *prepared, plan Plan) {
 	// Admin: swap the certificate, then move the listener if needed.
 	if m.admin == nil {
-		m.admin = newAdminUnit(m.handler, m.log)
+		m.admin = newAdminUnit(m.ctx, m.handler, m.log)
 	}
 	m.admin.cert.Store(plan.Admin.Cert)
 	if p.adminLn != nil {
@@ -409,15 +439,38 @@ func (m *Manager) commit(p *prepared, plan Plan) {
 		m.log.Info("tftp listener started", "listener", u.desc)
 	}
 
+	// Content HTTP: swap handlers on kept listeners, start new, stop removed.
+	wantHTTP := map[string]http.Handler{}
+	for _, hp := range plan.HTTP {
+		wantHTTP[hp.key()] = hp.Handler
+	}
+	for k, u := range m.http {
+		if h, ok := wantHTTP[k]; ok {
+			u.handler.Store(&h)
+			continue
+		}
+		u.stop()
+		delete(m.http, k)
+		m.log.Info("content listener stopped", "listener", u.desc)
+	}
+	for k, u := range p.httpNew {
+		h := wantHTTP[k]
+		u.handler.Store(&h)
+		u.start()
+		m.http[k] = u
+		m.log.Info("content listener started", "listener", u.desc)
+	}
+
 	// Status.
 	byService := map[string][]BindFailure{}
 	for _, f := range p.failures {
 		byService[f.Service] = append(byService[f.Service], f)
 	}
 	m.status = map[string]Status{
-		"admin": {Running: []string{m.admin.addr.String()}, Failures: byService["admin"]},
-		"dhcp":  {Running: descs(m.dhcp), Note: plan.Notes["dhcp"], Failures: byService["dhcp"]},
-		"tftp":  {Running: descs(m.tftp), Note: plan.Notes["tftp"], Failures: byService["tftp"]},
+		"admin":   {Running: []string{m.admin.addr.String()}, Failures: byService["admin"]},
+		"dhcp":    {Running: descs(m.dhcp), Note: plan.Notes["dhcp"], Failures: byService["dhcp"]},
+		"tftp":    {Running: descs(m.tftp), Note: plan.Notes["tftp"], Failures: byService["tftp"]},
+		"content": {Running: descs(m.http), Note: plan.Notes["content"], Failures: byService["content"]},
 	}
 }
 
@@ -442,6 +495,9 @@ func (m *Manager) stopAll() {
 	}
 	for _, u := range m.tftp {
 		u.wait()
+	}
+	for _, u := range m.http {
+		u.stop()
 	}
 	if m.admin != nil {
 		m.admin.shutdown()
@@ -506,10 +562,13 @@ type adminUnit struct {
 	log  *slog.Logger
 }
 
-func newAdminUnit(h http.Handler, log *slog.Logger) *adminUnit {
+func newAdminUnit(ctx context.Context, h http.Handler, log *slog.Logger) *adminUnit {
 	u := &adminUnit{log: log}
 	u.srv = &http.Server{
-		Handler:           h,
+		Handler: h,
+		// Requests end when the server stops, so long-lived ones (the
+		// /events stream) don't hold up the graceful shutdown.
+		BaseContext:       func(net.Listener) context.Context { return ctx },
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		TLSConfig: &tls.Config{
@@ -539,4 +598,50 @@ func (u *adminUnit) shutdown() {
 	if err := u.srv.Shutdown(ctx); err != nil {
 		u.log.Warn("admin shutdown", "err", err)
 	}
+}
+
+// httpUnit is one content HTTP listener whose handler can be swapped.
+type httpUnit struct {
+	desc    string
+	ln      net.Listener
+	srv     *http.Server
+	handler atomic.Pointer[http.Handler]
+	log     *slog.Logger
+	done    chan struct{}
+}
+
+func newHTTPUnit(desc string, ln net.Listener, log *slog.Logger) *httpUnit {
+	u := &httpUnit{desc: desc, ln: ln, log: log, done: make(chan struct{})}
+	u.srv = &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			(*u.handler.Load()).ServeHTTP(w, r)
+		}),
+		// No write timeout: a WIM can take minutes. Slow or idle clients
+		// can't hold connections open indefinitely.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	return u
+}
+
+func (u *httpUnit) description() string { return u.desc }
+
+func (u *httpUnit) start() {
+	go func() {
+		defer close(u.done)
+		err := u.srv.Serve(u.ln)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			u.log.Error("content listener stopped", "listener", u.desc, "err", err)
+		}
+	}()
+}
+
+// stop lets running downloads finish for up to 10 s, then closes them.
+func (u *httpUnit) stop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := u.srv.Shutdown(ctx); err != nil {
+		u.srv.Close()
+	}
+	<-u.done
 }

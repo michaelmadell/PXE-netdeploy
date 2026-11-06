@@ -13,6 +13,7 @@ import (
 	"github.com/insomniacslk/dhcp/iana"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
@@ -314,5 +315,31 @@ func TestProxySightingKeepsAddressFromRequest(t *testing.T) {
 	}
 	if c.LastIP == nil || *c.LastIP != "10.77.0.140" {
 		t.Fatalf("lastIp = %v, want 10.77.0.140", c.LastIP)
+	}
+}
+
+func TestDHCPPublishesEvents(t *testing.T) {
+	st := testStore(t)
+	bus := events.New()
+	sub := bus.Subscribe()
+	defer sub.Close()
+	s, _ := testServer(t, func(c *Config) { c.Store, c.Events = st, bus })
+	s.now = time.Now
+
+	offer := s.Handle(discover(t, mac(1), pxeClient(iana.EFI_X86_64)...))
+	s.Handle(request(t, offer, pxeClient(iana.EFI_X86_64)...))
+
+	want := map[string]string{events.ClientUpdated: "created", events.LeaseUpdated: "bound"}
+	for range 2 {
+		select {
+		case e := <-sub.C:
+			data := e.Data.(map[string]string)
+			if want[e.Type] != data["change"] {
+				t.Errorf("%s change=%q", e.Type, data["change"])
+			}
+			delete(want, e.Type)
+		case <-time.After(time.Second):
+			t.Fatalf("missing events: %v", want)
+		}
 	}
 }

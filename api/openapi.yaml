@@ -27,10 +27,16 @@ info:
       `202 Accepted` with a `Job`. Progress via `GET /jobs/{id}` or `GET /events` (SSE).
     * Create/command `POST`s accept an `Idempotency-Key` header; a replay with the
       same key returns the original response instead of doing the work twice.
+      Responses are kept for 24 hours; reusing a key with a different body returns
+      `422` (`code: idempotency_key_reused`). 5xx responses are not kept.
     * Mutations of existing resources require `If-Match` with the resource `etag`;
       a stale etag returns `412`.
     * Boot files and image content are served outside the API under `/content/...`
       (HTTP/HTTPS) and over TFTP. URLs to them appear in resources as `contentUrl`.
+      Each deployment interface's content listener (`services.http`) serves only
+      `/content/boot/{path}` (the requesting client's boot content, chosen as for
+      TFTP; `GET`/`HEAD` with `Range`) and the agent API (`/api/v1/agent/...`).
+      The admin API is never reachable there (ADR 0009).
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -117,6 +123,13 @@ paths:
       tags: [system]
       operationId: streamEvents
       summary: Server-sent events for job progress and deployment status.
+      description: |
+        A server-sent event stream: each message has `event: <Event.type>` and
+        `data: <Event as JSON>`, and a comment line is sent every 15 s to keep the
+        connection open. Events are notifications to re-fetch something, not a
+        log: nothing is stored, `Last-Event-ID` is not supported, and a client
+        that falls more than 64 events behind is disconnected. After any
+        reconnect, re-read the resources you show.
       responses:
         "200":
           description: SSE stream. Each event's `data` is an `Event` JSON object.
@@ -853,7 +866,13 @@ paths:
       tags: [clients]
       operationId: createClient
       summary: Create a new client.
-      description: "`409` (`code: mac_taken`) if the MAC is already registered."
+      description: |
+        Creates a `manual` client. `409` (`code: mac_taken`) if the MAC is already
+        registered, `409` (`code: reserved_ip_taken`) if another client has the
+        `reservedIp`. `422` (`code: invalid_client`, one `errors[]` entry per field)
+        for a malformed `mac` or `reservedIp`, or a non-null `profileId` (until
+        profiles exist, Phase 4) or `secretRefs.odjBlob` (until secrets exist,
+        Phase 5).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -870,6 +889,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
 
   /clients/{clientId}:
     parameters:
@@ -890,6 +910,10 @@ paths:
       tags: [clients]
       operationId: replaceClient
       summary: Replace a specific client.
+      description: |
+        `If-Match` with the client's `etag`; `412` if it changed. Network boots
+        update `lastSeenAt`, `lastIp` and `lastArch` without changing the etag.
+        Same `409` and `422` cases as `POST /clients`.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
       requestBody:
@@ -906,7 +930,9 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
         "412": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
     delete:
       tags: [clients]
       operationId: deleteClient
@@ -1353,6 +1379,7 @@ paths:
       tags: [settings]
       operationId: getContentCaCertificate
       summary: CA certificate for the HTTPS content listener (to enrol in firmware for HTTPS boot).
+      description: "Content HTTPS is planned for Phase 6; until then this always returns `404` (`code: content_https_not_available`)."
       responses:
         "200":
           description: "PEM, or DER with `Accept: application/pkix-cert`."
@@ -1363,7 +1390,7 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Problem" }
         "404":
-          description: HTTPS content is not configured.
+          description: HTTPS content is not configured (always, until Phase 6).
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
@@ -1847,8 +1874,10 @@ components:
 
     MacAddress:
       type: string
-      pattern: "^([0-9a-f]{2}:){5}[0-9a-f]{2}$"
-      description: Lower-case, colon-separated. The server normalises input.
+      pattern: "^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$"
+      description: |
+        Six hex pairs separated by `:` or `-`, any case. The server normalises
+        input; responses are always lower-case and colon-separated.
 
     Architecture:
       type: string
@@ -1942,10 +1971,24 @@ components:
       type: object
       required: [type, at]
       properties:
-        type: { type: string, enum: [job.updated, deployment.updated, bootImage.updated, image.updated] }
+        type:
+          type: string
+          enum: [client.updated, lease.updated, settings.updated, health.updated, job.updated, deployment.updated, bootImage.updated, image.updated]
         at: { type: string, format: date-time }
         resourceId: { type: string }
-        data: { type: object }
+        data:
+          type: object
+          description: |
+            Depends on `type`:
+            * `client.updated`: `{id, mac, change}`, `change` one of `created`,
+              `updated`, `deleted`, `seen` (a network boot; at most every 30 s per
+              MAC). `resourceId` is the client id.
+            * `lease.updated`: `{interface, ip, mac, change}`, `change` one of
+              `bound`, `released`, `declined` (full-mode DHCP).
+            * `settings.updated`: `{etag}`.
+            * `health.updated`: the `Health` object, after listeners change.
+            * `job.updated`, `deployment.updated`, `bootImage.updated`,
+              `image.updated`: from Phase 3 onwards.
 
     # ---------- images
     ImageKind:
@@ -2558,7 +2601,10 @@ components:
         smbiosUuid: { type: string, nullable: true, format: uuid }
         serial: { type: string, nullable: true }
         hostname: { type: string, nullable: true }
-        profileId: { type: string, nullable: true }
+        profileId:
+          type: string
+          nullable: true
+          description: Must be null until profiles exist (Phase 4).
         variables: { $ref: "#/components/schemas/Variables" }
         reservedIp:
           type: string
@@ -2571,7 +2617,7 @@ components:
             Per-machine secrets, keyed by purpose. Currently `odjBlob` (used when the
             profile's identity is `ad` with `joinMethod: odj`).
           properties:
-            odjBlob: { type: string, nullable: true, description: Secret id of kind `odj-blob`. }
+            odjBlob: { type: string, nullable: true, description: "Secret id of kind `odj-blob`. Must be null until secrets exist (Phase 5)." }
 
     Client:
       allOf:
@@ -2757,7 +2803,7 @@ components:
                 full timeout; a transfer is abandoned after 5 consecutive timeouts.
         contentHttps:
           type: object
-          description: TLS for the content listener on interfaces with `services.https` enabled.
+          description: TLS for the content listener on interfaces with `services.https` enabled (Phase 6; stored but unused until then).
           properties:
             certificatePem: { type: string, nullable: true, description: Null generates a certificate from an internal CA (download via `/settings/content-ca`). }
             privateKeyPem: { type: string, nullable: true, writeOnly: true }
@@ -2840,7 +2886,10 @@ components:
             tftp: { type: boolean, default: true }
             http: { type: boolean, default: true }
             httpPort: { type: integer, default: 80 }
-            https: { type: boolean, default: false }
+            https:
+              type: boolean
+              default: false
+              description: Content over HTTPS. Planned for Phase 6; `true` is refused with `422` until then.
             httpsPort: { type: integer, default: 443 }
         dhcp:
           type: object

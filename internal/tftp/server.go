@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"path"
 	"strconv"
@@ -47,7 +48,11 @@ const (
 
 // Config configures a Server.
 type Config struct {
-	Root          string        // directory served as "/"; required
+	Root string // directory served as "/" (the default content); required
+	// ClientRoot, when set, picks the directory that serves a client
+	// (per-client boot content, ADR 0006) and log attributes describing why.
+	// An empty dir means Root.
+	ClientRoot    func(client netip.Addr) (dir string, attrs []any)
 	MaxBlockSize  int           // cap on negotiated blksize
 	MaxWindowSize int           // cap on negotiated windowsize
 	Timeout       time.Duration // retransmit timeout unless the client negotiates one
@@ -58,8 +63,11 @@ type Config struct {
 // Server serves files read-only over TFTP.
 type Server struct {
 	cfg  Config
-	root *os.Root
+	root *os.Root // Config.Root
 	log  *slog.Logger
+
+	rootsMu sync.Mutex
+	roots   map[string]*os.Root // other ClientRoot directories, opened on first use
 
 	mu      sync.Mutex
 	retired bool
@@ -101,8 +109,38 @@ func New(cfg Config) (*Server, error) {
 	return &Server{cfg: cfg, root: root, log: cfg.Logger.With("svc", "tftp")}, nil
 }
 
-// Close releases the root directory. Call it after Serve returns.
-func (s *Server) Close() error { return s.root.Close() }
+// Close releases the root directories. Call it after Serve returns.
+func (s *Server) Close() error {
+	s.rootsMu.Lock()
+	defer s.rootsMu.Unlock()
+	errs := []error{s.root.Close()}
+	for _, r := range s.roots {
+		errs = append(errs, r.Close())
+	}
+	s.roots = nil
+	return errors.Join(errs...)
+}
+
+// rootFor returns the opened root for dir ("" or Config.Root: the default).
+func (s *Server) rootFor(dir string) (*os.Root, error) {
+	if dir == "" || dir == s.cfg.Root {
+		return s.root, nil
+	}
+	s.rootsMu.Lock()
+	defer s.rootsMu.Unlock()
+	if r, ok := s.roots[dir]; ok {
+		return r, nil
+	}
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	if s.roots == nil {
+		s.roots = map[string]*os.Root{}
+	}
+	s.roots[dir] = r
+	return r, nil
+}
 
 // Retire stops s taking new transfers, waits for its running ones, then
 // closes its root. Use it on a Server replaced in ServeSwappable.
@@ -228,14 +266,25 @@ func (s *Server) handle(ctx context.Context, localIP net.IP, remote *net.UDPAddr
 		return
 	}
 
-	t := &transfer{s: s, c: c, log: log, req: req, start: time.Now()}
+	root := s.root
+	if s.cfg.ClientRoot != nil {
+		ip, _ := netip.AddrFromSlice(remote.IP.To4())
+		dir, attrs := s.cfg.ClientRoot(ip)
+		log = log.With(attrs...)
+		if root, err = s.rootFor(dir); err != nil {
+			log.Error("tftp client content unavailable", "dir", dir, "err", err)
+			_, _ = c.Write(errorPacket(errNotDefined, "boot content unavailable"))
+			return
+		}
+	}
+	t := &transfer{s: s, root: root, c: c, log: log, req: req, start: time.Now()}
 	t.run()
 }
 
 // resolve maps a client path to a path under the root: "\" becomes "/",
 // leading separators are dropped, and each component is matched
 // case-insensitively (an exact match wins). ".." and ":" are refused.
-func (s *Server) resolve(clientPath string) (string, error) {
+func resolve(root *os.Root, clientPath string) (string, error) {
 	p := strings.ReplaceAll(clientPath, `\`, "/")
 	var parts []string
 	for _, part := range strings.Split(p, "/") {
@@ -254,7 +303,12 @@ func (s *Server) resolve(clientPath string) (string, error) {
 		return "", errNotFound
 	}
 	exact := path.Join(parts...)
-	if fi, err := s.root.Stat(exact); err == nil {
+	if strings.EqualFold(exact, "BCD") {
+		// Boot Manager asks for \BCD before \Boot\BCD. Anything here would be
+		// served to every client, bypassing per-client BCDs (ADR 0006).
+		return "", errNotFound
+	}
+	if fi, err := root.Stat(exact); err == nil {
 		if !fi.Mode().IsRegular() {
 			return "", errNotFound
 		}
@@ -263,7 +317,7 @@ func (s *Server) resolve(clientPath string) (string, error) {
 
 	cur := "."
 	for i, part := range parts {
-		d, err := s.root.Open(cur)
+		d, err := root.Open(cur)
 		if err != nil {
 			return "", errNotFound
 		}
@@ -287,13 +341,30 @@ func (s *Server) resolve(clientPath string) (string, error) {
 		}
 		cur = path.Join(cur, match)
 		if i == len(parts)-1 {
-			fi, err := s.root.Stat(cur)
+			fi, err := root.Stat(cur)
 			if err != nil || !fi.Mode().IsRegular() {
 				return "", errNotFound
 			}
 		}
 	}
 	return cur, nil
+}
+
+// optionalFile reports files Windows Boot Manager asks for on every boot
+// and copes without (Phase 1 findings): code integrity and Secure Boot policy
+// files, the certificate trust list, the unlock token, and \BCD (tried before
+// \Boot\BCD). Their absence is logged at debug so real misses stand out.
+func optionalFile(clientPath string) bool {
+	p := strings.ToLower(strings.TrimLeft(strings.ReplaceAll(clientPath, `\`, "/"), "/"))
+	switch {
+	case p == "bcd", p == "boot.stl", p == "efi/microsoft/boot/boot.stl":
+		return true
+	case strings.HasPrefix(p, "efi/microsoft/boot/policies/"):
+		return true
+	case strings.HasPrefix(p, "efi/microsoft/boot/") && strings.HasSuffix(p, ".p7b"):
+		return true
+	}
+	return false
 }
 
 var (
@@ -304,6 +375,7 @@ var (
 // transfer is one RRQ being served.
 type transfer struct {
 	s     *Server
+	root  *os.Root
 	c     *net.UDPConn
 	log   *slog.Logger
 	req   request
@@ -328,17 +400,21 @@ type clientError struct {
 func (e *clientError) Error() string { return fmt.Sprintf("client error %d: %q", e.code, e.msg) }
 
 func (t *transfer) run() {
-	rel, err := t.s.resolve(t.req.filename)
+	rel, err := resolve(t.root, t.req.filename)
 	if err != nil {
 		code := errFileNotFound
 		if errors.Is(err, errAccess) {
 			code = errAccessViolation
 		}
-		t.log.Warn("tftp request refused", "reason", err.Error(), "options", optionsAttr(t.req.options))
+		level := slog.LevelWarn
+		if errors.Is(err, errNotFound) && optionalFile(t.req.filename) {
+			level = slog.LevelDebug
+		}
+		t.log.Log(context.Background(), level, "tftp request refused", "reason", err.Error(), "options", optionsAttr(t.req.options))
 		_, _ = t.c.Write(errorPacket(code, err.Error()))
 		return
 	}
-	f, err := t.s.root.Open(rel)
+	f, err := t.root.Open(rel)
 	if err != nil {
 		t.log.Error("tftp open failed", "resolved", rel, "err", err)
 		_, _ = t.c.Write(errorPacket(errNotDefined, "cannot open file"))

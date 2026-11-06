@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/server"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
@@ -88,6 +90,8 @@ func run(o options) error {
 
 	// The admin handler needs the Server, which needs the Manager, which
 	// serves the handler: build the handler last and forward to it.
+	bus := events.New()
+
 	var handler http.Handler
 	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
@@ -98,12 +102,17 @@ func run(o options) error {
 		Dev:                o.dev,
 		AdminOverride:      override,
 		GeneratedAdminCert: &generated.Certificates[0],
+		Events:             bus,
+		// The agent API is the same API handler; the content listener only
+		// forwards /api/v1/agent/ to it.
+		Agent: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }),
 	})
-	impl := server.New(version, svc, network, st)
-	if handler, err = adminHandler(impl); err != nil {
+	impl := server.New(version, svc, network, st, bus)
+	if handler, err = adminHandler(impl, st); err != nil {
 		return err
 	}
 
+	go server.PurgeIdempotency(ctx, st, time.Hour)
 	if err := svc.Start(ctx); err != nil {
 		return err
 	}
@@ -113,7 +122,7 @@ func run(o options) error {
 	return nil
 }
 
-func adminHandler(impl *server.Server) (http.Handler, error) {
+func adminHandler(impl *server.Server, st *store.Store) (http.Handler, error) {
 	spec, err := api.GetSwagger()
 	if err != nil {
 		return nil, fmt.Errorf("load embedded spec: %w", err)
@@ -136,5 +145,6 @@ func adminHandler(impl *server.Server) (http.Handler, error) {
 	// Unknown /api paths get a JSON 404 instead of falling through to the SPA.
 	mux.HandleFunc("/api/", server.NotFound)
 	mux.Handle("/", web.Handler())
-	return server.Recover(server.Logging(validate(mux))), nil
+	// Validation runs first, so only valid requests are kept for replay.
+	return server.Recover(server.Logging(validate(server.Idempotency(st)(mux)))), nil
 }

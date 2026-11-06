@@ -10,6 +10,7 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv4"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
+	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
@@ -72,6 +73,7 @@ func (s *Server) full(ctx context.Context, req *dhcpv4.DHCPv4, mt dhcpv4.Message
 				s.log.Error("dhcp release not stored", "mac", mac, "err", err)
 			}
 		}
+		s.leaseEvent(req.ClientIPAddr, mac, "released")
 		return nil, "released"
 
 	case dhcpv4.MessageTypeDecline:
@@ -191,7 +193,13 @@ func (s *Server) bindAddress(ctx context.Context, req *dhcpv4.DHCPv4, mac string
 		}
 	}
 	s.pool.set(u, mac, expires, true)
+	s.leaseEvent(ip, mac, "bound")
 	return nil
+}
+
+func (s *Server) leaseEvent(ip net.IP, mac, change string) {
+	s.cfg.Events.Publish(events.Event{Type: events.LeaseUpdated,
+		Data: map[string]string{"interface": s.cfg.Interface, "ip": ip.String(), "mac": mac, "change": change}})
 }
 
 // decline keeps ip out of use for declineHold (DHCPDECLINE, or a ping
@@ -204,6 +212,7 @@ func (s *Server) decline(ctx context.Context, ip net.IP, mac string) {
 	s.mu.Lock()
 	s.pool.decline(ip, now)
 	s.mu.Unlock()
+	s.leaseEvent(ip, mac, "declined")
 	if st := s.cfg.Store; st != nil {
 		if mac == "" {
 			mac = "00:00:00:00:00:00" // conflict found by ping: owner unknown

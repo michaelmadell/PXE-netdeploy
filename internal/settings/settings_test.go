@@ -220,6 +220,7 @@ func TestValidate(t *testing.T) {
 		{"end before start", []Interface{iface("lab0", DHCPFull, pool("10.77.0.200", "10.77.0.100", "255.255.255.0"))}, netip.Addr{}, "interfaces[0].dhcp.pool.end"},
 		{"broadcast", []Interface{iface("lab0", DHCPFull, pool("10.77.0.100", "10.77.0.255", "255.255.255.0"))}, netip.Addr{}, "interfaces[0].dhcp.pool.end"},
 		{"admin on content port", []Interface{iface("lab0", DHCPOff, nil)}, netip.MustParseAddr("0.0.0.0"), "interfaces[0].services.httpPort"},
+		{"https not yet", []Interface{func() Interface { i := iface("lab0", DHCPOff, nil); i.Services.HTTPS = true; return i }()}, netip.Addr{}, "interfaces[0].services.https"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

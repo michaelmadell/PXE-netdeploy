@@ -10,7 +10,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 | Components, boot flows, roadmap | [architecture.md](architecture.md) |
 | Why each decision was made | [adr/](adr/README.md) |
 | The API (source of truth) | [../api/openapi.yaml](../api/openapi.yaml) |
-| What to build next | [plan/phase-2-handover.md](plan/phase-2-handover.md) |
+| What to build next | [plan/phase-3-handover.md](plan/phase-3-handover.md) |
 | What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | What Phase 2 lab runs measured | [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | Setup and dev workflow | [dev/getting-started.md](dev/getting-started.md) |
@@ -107,17 +107,22 @@ spike code behind flags. Results: [spikes/phase-1-findings.md](spikes/phase-1-fi
 Still open from Phase 1: physical I210 hardware (tasks 7–8, waiting for
 hardware) and HTTP Boot (task 9, optional).
 
+**Done (Phase 2, 2026-11-06):** the core server. Settings stored in SQLite
+and applied atomically (`GET/PUT /settings`); DHCP full and proxy modes with
+stored leases, reservations, ping check and the ADR 0013 filters; TFTP with
+per-client content; a content HTTP listener per interface (ADR 0009); the
+`/clients` API, `Idempotency-Key`, health and `/events`. Proxy mode booted
+WinPE on Hyper-V with dnsmasq as the real DHCP server. Results:
+[spikes/phase-2-findings.md](spikes/phase-2-findings.md). Content HTTPS moved
+to Phase 6.
+
 ## Next step
 
-**Phase 2: core server** (DHCP proxy/full, TFTP, content HTTP, settings,
-health). Start from [plan/phase-2-handover.md](plan/phase-2-handover.md): it
-lists the Phase 1 results that constrain the design, the spec values to
-correct, and the decisions to make. Decision 1 (unknown clients) is done:
-ADR 0013. Decision 2 (TFTP defaults) is done. Decision 3 (storage) is
-ADR 0014, built in `internal/store`. Step 2 (settings and atomic apply) is
-done. Step 3 (DHCP proxy mode, stored leases, ADR 0013 filters) is built;
-proxy mode booted WinPE on Hyper-V (2026-11-06). Next is step 4, the TFTP
-virtual tree.
+**Phase 3: storage and imports** (content store, jobs, uploads, ISO and driver
+imports). Start from [plan/phase-3-handover.md](plan/phase-3-handover.md): it
+lists what Phase 2 established, the decisions to make first (content store
+layout, reading ISOs and WIMs, jobs, uploads, driver packs), and what carries
+over.
 
 ## Open questions and things to verify
 
@@ -132,7 +137,7 @@ virtual tree.
 | ~~Proxy DHCP mode against real firmware~~ | Answered for Hyper-V (2026-11-06): boots; the firmware uses the proxy offer's boot file and skips :4011. [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | ~~Option 97 byte order~~ | Answered: first three fields little-endian; `smbiosUuid` equals the VM's `BIOSGUID` |
 | Proxy :4011 boot server path and `listenOn67: false` with real firmware | Firmware that does boot server discovery (physical hardware) |
-| ICMP ping check with raw sockets on Windows | A full-mode run on Windows: look for the "ping check unavailable" warning |
+| ~~ICMP ping check with raw sockets on Windows~~ | Answered: works from an elevated shell (`TestICMPPinger` passes on the Windows host) |
 | ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
 | ~~The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator~~ | Done (Phase 2 step 2): `server.RequestValidator`, 400 with per-field `errors[]` |

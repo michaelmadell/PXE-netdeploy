@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
@@ -102,4 +103,44 @@ func TestServiceReplace(t *testing.T) {
 	if ok, _ := VerifyPassword(stored.BootPrompt.PasswordHash, "correct horse"); !ok || doc.Version != 2 {
 		t.Errorf("stored version %d, password verifies %v", doc.Version, ok)
 	}
+}
+
+func TestClientRoot(t *testing.T) {
+	ctx := context.Background()
+	svc := testService(t, t.TempDir())
+	resolve := svc.clientRoot("lab0")
+
+	// A DHCP boot session wins.
+	sessIP := netip.MustParseAddr("10.77.0.140")
+	svc.Sessions().Record(boot.Session{Interface: "lab0", IP: sessIP, MAC: "00:15:5d:00:00:01", Answer: boot.Answer{Root: "/content/a"}})
+	if dir, attrs := resolve(sessIP); dir != "/content/a" || !hasAttr(attrs, "boot_session", "dhcp") {
+		t.Errorf("session: %q %v", dir, attrs)
+	}
+	// Same IP on another interface: no session there.
+	if dir, _ := svc.clientRoot("lab1")(sessIP); dir != "" {
+		t.Errorf("session leaked across interfaces: %q", dir)
+	}
+
+	// No session, but a lease (full mode after a restart): the client's content.
+	leaseIP := netip.MustParseAddr("10.77.0.150")
+	if err := svc.opts.Store.PutLease(ctx, store.Lease{Interface: "lab0", IP: leaseIP, MAC: "00:15:5d:00:00:02", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if dir, attrs := resolve(leaseIP); dir != svc.opts.Dev.TFTPRoot || !hasAttr(attrs, "boot_session", "lease") {
+		t.Errorf("lease: %q %v", dir, attrs)
+	}
+
+	// Neither (DHCP off): the default content.
+	if dir, attrs := resolve(netip.MustParseAddr("10.77.0.160")); dir != "" || !hasAttr(attrs, "boot_session", "none") {
+		t.Errorf("unknown: %q %v", dir, attrs)
+	}
+}
+
+func hasAttr(attrs []any, k, v string) bool {
+	for i := 0; i+1 < len(attrs); i += 2 {
+		if attrs[i] == k && attrs[i+1] == v {
+			return true
+		}
+	}
+	return false
 }

@@ -78,6 +78,7 @@ type client struct {
 	// abortAfterOACK sends ERROR 0 after the OACK, as tsize probes do.
 	abortAfterOACK bool
 	readTimeout    time.Duration // default 5s
+	localIP        net.IP        // default 127.0.0.1
 	// stopAtTsize stops once tsize bytes have arrived, without waiting for
 	// (or ACKing) a final empty block, as Windows Boot Manager does.
 	stopAtTsize bool
@@ -101,7 +102,11 @@ func (c *client) get(addr, file string) (result, error) {
 	if err != nil {
 		return res, err
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	local := c.localIP
+	if local == nil {
+		local = net.IPv4(127, 0, 0, 1)
+	}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: local})
 	if err != nil {
 		return res, err
 	}

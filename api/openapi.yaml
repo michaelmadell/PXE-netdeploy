@@ -8,7 +8,16 @@ info:
     Draft v0 (OpenAPI 3.0.3 for generator compatibility). Two audiences:
 
     * **Admin API** (`bearerAuth`): used by the web UI and automation.
-    * **Agent API** (`agentAuth`): used by the WinPE agent during a deployment.
+    * **Agent API**: used by the WinPE agent. `/agent/check-in` is unauthenticated,
+      `/agent/unlock` exchanges the boot prompt password for a short session
+      (`agentSessionAuth`), and everything during a deployment uses `agentAuth`.
+
+    ## Boot model (ADR 0013)
+    Every PXE client that passes the architecture and per-interface MAC filters
+    boots WinPE. A machine is only re-imaged if a deployment was scheduled for it
+    through this API ("armed"), or someone at the machine enters the boot prompt
+    password. Otherwise the agent counts down and boots the local disk, so
+    machines with network boot first never loop.
 
     ## Conventions
     * All IDs are opaque ULID strings.
@@ -828,7 +837,7 @@ paths:
         - $ref: "#/components/parameters/Cursor"
         - { name: mac, in: query, schema: { $ref: "#/components/schemas/MacAddress" } }
         - { name: profileId, in: query, schema: { type: string } }
-        - { name: approved, in: query, schema: { type: boolean } }
+        - { name: source, in: query, schema: { $ref: "#/components/schemas/ClientSource" } }
       responses:
         "200":
           description: OK
@@ -928,8 +937,14 @@ paths:
     post:
       tags: [deployments]
       operationId: scheduleDeployment
-      summary: Arm a client for deployment on its next network boot (WDS "pending" style).
+      summary: Arm a client for deployment on its next network boot.
       description: |
+        An armed (`pending`) deployment runs on the client's next network boot without
+        the boot prompt password: the agent shows a short countdown, and any key opens
+        the profile menu instead. The deployment is consumed at agent check-in
+        (`pending` → `running`), so later boots fall back to the prompt and then
+        the local disk. This is how a known client is re-tested remotely.
+
         Snapshots the profile (and the current versions of its secrets) at scheduling
         time so later edits or rotations do not change an in-flight deployment. The
         computer name is rendered and validated here; an invalid name returns `422`
@@ -1420,14 +1435,23 @@ paths:
       tags: [agent]
       operationId: agentCheckIn
       security: []
-      summary: First call from WinPE. Exchanges hardware identity for a deployment token.
+      summary: First call from WinPE. Reports hardware identity; returns whether the machine is armed.
       description: |
-        Unauthenticated by necessity (WinPE has no prior secret). The server only
-        issues a token if (a) the MAC belongs to a client with a `pending` deployment
-        and (b) the request's source IP matches the address recently leased/offered
-        to that MAC. Tokens are scoped to one deployment and expire.
-        Threat model note: anyone able to spoof a MAC on the deployment LAN can
-        obtain that deployment's config, so treat unattend secrets accordingly.
+        Unauthenticated by necessity (WinPE has no prior secret). Creates the client
+        (`source: discovered`) if no client has any of the MACs, which covers
+        interfaces in DHCP `off` mode; otherwise updates its hardware details.
+
+        * `state: armed`: a client MAC has a `pending` deployment, and the request's
+          source IP matches the address recently leased/offered to that MAC (when this
+          server saw the DHCP exchange). The deployment moves to `running` and its
+          agent token is returned. The agent shows `armed.countdownSeconds`, then
+          deploys; any key opens the profile menu via `/agent/unlock` instead.
+        * `state: locked`: no armed deployment. The agent shows the boot prompt
+          described by `prompt`, and boots the local disk when it times out.
+
+        Threat model: spoofing a MAC on the deployment LAN can claim an *armed*
+        deployment's config, so treat unattend secrets accordingly. Starting a
+        deployment on an un-armed machine requires the boot prompt password.
       requestBody:
         required: true
         content:
@@ -1435,22 +1459,83 @@ paths:
             schema: { $ref: "#/components/schemas/AgentIdentity" }
       responses:
         "200":
-          description: Token issued.
+          description: Armed or locked.
           content:
             application/json:
-              schema:
-                type: object
-                required: [token, deploymentId, expiresAt]
-                properties:
-                  token: { type: string }
-                  deploymentId: { type: string }
-                  expiresAt: { type: string, format: date-time }
+              schema: { $ref: "#/components/schemas/AgentCheckInResult" }
         "400": { $ref: "#/components/responses/Problem" }
-        "404":
-          description: "No pending deployment for this machine (`code: no_pending_deployment`)."
+
+  /agent/unlock:
+    post:
+      tags: [agent]
+      operationId: agentUnlock
+      security: []
+      summary: Exchange the boot prompt password for a short session that can start a deployment.
+      description: |
+        `password` is required unless `Settings.bootPrompt.requirePassword` is false
+        (debug mode), in which case it is ignored. Failed attempts are rate-limited
+        per MAC and per source IP; `429` (`code: too_many_attempts`) carries
+        `Retry-After`. `401` (`code: invalid_password`) for a wrong password, `403`
+        (`code: password_not_configured`) when a password is required but none is set
+        (only armed deployments can run then). `404` (`code: unknown_client`) if the
+        client id was not returned by a check-in from this source IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId]
+              properties:
+                clientId: { type: string, description: From `/agent/check-in`. }
+                password: { type: string, nullable: true, writeOnly: true }
+      responses:
+        "200":
+          description: Unlocked.
           content:
-            application/problem+json:
-              schema: { $ref: "#/components/schemas/Problem" }
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentUnlockResult" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+
+  /agent/deployments:
+    post:
+      tags: [agent]
+      operationId: agentStartDeployment
+      summary: Start a deployment from the boot prompt menu.
+      security:
+        - agentSessionAuth: []
+      description: |
+        Schedules and immediately starts (`running`) a deployment of `profileId` for
+        the session's client, snapshotting the profile exactly as
+        `POST /deployments` does, and returns its agent token. The deployment runs
+        in the WinPE that is already booted, even if the profile names a different
+        boot image. A `running` deployment for the same client (an agent that
+        crashed or was rebooted) is marked `failed` (`code: superseded`) first; a
+        `pending` one is cancelled. The session token is single-use.
+        `404` (`code: profile_not_found`); `422` (`code: invalid_computer_name`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profileId]
+              properties:
+                profileId: { type: string }
+      responses:
+        "201":
+          description: Started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentToken" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
 
   /agent/deployment:
     get:
@@ -1515,7 +1600,10 @@ paths:
       summary: Complete the current deployment with the final result.
       security:
         - agentAuth: []
-      description: Final result. Idempotent; the token is revoked afterwards.
+      description: |
+        Final result. Idempotent; the token is revoked afterwards. The agent reports
+        the result *before* it applies the profile's `bootOrderAfterDeploy` and
+        reboots.
       requestBody:
         required: true
         content:
@@ -1540,7 +1628,11 @@ components:
     agentAuth:
       type: http
       scheme: bearer
-      description: Short-lived, single-deployment token from `/agent/check-in`.
+      description: Short-lived, single-deployment token from `/agent/check-in` (armed) or `/agent/deployments`.
+    agentSessionAuth:
+      type: http
+      scheme: bearer
+      description: Short-lived, single-use boot prompt session from `/agent/unlock`.
 
   parameters:
     Limit:
@@ -1765,6 +1857,19 @@ components:
         services:
           type: object
           additionalProperties: { $ref: "#/components/schemas/ServiceHealth" }
+        warnings:
+          type: array
+          description: |
+            Configuration the operator should know about; does not change `status`.
+            Codes: `boot_prompt_password_disabled` (debug mode: anyone at a machine can
+            re-image it), `boot_prompt_no_password` (only armed deployments can run),
+            `no_default_profile` (unknown clients are not answered).
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string }
+              message: { type: string }
 
     ServiceHealth:
       type: object
@@ -2230,6 +2335,16 @@ components:
           description: Required when `installMethod` is `smb`.
         identity: { $ref: "#/components/schemas/Identity" }
         osSettings: { $ref: "#/components/schemas/OsSettings" }
+        bootOrderAfterDeploy:
+          type: string
+          enum: [disk-first, network-first]
+          default: disk-first
+          description: |
+            UEFI boot order the agent leaves after a successful deployment.
+            `disk-first` (bcdboot's default): Setup's reboots and later boots go
+            straight to disk; re-test via the firmware's one-time boot menu or by
+            arming a deployment and network-booting. `network-first`: every boot shows
+            the boot prompt, then falls back to disk after its timeout.
 
     Profile:
       allOf:
@@ -2422,12 +2537,6 @@ components:
           nullable: true
           format: ipv4
           description: Fixed address on interfaces running `full` DHCP.
-        approved:
-          type: boolean
-          default: true
-          description: |
-            Clients auto-created by the `register` unknown-client policy start
-            unapproved and are never booted until approved (WDS "pending devices").
         secretRefs:
           type: object
           description: |
@@ -2445,12 +2554,25 @@ components:
             lastSeenAt: { type: string, nullable: true, format: date-time }
             lastIp: { type: string, nullable: true }
             lastArch: { nullable: true, type: string, allOf: [{ $ref: "#/components/schemas/ClientArch" }] }
-            source: { type: string, enum: [manual, registered], readOnly: true }
+            source: { readOnly: true, type: string, allOf: [{ $ref: "#/components/schemas/ClientSource" }] }
+
+    ClientSource:
+      type: string
+      enum: [manual, discovered]
+      description: |
+        `manual`: created through the API. `discovered`: created automatically the
+        first time the machine network-booted (DHCP) or checked in (agent). Both
+        boot the same way; see ADR 0013.
 
     # ---------- deployments
     DeploymentStatus:
       type: string
-      enum: [pending, booting, running, succeeded, failed, cancelled]
+      enum: [pending, running, succeeded, failed, cancelled]
+      description: |
+        `pending`: armed through the API; runs on the client's next network boot.
+        `running`: the agent checked in (armed) or started it from the boot prompt.
+        Only `pending` deployments are armed, so a machine that reboots mid-deployment
+        or after it gets the boot prompt, not a re-image.
 
     DeploymentStage:
       type: string
@@ -2464,6 +2586,11 @@ components:
           properties:
             clientId: { type: string }
             profileId: { type: string }
+            origin:
+              type: string
+              enum: [scheduled, boot-prompt]
+              readOnly: true
+              description: "`scheduled`: armed through `POST /deployments`. `boot-prompt`: started at the machine."
             profileSnapshot: { $ref: "#/components/schemas/ProfileInput" }
             status: { $ref: "#/components/schemas/DeploymentStatus" }
             stage: { $ref: "#/components/schemas/DeploymentStage" }
@@ -2583,20 +2710,47 @@ components:
           properties:
             certificatePem: { type: string, nullable: true, description: Null generates a certificate from an internal CA (download via `/settings/content-ca`). }
             privateKeyPem: { type: string, nullable: true, writeOnly: true }
-        unknownClients:
+        bootPrompt:
           type: object
-          description: What happens when a machine with no pending deployment network-boots.
+          description: |
+            What a network-booted machine shows when no deployment is armed for it
+            (ADR 0013). Every client that passes the architecture and interface MAC
+            filters boots WinPE; DHCP does not answer a client until it has a
+            profile to offer (its own, or `defaultProfileId`).
           properties:
-            policy:
+            password:
               type: string
-              enum: [ignore, register, default-profile]
-              default: ignore
+              nullable: true
+              writeOnly: true
+              minLength: 8
+              description: Stored as an argon2id hash; never returned. Omit or null to keep the current password.
+            hasPassword: { type: boolean, readOnly: true }
+            requirePassword:
+              type: boolean
+              default: true
               description: |
-                `ignore`: no answer; firmware falls through to the next boot device.
-                `register`: record MAC/arch/UUID as a new client awaiting approval,
-                without booting it. `default-profile`: schedule `defaultProfileId`
-                automatically. `ignore` is the safe default on shared networks.
-            defaultProfileId: { type: string, nullable: true }
+                **Debug only.** False shows the profile menu without a password: anyone
+                at a machine on a deployment network can re-image it. Raises the
+                `boot_prompt_password_disabled` health warning, a UI banner, a startup
+                log warning, and a banner on the WinPE screen.
+            timeoutSeconds:
+              type: integer
+              minimum: 5
+              maximum: 3600
+              default: 30
+              description: Prompt countdown; at zero the agent sets UEFI BootNext to the local disk and reboots.
+            armedCountdownSeconds:
+              type: integer
+              minimum: 0
+              maximum: 300
+              default: 10
+              description: Countdown before an armed deployment starts; any key opens the menu instead.
+            defaultProfileId:
+              type: string
+              nullable: true
+              description: |
+                Preselected in the menu for clients without a profile, and the boot
+                image source for them. Null: such clients are not answered.
         architectures:
           type: object
           description: Which client architectures are answered at all.
@@ -2611,6 +2765,16 @@ components:
       required: [name, dhcp, services]
       properties:
         name: { type: string, description: 'OS interface name, e.g. `Ethernet 2` or `enp3s0`.' }
+        macPrefixes:
+          type: array
+          description: |
+            Optional allow-list. When non-empty, only clients whose MAC starts with one
+            of these prefixes (e.g. an OUI, `00:1b:21`) are answered on this
+            interface. Empty answers every PXE client. Applies to DHCP `proxy` and
+            `full`; with `off` the external DHCP server decides.
+          items:
+            type: string
+            pattern: "^[0-9a-f]{2}(:[0-9a-f]{2}){0,5}$"
         advertisedAddress:
           type: string
           nullable: true
@@ -2678,7 +2842,7 @@ components:
         interface: { type: string }
         hostname: { type: string, nullable: true }
         arch: { nullable: true, type: string, allOf: [{ $ref: "#/components/schemas/ClientArch" }] }
-        clientId: { type: string, nullable: true, description: 'Matching registered client, if any.' }
+        clientId: { type: string, nullable: true, description: 'Matching client, if any.' }
         reserved: { type: boolean }
         expiresAt: { type: string, format: date-time }
 
@@ -2704,6 +2868,61 @@ components:
         manufacturer: { type: string, nullable: true }
         model: { type: string, nullable: true }
         agentVersion: { type: string }
+
+    AgentToken:
+      type: object
+      required: [token, deploymentId, expiresAt]
+      properties:
+        token: { type: string, description: "`agentAuth` bearer token for this deployment." }
+        deploymentId: { type: string }
+        expiresAt: { type: string, format: date-time }
+
+    AgentCheckInResult:
+      type: object
+      required: [state, clientId]
+      properties:
+        state: { type: string, enum: [armed, locked] }
+        clientId: { type: string }
+        armed:
+          type: object
+          nullable: true
+          description: Present when `state` is `armed`.
+          allOf:
+            - $ref: "#/components/schemas/AgentToken"
+            - type: object
+              required: [profileName, countdownSeconds]
+              properties:
+                profileName: { type: string }
+                countdownSeconds: { type: integer }
+        prompt:
+          type: object
+          nullable: true
+          description: Present when `state` is `locked`.
+          required: [requirePassword, passwordConfigured, timeoutSeconds]
+          properties:
+            requirePassword: { type: boolean, description: False in debug mode; show the warning banner. }
+            passwordConfigured: { type: boolean, description: False means only armed deployments can run; say so on screen. }
+            timeoutSeconds: { type: integer }
+
+    AgentUnlockResult:
+      type: object
+      required: [sessionToken, expiresAt, profiles]
+      properties:
+        sessionToken: { type: string, description: "`agentSessionAuth` bearer token; single use." }
+        expiresAt: { type: string, format: date-time }
+        defaultProfileId:
+          type: string
+          nullable: true
+          description: Preselected entry; the client's profile, else `Settings.bootPrompt.defaultProfileId`.
+        profiles:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              description: { type: string }
 
     AgentDeploymentPlan:
       type: object

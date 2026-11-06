@@ -99,7 +99,7 @@ func run(o options) error {
 		AdminOverride:      override,
 		GeneratedAdminCert: &generated.Certificates[0],
 	})
-	impl := server.New(version, svc, network)
+	impl := server.New(version, svc, network, st)
 	if handler, err = adminHandler(impl); err != nil {
 		return err
 	}

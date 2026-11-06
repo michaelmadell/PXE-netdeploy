@@ -212,7 +212,7 @@ func TestValidate(t *testing.T) {
 		{"unknown interface", []Interface{iface("eth9", DHCPOff, nil)}, netip.Addr{}, "interfaces[0].name"},
 		{"no ipv4", []Interface{iface("noaddr", DHCPOff, nil)}, netip.Addr{}, "interfaces[0].name"},
 		{"duplicate", []Interface{iface("lab0", DHCPOff, nil), iface("LAB0", DHCPOff, nil)}, netip.Addr{}, "interfaces[1].name"},
-		{"proxy not yet", []Interface{iface("lab0", DHCPProxy, nil)}, netip.Addr{}, "interfaces[0].dhcp.mode"},
+		{"proxy mode", []Interface{iface("lab0", DHCPProxy, nil)}, netip.Addr{}, ""},
 		{"full without pool", []Interface{iface("lab0", DHCPFull, nil)}, netip.Addr{}, "interfaces[0].dhcp.pool"},
 		{"pool outside subnet", []Interface{iface("lab0", DHCPFull, pool("10.77.0.100", "10.77.1.5", "255.255.255.0"))}, netip.Addr{}, "interfaces[0].dhcp.pool.end"},
 		{"mask mismatch", []Interface{iface("lab0", DHCPFull, pool("10.77.0.100", "10.77.0.199", "255.255.0.0"))}, netip.Addr{}, "interfaces[0].dhcp.pool.subnetMask"},

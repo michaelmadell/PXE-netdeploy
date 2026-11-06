@@ -12,6 +12,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 | The API (source of truth) | [../api/openapi.yaml](../api/openapi.yaml) |
 | What to build next | [plan/phase-2-handover.md](plan/phase-2-handover.md) |
 | What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
+| What Phase 2 lab runs measured | [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | Setup and dev workflow | [dev/getting-started.md](dev/getting-started.md) |
 | Test lab | [dev/test-environments.md](dev/test-environments.md) |
 
@@ -114,7 +115,9 @@ lists the Phase 1 results that constrain the design, the spec values to
 correct, and the decisions to make. Decision 1 (unknown clients) is done:
 ADR 0013. Decision 2 (TFTP defaults) is done. Decision 3 (storage) is
 ADR 0014, built in `internal/store`. Step 2 (settings and atomic apply) is
-done; next is step 3, DHCP proxy mode and persisted leases.
+done. Step 3 (DHCP proxy mode, stored leases, ADR 0013 filters) is built;
+proxy mode booted WinPE on Hyper-V (2026-11-06). Next is step 4, the TFTP
+virtual tree.
 
 ## Open questions and things to verify
 
@@ -126,7 +129,10 @@ done; next is step 3, DHCP proxy mode and persisted leases.
 | ~~Where recent Win11 media keeps the 2023-signed boot manager (`EFI_EX`)~~ | Answered: `Windows\Boot\EFI_EX\bootmgfw_EX.efi` inside boot.wim |
 | UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Phase 1 task 9 (optional, not done): QEMU/OVMF or real hardware |
 | Final TFTP blksize/windowsize defaults; WinPE I210 driver need | Phase 1 tasks 7–8 on physical hardware |
-| Proxy DHCP mode against real firmware | Phase 2 (only full mode was tested) |
+| ~~Proxy DHCP mode against real firmware~~ | Answered for Hyper-V (2026-11-06): boots; the firmware uses the proxy offer's boot file and skips :4011. [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
+| ~~Option 97 byte order~~ | Answered: first three fields little-endian; `smbiosUuid` equals the VM's `BIOSGUID` |
+| Proxy :4011 boot server path and `listenOn67: false` with real firmware | Firmware that does boot server discovery (physical hardware) |
+| ICMP ping check with raw sockets on Windows | A full-mode run on Windows: look for the "ping check unavailable" warning |
 | ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
 | ~~The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator~~ | Done (Phase 2 step 2): `server.RequestValidator`, 400 with per-field `errors[]` |

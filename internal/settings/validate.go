@@ -146,7 +146,6 @@ func Validate(cfg Config, host Host) []FieldError {
 		switch in.DHCP.Mode {
 		case DHCPOff:
 		case DHCPProxy:
-			errs.add(path+".dhcp.mode", "proxy mode is not implemented yet (Phase 2 step 3); use full or off")
 		case DHCPFull:
 			// No endpoint check for UDP 67: Linux binds 0.0.0.0:67 per device
 			// and Windows binds the interface address, so two interfaces

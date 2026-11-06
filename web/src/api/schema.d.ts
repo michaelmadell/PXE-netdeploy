@@ -839,7 +839,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Current leases on interfaces running `full` DHCP. */
+        /**
+         * Current leases on interfaces running `full` DHCP.
+         * @description Bound, unexpired leases, ordered by interface then address. Proxy mode
+         *     never assigns addresses, so it has none; addresses declined after a
+         *     conflict (DHCPDECLINE or a ping answer) are not listed.
+         */
         get: operations["listDhcpLeases"];
         put?: never;
         post?: never;
@@ -1911,7 +1916,11 @@ export interface components {
                  */
                 mode: "off" | "proxy" | "full";
                 /**
-                 * @description `proxy` only. Set false when a real DHCP server on this same host owns UDP 67; the proxy then uses 4011 only.
+                 * @description `proxy` only. Set false when a real DHCP server on this same host owns
+                 *     UDP 67; the proxy then uses 4011 only, so clients only find it if that
+                 *     server sends option 60 `PXEClient`. On Linux, don't share 67 with
+                 *     another DHCP server even if the bind succeeds: `SO_REUSEPORT` would
+                 *     split packets between the two at random.
                  * @default true
                  */
                 listenOn67: boolean;
@@ -1956,6 +1965,7 @@ export interface components {
             arch?: (string & components["schemas"]["ClientArch"]) | null;
             /** @description Matching client, if any. */
             clientId?: string | null;
+            /** @description The lease's address is its client's `reservedIp`. */
             reserved?: boolean;
             /** Format: date-time */
             expiresAt: string;

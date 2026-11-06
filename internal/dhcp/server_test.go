@@ -292,7 +292,7 @@ func TestTakeLeasesKeepsBindingsAcrossReconfigure(t *testing.T) {
 	old, now := testServer(t, nil)
 	mac := net.HardwareAddr{0, 0x1b, 0x21, 1, 2, 3}
 	old.mu.Lock()
-	ip, ok := old.pool.offer(mac.String(), nil, *now)
+	ip, _, ok := old.pool.offer(mac.String(), nil, *now, nil)
 	if !ok || !old.pool.bind(mac.String(), ip, time.Hour, *now) {
 		t.Fatal("setup: no lease")
 	}
@@ -304,7 +304,7 @@ func TestTakeLeasesKeepsBindingsAcrossReconfigure(t *testing.T) {
 	}
 	same.mu.Lock()
 	other := net.HardwareAddr{0, 0x1b, 0x21, 9, 9, 9}
-	got, _ := same.pool.offer(other.String(), ip, *now)
+	got, _, _ := same.pool.offer(other.String(), ip, *now, nil)
 	same.mu.Unlock()
 	if got.Equal(ip) {
 		t.Fatalf("new server offered %v, which %v still holds", ip, mac)

@@ -20,9 +20,9 @@ type lease struct {
 	bound   bool
 }
 
-// pool is an in-memory address pool. Leases are lost on restart until
-// Phase 2 step 3 persists them. Not safe for concurrent use; Server
-// serialises access.
+// pool is the in-memory view of an address pool. In full mode Server loads
+// it from the store at startup and writes every binding through to the store
+// before replying. Not safe for concurrent use; Server serialises access.
 type pool struct {
 	start, end uint32
 	byMAC      map[string]*lease
@@ -86,26 +86,40 @@ func (p *pool) set(ip uint32, mac string, expires time.Time, bound bool) {
 }
 
 // offer picks an address for mac: its current lease, else the requested
-// address if free, else the first free address. ok is false if the pool is
-// exhausted.
-func (p *pool) offer(mac string, requested net.IP, now time.Time) (net.IP, bool) {
-	if l, ok := p.byMAC[mac]; ok && p.free(l.ip, mac, now) {
+// address if free, else the first free address. Addresses for which taken
+// returns true (reserved for other clients) are skipped. fresh reports an
+// address with no lease history in the pool, which is worth a ping check.
+// ok is false if the pool is exhausted.
+func (p *pool) offer(mac string, requested net.IP, now time.Time, taken func(uint32) bool) (ip net.IP, fresh, ok bool) {
+	usable := func(u uint32) bool { return p.free(u, mac, now) && (taken == nil || !taken(u)) }
+	if l, ok := p.byMAC[mac]; ok && usable(l.ip) {
 		if !l.bound || now.After(l.expires) {
 			p.set(l.ip, mac, now.Add(offerHold), false)
 		}
-		return uintToIP4(l.ip), true
+		return uintToIP4(l.ip), false, true
 	}
-	if r := ip4ToUint(requested); r != 0 && p.free(r, mac, now) {
+	if r := ip4ToUint(requested); r != 0 && usable(r) {
+		_, known := p.byIP[r]
 		p.set(r, mac, now.Add(offerHold), false)
-		return uintToIP4(r), true
+		return uintToIP4(r), !known, true
 	}
-	for ip := p.start; ip <= p.end && ip >= p.start; ip++ {
-		if p.free(ip, mac, now) {
-			p.set(ip, mac, now.Add(offerHold), false)
-			return uintToIP4(ip), true
+	for u := p.start; u <= p.end && u >= p.start; u++ {
+		if usable(u) {
+			_, known := p.byIP[u]
+			p.set(u, mac, now.Add(offerHold), false)
+			return uintToIP4(u), !known, true
 		}
 	}
-	return nil, false
+	return nil, false, false
+}
+
+// holder returns the MAC holding ip (bound or offered, unexpired).
+func (p *pool) holder(ip uint32, now time.Time) (string, bool) {
+	l, ok := p.byIP[ip]
+	if !ok || now.After(l.expires) {
+		return "", false
+	}
+	return l.mac, true
 }
 
 // bind commits ip to mac for d. It fails if ip is outside the pool or held

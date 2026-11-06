@@ -1374,6 +1374,10 @@ paths:
       tags: [dhcp]
       operationId: listDhcpLeases
       summary: Current leases on interfaces running `full` DHCP.
+      description: |
+        Bound, unexpired leases, ordered by interface then address. Proxy mode
+        never assigns addresses, so it has none; addresses declined after a
+        conflict (DHCPDECLINE or a ping answer) are not listed.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
@@ -2853,7 +2857,12 @@ components:
             listenOn67:
               type: boolean
               default: true
-              description: "`proxy` only. Set false when a real DHCP server on this same host owns UDP 67; the proxy then uses 4011 only."
+              description: |
+                `proxy` only. Set false when a real DHCP server on this same host owns
+                UDP 67; the proxy then uses 4011 only, so clients only find it if that
+                server sends option 60 `PXEClient`. On Linux, don't share 67 with
+                another DHCP server even if the bind succeeds: `SO_REUSEPORT` would
+                split packets between the two at random.
             pool:
               type: object
               nullable: true
@@ -2890,7 +2899,7 @@ components:
         hostname: { type: string, nullable: true }
         arch: { nullable: true, type: string, allOf: [{ $ref: "#/components/schemas/ClientArch" }] }
         clientId: { type: string, nullable: true, description: 'Matching client, if any.' }
-        reserved: { type: boolean }
+        reserved: { type: boolean, description: "The lease's address is its client's `reservedIp`." }
         expiresAt: { type: string, format: date-time }
 
     # ---------- tokens

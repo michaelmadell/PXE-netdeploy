@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"runtime"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
@@ -52,6 +54,8 @@ type Service struct {
 	mu      sync.Mutex // serialises Replace; guards cur and version
 	cur     Config
 	version int64
+
+	sessions *boot.Sessions
 }
 
 // Errors from Replace.
@@ -79,7 +83,7 @@ func NewService(opts Options) *Service {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Service{opts: opts, log: opts.Logger.With("svc", "settings")}
+	return &Service{opts: opts, log: opts.Logger.With("svc", "settings"), sessions: &boot.Sessions{}}
 }
 
 // Start loads the stored settings (storing the defaults on first run) and
@@ -238,14 +242,29 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 				})
 			}
 		}
-		if in.DHCP.Mode == DHCPFull && in.DHCP.Pool != nil {
-			bind := netip.AddrPortFrom(netip.IPv4Unspecified(), 67)
-			if runtime.GOOS == "windows" {
-				bind = netip.AddrPortFrom(ip, 67)
-			}
+		// Linux binds 0.0.0.0 per device (SO_BINDTODEVICE) so broadcasts
+		// arrive; Windows binds the interface address, which receives them.
+		bindIP := netip.IPv4Unspecified()
+		if runtime.GOOS == "windows" {
+			bindIP = ip
+		}
+		switch {
+		case in.DHCP.Mode == DHCPFull && in.DHCP.Pool != nil:
 			p.DHCP = append(p.DHCP, netsvc.DHCPPlan{
-				Interface: in.Name, Bind: bind, Config: s.dhcpConfig(in, primary), Field: path + ".dhcp",
+				Interface: in.Name, Bind: netip.AddrPortFrom(bindIP, 67),
+				Config: s.dhcpConfig(cfg, in, primary), Field: path + ".dhcp",
 			})
+		case in.DHCP.Mode == DHCPProxy:
+			ports := []uint16{dhcp.ProxyPort}
+			if in.DHCP.ListenOn67 {
+				ports = []uint16{67, dhcp.ProxyPort}
+			}
+			for _, port := range ports {
+				p.DHCP = append(p.DHCP, netsvc.DHCPPlan{
+					Interface: in.Name, Bind: netip.AddrPortFrom(bindIP, port),
+					Config: s.dhcpConfig(cfg, in, primary), Field: path + ".dhcp",
+				})
+			}
 		}
 	}
 	if wantTFTP && s.opts.Dev.TFTPRoot == "" {
@@ -254,21 +273,32 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 	return p
 }
 
-func (s *Service) dhcpConfig(in Interface, primary netip.Prefix) dhcp.Config {
-	pool := in.DHCP.Pool
+func (s *Service) dhcpConfig(cfg Config, in Interface, primary netip.Prefix) dhcp.Config {
 	b := primary.Addr().As4()
-	m := pool.SubnetMask.As4()
+	mask := net.CIDRMask(primary.Bits(), 32)
 	c := dhcp.Config{
-		Interface:    in.Name,
-		ServerIP:     b[:],
-		Netmask:      m[:],
-		PoolStart:    as4(pool.Start),
-		PoolEnd:      as4(pool.End),
-		LeaseTime:    time.Duration(pool.LeaseSeconds) * time.Second,
-		BootFileUEFI: s.opts.Dev.BootFile,
-		HTTPBootURL:  s.opts.Dev.HTTPBootURL,
-		Logger:       s.opts.Logger,
+		Mode:        dhcp.ModeFull,
+		Interface:   in.Name,
+		ServerIP:    b[:],
+		Netmask:     mask,
+		Archs:       &dhcp.Archs{BIOS: cfg.Architectures.BIOS, UEFIX64: cfg.Architectures.UEFIX64, UEFIArm64: cfg.Architectures.UEFIArm64, HTTPBoot: cfg.Architectures.HTTPBoot},
+		MACPrefixes: in.MACPrefixes,
+		Booter:      boot.Static{File: s.opts.Dev.BootFile, URL: s.opts.Dev.HTTPBootURL},
+		Store:       s.opts.Store,
+		Sessions:    s.Sessions(),
+		Logger:      s.opts.Logger,
 	}
+	if in.DHCP.Mode == DHCPProxy {
+		c.Mode = dhcp.ModeProxy
+		return c
+	}
+	pool := in.DHCP.Pool
+	m := pool.SubnetMask.As4()
+	c.Netmask = m[:]
+	c.PoolStart, c.PoolEnd = as4(pool.Start), as4(pool.End)
+	c.LeaseTime = time.Duration(pool.LeaseSeconds) * time.Second
+	c.PingCheck = pool.PingCheck
+	c.DomainName = pool.DomainName
 	if pool.Router.IsValid() {
 		c.Router = as4(pool.Router)
 	}
@@ -277,6 +307,10 @@ func (s *Service) dhcpConfig(in Interface, primary netip.Prefix) dhcp.Config {
 	}
 	return c
 }
+
+// Sessions is the boot session table shared by every DHCP listener (and
+// TFTP, from Phase 2 step 4).
+func (s *Service) Sessions() *boot.Sessions { return s.sessions }
 
 func as4(a netip.Addr) []byte {
 	b := a.As4()

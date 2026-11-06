@@ -138,7 +138,10 @@ settings and health. Suggested order, each designed then built:
    `internal/netsvc`, request validator; see running-the-lab.md) (`GET/PUT /settings`, ETag, 422 with
    per-field errors, bind-before-release as the spec describes). Replaces the
    spike flags; keep flags only for bootstrap (data dir, admin address).
-3. **DHCP**: per-interface modes `off` / `proxy` / `full`; proxy on 67 and
+3. **DHCP** (**done 2026-11-06**: proxy mode, stored leases, reservations,
+   pingCheck, `/dhcp/leases`, ADR 0013 filters and sightings behind
+   `boot.Booter`; proxy mode booted WinPE on Hyper-V, see
+   spikes/phase-2-findings.md): per-interface modes `off` / `proxy` / `full`; proxy on 67 and
    4011 (`listenOn67`); persisted leases with `pingCheck`; reservations;
    `GET /dhcp/leases`; architecture filters from `Settings.architectures`;
    `externalDhcpGuidance` for `off`; policy hook from decision 1.

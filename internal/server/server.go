@@ -9,6 +9,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
+	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
 // Server implements api.StrictServerInterface.
@@ -24,12 +25,13 @@ type Server struct {
 	started  time.Time
 	settings *settings.Service
 	network  *netsvc.Manager
+	store    *store.Store
 }
 
-// New returns a Server. settings and network may be nil in tests of
-// operations that don't use them.
-func New(version string, s *settings.Service, network *netsvc.Manager) *Server {
-	return &Server{version: version, started: time.Now(), settings: s, network: network}
+// New returns a Server. Dependencies may be nil in tests of operations that
+// don't use them.
+func New(version string, s *settings.Service, network *netsvc.Manager, st *store.Store) *Server {
+	return &Server{version: version, started: time.Now(), settings: s, network: network, store: st}
 }
 
 // GetHealth reports per-service health from the running listeners, plus

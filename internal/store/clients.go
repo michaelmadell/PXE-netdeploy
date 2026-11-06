@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -330,4 +331,57 @@ func (s *Store) RecordSighting(ctx context.Context, in Sighting) (c Client, crea
 		return err
 	})
 	return c, created, err
+}
+
+// ReservedIPs returns every client reservation as IP -> MAC. Full-mode DHCP
+// reads it so no other client is offered a reserved address.
+func (s *Store) ReservedIPs(ctx context.Context) (map[netip.Addr]string, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT reserved_ip, mac FROM clients WHERE reserved_ip IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("store: reserved ips: %w", err)
+	}
+	defer rows.Close()
+	out := map[netip.Addr]string{}
+	for rows.Next() {
+		var ip, mac string
+		if err := rows.Scan(&ip, &mac); err != nil {
+			return nil, fmt.Errorf("store: reserved ips: %w", err)
+		}
+		a, err := netip.ParseAddr(ip)
+		if err != nil {
+			continue // not an IP; the API validates reservedIp, so this is old or hand-edited data
+		}
+		out[a] = mac
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: reserved ips: %w", err)
+	}
+	return out, nil
+}
+
+// ClientsByMAC returns the clients with the given (normalised) MACs, keyed
+// by MAC. MACs without a client are absent.
+func (s *Store) ClientsByMAC(ctx context.Context, macs []string) (map[string]Client, error) {
+	out := map[string]Client{}
+	if len(macs) == 0 {
+		return out, nil
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(macs)), ",")
+	args := make([]any, len(macs))
+	for i, m := range macs {
+		args[i] = m
+	}
+	rows, err := s.r.QueryContext(ctx, `SELECT `+clientCols+` FROM clients WHERE mac IN (`+ph+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: clients by mac: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		c, err := scanClient(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: clients by mac: %w", err)
+		}
+		out[c.MAC] = c
+	}
+	return out, rows.Err()
 }

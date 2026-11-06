@@ -816,7 +816,9 @@ paths:
         (error); template whose `identityModes` excludes the profile's mode (error);
         computer-name pattern that can exceed 15 characters (warning, checked
         against each client's data at scheduling time); `ad`/`odj` profile assigned
-        to clients without an ODJ blob (warning, listed per client).
+        to clients without an ODJ blob (warning, listed per client); boot image
+        `tftp` values above the `Settings.tftp` caps (warning,
+        `tftp_capped_by_server`: the server will negotiate the caps instead).
       responses:
         "200":
           description: Validation result (always 200; check `ok`).
@@ -2201,20 +2203,27 @@ components:
             variant isn't present in the source image.
         tftp:
           type: object
-          description: Written into the BCD; controls how bootmgr downloads boot.wim over TFTP.
+          description: |
+            Written into the BCD as what Boot Manager *requests* when it downloads
+            boot.sdi and boot.wim. The server answers with the lower of this and
+            `Settings.tftp`, so the defaults ask generously and the server caps (which
+            change without a rebuild) decide. Lower these only for hardware that must
+            request less, e.g. 1456 on a network that drops IP fragments. Changing them
+            needs a rebuild. Tested 2026-11-05: a BCD asking 16384/16 capped to 8192/8
+            boots (Phase 1 findings).
           properties:
             blockSize:
               type: integer
               minimum: 512
               maximum: 16384
-              default: 1456
-              description: "`ramdisktftpblocksize`. Keep below the path MTU unless the network handles IP fragmentation."
+              default: 16384
+              description: "`ramdisktftpblocksize`."
             windowSize:
               type: integer
               minimum: 1
               maximum: 64
-              default: 8
-              description: "`ramdisktftpwindowsize`. Larger is faster on clean networks."
+              default: 16
+              description: "`ramdisktftpwindowsize`."
         produceHttpBootIso:
           type: boolean
           default: false
@@ -2699,11 +2708,34 @@ components:
           items: { $ref: "#/components/schemas/InterfaceSettings" }
         tftp:
           type: object
-          description: Global TFTP limits; boot images request values up to these.
+          description: |
+            Server-side TFTP limits, applied to every client (firmware PXE, Boot
+            Manager). Negotiated options are capped to these, which protects clients
+            from a BCD that asks for more than the network can carry. Defaults are
+            provisional until the physical I210 runs (Phase 1 tasks 7–8); see the
+            Phase 1 findings, "Chosen defaults".
           properties:
-            maxBlockSize: { type: integer, minimum: 512, maximum: 65464, default: 16384 }
-            maxWindowSize: { type: integer, minimum: 1, maximum: 64, default: 64 }
-            timeoutSeconds: { type: integer, minimum: 1, maximum: 60, default: 5 }
+            maxBlockSize:
+              type: integer
+              minimum: 512
+              maximum: 65464
+              default: 8192
+              description: 16384 with a window of 16 lost IP fragments and failed to boot on Hyper-V; 8192/8 never lost a packet.
+            maxWindowSize:
+              type: integer
+              minimum: 1
+              maximum: 64
+              default: 8
+              description: Blocks sent before waiting for an ACK.
+            timeoutSeconds:
+              type: integer
+              minimum: 1
+              maximum: 60
+              default: 1
+              description: |
+                Retransmit timeout when the client doesn't negotiate `timeout`. Boot
+                Manager never ACKs early to request a resend, so each lost block costs a
+                full timeout; a transfer is abandoned after 5 consecutive timeouts.
         contentHttps:
           type: object
           description: TLS for the content listener on interfaces with `services.https` enabled.

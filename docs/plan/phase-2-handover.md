@@ -104,6 +104,10 @@ the design must settle:
 
 ### 2. Spec values that Phase 1 contradicts
 
+**Decided 2026-11-05:** server caps 8192/8, timeout 1 s; boot images request
+16384/16 and the server caps decide. Spec, findings ("Chosen defaults") and
+the architecture roadmap updated. The table below is the original brief.
+
 | Spec location | Current | Phase 1 says |
 |---|---|---|
 | `Settings.tftp.maxBlockSize` default | 16384 | 8192 (provisional) |

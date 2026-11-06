@@ -64,7 +64,7 @@ machines that have revoked the 2011 chain.
 | Phase | Scope |
 |---|---|
 | 0 | Spec, repo skeleton, tooling (this) |
-| 1 | **Spike:** Win11 WinPE boots under Secure Boot on Hyper-V from our proxyDHCP + TFTP; test HTTP Boot ISO |
+| 1 | **Spike:** Win11 WinPE boots under Secure Boot on Hyper-V from our full-mode DHCP + TFTP (proxy mode untested); test HTTP Boot ISO |
 | 2 | Core server: DHCP (proxy/full), TFTP, content HTTP, settings, health |
 | 3 | Storage and imports: ISOs, driver packs, jobs, uploads (tus) |
 | 4 | Boot image builder (DISM + wimlib), agent, profiles, clients, deployments |

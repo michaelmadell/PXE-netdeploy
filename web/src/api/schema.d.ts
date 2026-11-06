@@ -449,7 +449,9 @@ export interface paths {
          *     (error); template whose `identityModes` excludes the profile's mode (error);
          *     computer-name pattern that can exceed 15 characters (warning, checked
          *     against each client's data at scheduling time); `ad`/`odj` profile assigned
-         *     to clients without an ODJ blob (warning, listed per client).
+         *     to clients without an ODJ blob (warning, listed per client); boot image
+         *     `tftp` values above the `Settings.tftp` caps (warning,
+         *     `tftp_capped_by_server`: the server will negotiate the caps instead).
          */
         post: operations["validateProfile"];
         delete?: never;
@@ -1385,16 +1387,24 @@ export interface components {
              * @enum {string}
              */
             bootmgr: "auto" | "windows-pca-2011" | "windows-uefi-ca-2023";
-            /** @description Written into the BCD; controls how bootmgr downloads boot.wim over TFTP. */
+            /**
+             * @description Written into the BCD as what Boot Manager *requests* when it downloads
+             *     boot.sdi and boot.wim. The server answers with the lower of this and
+             *     `Settings.tftp`, so the defaults ask generously and the server caps (which
+             *     change without a rebuild) decide. Lower these only for hardware that must
+             *     request less, e.g. 1456 on a network that drops IP fragments. Changing them
+             *     needs a rebuild. Tested 2026-11-05: a BCD asking 16384/16 capped to 8192/8
+             *     boots (Phase 1 findings).
+             */
             tftp?: {
                 /**
-                 * @description `ramdisktftpblocksize`. Keep below the path MTU unless the network handles IP fragmentation.
-                 * @default 1456
+                 * @description `ramdisktftpblocksize`.
+                 * @default 16384
                  */
                 blockSize: number;
                 /**
-                 * @description `ramdisktftpwindowsize`. Larger is faster on clean networks.
-                 * @default 8
+                 * @description `ramdisktftpwindowsize`.
+                 * @default 16
                  */
                 windowSize: number;
             };
@@ -1765,13 +1775,30 @@ export interface components {
             };
             /** @description Deployment-network interfaces. Each runs its own DHCP mode and content services. */
             interfaces: components["schemas"]["InterfaceSettings"][];
-            /** @description Global TFTP limits; boot images request values up to these. */
+            /**
+             * @description Server-side TFTP limits, applied to every client (firmware PXE, Boot
+             *     Manager). Negotiated options are capped to these, which protects clients
+             *     from a BCD that asks for more than the network can carry. Defaults are
+             *     provisional until the physical I210 runs (Phase 1 tasks 7–8); see the
+             *     Phase 1 findings, "Chosen defaults".
+             */
             tftp?: {
-                /** @default 16384 */
+                /**
+                 * @description 16384 with a window of 16 lost IP fragments and failed to boot on Hyper-V; 8192/8 never lost a packet.
+                 * @default 8192
+                 */
                 maxBlockSize: number;
-                /** @default 64 */
+                /**
+                 * @description Blocks sent before waiting for an ACK.
+                 * @default 8
+                 */
                 maxWindowSize: number;
-                /** @default 5 */
+                /**
+                 * @description Retransmit timeout when the client doesn't negotiate `timeout`. Boot
+                 *     Manager never ACKs early to request a resend, so each lost block costs a
+                 *     full timeout; a transfer is abandoned after 5 consecutive timeouts.
+                 * @default 1
+                 */
                 timeoutSeconds: number;
             };
             /** @description TLS for the content listener on interfaces with `services.https` enabled. */

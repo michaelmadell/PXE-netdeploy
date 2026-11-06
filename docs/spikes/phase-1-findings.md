@@ -130,7 +130,15 @@ packet in four runs. Consequences:
 - Phase 2: shrink the window after repeated loss instead of resending the same
   full window.
 
-Chosen defaults:
+Chosen defaults (decided 2026-11-05, Phase 2 decision 2; **provisional**
+until the I210 runs in tasks 7–8):
+
+| Setting | Default | Why |
+|---|---|---|
+| `Settings.tftp.maxBlockSize` | 8192 | 16384/16 failed; 8192/8 never lost a packet (4 runs) |
+| `Settings.tftp.maxWindowSize` | 8 | 8192/16 only ~15% faster than 8192/8 and doubles the burst |
+| `Settings.tftp.timeoutSeconds` | 1 | Boot Manager never ACKs early, so each loss costs a full timeout (the failed run: 76 retransmits in 77 s at 1 s; >6 min at 5 s). 5 retries drop a dead transfer after ~5 s |
+| `BootImage.tftp.blockSize` / `windowSize` | 16384 / 16 | The BCD only *requests*; the server caps decide, and change without a rebuild. A BCD asking 16384/16 capped to 8192/8 boots (tested) |
 
 ## I210
 

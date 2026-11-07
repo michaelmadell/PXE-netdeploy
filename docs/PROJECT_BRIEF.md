@@ -73,6 +73,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0013 | Every PXE client boots WinPE. Armed deployments run after a countdown; otherwise a password prompt (one global password, debug switch to disable) times out to the local disk, so there are no re-image loops. |
 | 0014 | SQLite store: settings as one JSON document, STRICT tables with the invariants in the schema, embedded forward-only migrations, hand-written SQL. |
 | 0015 | Content-addressed store: blobs named by SHA-256 under `<data>/content` (`-content` overrides), trees as manifests in SQLite served as a virtual `fs.FS`, mark-and-sweep GC, a free-space reserve. |
+| 0016 | Jobs: the `jobs` table is the queue (one active job per resource), an in-process runner with lanes (builds 1, imports 2), throttled progress on `/events`, and no resume: a restart fails running jobs with `interrupted`. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and

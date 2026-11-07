@@ -20,5 +20,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0013](0013-boot-prompt-password-gate.md) | Every PXE client boots WinPE; a password gate prevents re-imaging | accepted |
 | [0014](0014-sqlite-store.md) | SQLite store with hand-written SQL and embedded migrations | accepted |
 | [0015](0015-content-addressed-store.md) | Content-addressed store for imported and built files | accepted |
+| [0016](0016-jobs.md) | Jobs: rows as the queue, an in-process runner, no resume | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

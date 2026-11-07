@@ -49,7 +49,7 @@ func TestEventStream(t *testing.T) {
 	defer st.Close()
 	bus := events.New()
 	mux := http.NewServeMux()
-	strict := api.NewStrictHandlerWithOptions(New("test", nil, nil, st, bus, nil), nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(New("test", Deps{Store: st, Events: bus}), nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: RequestError, ResponseErrorHandlerFunc: ResponseError,
 	})
 	api.HandlerWithOptions(strict, api.StdHTTPServerOptions{BaseURL: "/api/v1", BaseRouter: mux, ErrorHandlerFunc: RequestError})
@@ -103,7 +103,7 @@ func TestHealthReportsStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New("test", nil, nil, st, nil, nil)
+	s := New("test", Deps{Store: st})
 	h := s.health(context.Background())
 	if h.Services["store"].Status != api.ServiceHealthStatusOk || h.Status != api.HealthStatusOk {
 		t.Fatalf("healthy store: %+v", h)
@@ -128,7 +128,7 @@ func TestHealthReportsContentStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New("test", nil, nil, st, nil, content)
+	s := New("test", Deps{Store: st, Content: content})
 
 	h := s.health(ctx)
 	if h.Services["storage"].Status != api.ServiceHealthStatusOk || h.Storage == nil || h.Storage.FreeBytes <= 0 || h.Warnings != nil {

@@ -155,3 +155,13 @@ boot images become content trees) but don't build it.
   with colons.
 - Firmware sends DISCOVER and then REQUEST within seconds; anything throttled
   per MAC must still record new information (the `lastIp` bug).
+
+## Notes for Phase 4 (added during Phase 3)
+
+- **Deployments and reboots** (2026-11-07): a client that reboots part-way
+  through a deployment fails that deployment, unless the reboot is the
+  expected one after a successful install. Phase 4's agent/deployment state
+  machine must tell the two apart (e.g. the agent reports completion before
+  rebooting, ADR 0013's BootNext handling).
+- Server jobs (imports, builds) are different: any restart fails a running
+  job with `interrupted` (ADR 0016).

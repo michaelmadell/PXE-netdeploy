@@ -20,6 +20,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
+	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/server"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
@@ -126,18 +127,24 @@ func run(o options) error {
 	if err != nil {
 		return err
 	}
-	impl := server.New(version, svc, network, st, bus, content)
+	runner := jobs.New(jobs.Options{Store: st, Events: bus})
+	// Job kinds are registered here as Phase 3 adds them (imports, then builds).
+	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner})
 	if handler, err = adminHandler(impl, st); err != nil {
 		return err
 	}
 
 	go server.PurgeIdempotency(ctx, st, time.Hour)
+	if err := runner.Start(ctx); err != nil {
+		return err
+	}
 	if err := svc.Start(ctx); err != nil {
 		return err
 	}
 	<-ctx.Done()
 	slog.Info("shutting down")
 	<-network.Done()
+	<-runner.Done() // running jobs end as interrupted
 	return nil
 }
 

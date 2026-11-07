@@ -33,7 +33,7 @@ func TestListDhcpLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := New("test", nil, nil, st, nil, nil)
+	s := New("test", Deps{Store: st})
 	limit := 2
 	res, err := s.ListDhcpLeases(ctx, api.ListDhcpLeasesRequestObject{Params: api.ListDhcpLeasesParams{Limit: &limit}})
 	if err != nil {

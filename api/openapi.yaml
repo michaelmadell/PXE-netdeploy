@@ -1079,10 +1079,14 @@ paths:
       tags: [jobs]
       operationId: listJobs
       summary: List jobs.
+      description: |
+        Oldest first. Finished jobs are kept for 30 days (ADR 0016).
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
         - { name: status, in: query, schema: { $ref: "#/components/schemas/JobStatus" } }
+        - { name: kind, in: query, schema: { $ref: "#/components/schemas/JobKind" } }
+        - { name: resourceId, in: query, schema: { type: string }, description: "Jobs for one image, driver package or boot image." }
       responses:
         "200":
           description: OK
@@ -1116,6 +1120,10 @@ paths:
       tags: [jobs]
       operationId: cancelJob
       summary: Cancel a specific job.
+      description: |
+        A queued job is cancelled at once. A running job gets `cancelRequested`
+        and stops at its next checkpoint, then becomes `cancelled`. A finished job
+        is returned unchanged.
       responses:
         "200":
           description: Cancellation requested (or job already finished).
@@ -2015,8 +2023,12 @@ components:
               `bound`, `released`, `declined` (full-mode DHCP).
             * `settings.updated`: `{etag}`.
             * `health.updated`: the `Health` object, after listeners change.
-            * `job.updated`, `deployment.updated`, `bootImage.updated`,
-              `image.updated`: from Phase 3 onwards.
+            * `job.updated`: `{kind, status, percent, resourceId}` (`resourceId`
+              in `data` is the job's resource; the event's `resourceId` is the
+              job id). Sent when the status changes and at most twice a second
+              for progress.
+            * `deployment.updated`, `bootImage.updated`, `image.updated`: from
+              Phase 3 onwards.
 
     # ---------- images
     ImageKind:
@@ -2715,21 +2727,38 @@ components:
       type: string
       enum: [queued, running, succeeded, failed, cancelled]
 
+    JobKind:
+      type: string
+      enum: [image.import, driverPackage.import, bootImage.build]
+
     Job:
       type: object
-      required: [id, kind, status, createdAt]
+      description: |
+        Background work (ADR 0016). Jobs queue and run in order: boot image builds
+        one at a time, imports two at a time. A job that was running when the
+        server stopped fails with `interrupted`; it is not resumed.
+      required: [id, kind, status, createdAt, percent, cancelRequested]
       properties:
         id: { type: string }
-        kind: { type: string, enum: [image.import, driverPackage.import, bootImage.build, content.publish] }
+        kind: { $ref: "#/components/schemas/JobKind" }
         status: { $ref: "#/components/schemas/JobStatus" }
-        resourceId: { type: string, nullable: true }
+        resourceId:
+          type: string
+          nullable: true
+          description: |
+            The image, driver package or boot image the job works on. An import that
+            finds an identical existing item finishes with this set to that item.
+        cancelRequested: { type: boolean, readOnly: true, description: "Cancel was requested while running; the job stops shortly." }
         percent: { type: integer, minimum: 0, maximum: 100 }
         message: { type: string }
         error:
           nullable: true
           type: object
           allOf: [{ $ref: "#/components/schemas/Problem" }]
-          description: "Why the job failed. Codes include `insufficient_storage` (the content store ran short of space)."
+          description: |
+            Why the job failed. Codes include `insufficient_storage` (the content store
+            ran short of space), `interrupted` (the server stopped while it ran) and
+            `internal_error`.
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, nullable: true, format: date-time }
         finishedAt: { type: string, nullable: true, format: date-time }

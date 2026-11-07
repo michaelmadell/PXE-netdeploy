@@ -631,7 +631,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List jobs. */
+        /**
+         * List jobs.
+         * @description Oldest first. Finished jobs are kept for 30 days (ADR 0016).
+         */
         get: operations["listJobs"];
         put?: never;
         post?: never;
@@ -671,7 +674,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel a specific job. */
+        /**
+         * Cancel a specific job.
+         * @description A queued job is cancelled at once. A running job gets `cancelRequested`
+         *     and stops at its next checkpoint, then becomes `cancelled`. A finished job
+         *     is returned unchanged.
+         */
         post: operations["cancelJob"];
         delete?: never;
         options?: never;
@@ -1280,8 +1288,12 @@ export interface components {
              *       `bound`, `released`, `declined` (full-mode DHCP).
              *     * `settings.updated`: `{etag}`.
              *     * `health.updated`: the `Health` object, after listeners change.
-             *     * `job.updated`, `deployment.updated`, `bootImage.updated`,
-             *       `image.updated`: from Phase 3 onwards.
+             *     * `job.updated`: `{kind, status, percent, resourceId}` (`resourceId`
+             *       in `data` is the job's resource; the event's `resourceId` is the
+             *       job id). Sent when the status changes and at most twice a second
+             *       for progress.
+             *     * `deployment.updated`, `bootImage.updated`, `image.updated`: from
+             *       Phase 3 onwards.
              */
             data?: Record<string, never>;
         };
@@ -1800,15 +1812,31 @@ export interface components {
         };
         /** @enum {string} */
         JobStatus: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+        /** @enum {string} */
+        JobKind: "image.import" | "driverPackage.import" | "bootImage.build";
+        /**
+         * @description Background work (ADR 0016). Jobs queue and run in order: boot image builds
+         *     one at a time, imports two at a time. A job that was running when the
+         *     server stopped fails with `interrupted`; it is not resumed.
+         */
         Job: {
             id: string;
-            /** @enum {string} */
-            kind: "image.import" | "driverPackage.import" | "bootImage.build" | "content.publish";
+            kind: components["schemas"]["JobKind"];
             status: components["schemas"]["JobStatus"];
+            /**
+             * @description The image, driver package or boot image the job works on. An import that
+             *     finds an identical existing item finishes with this set to that item.
+             */
             resourceId?: string | null;
-            percent?: number;
+            /** @description Cancel was requested while running; the job stops shortly. */
+            readonly cancelRequested: boolean;
+            percent: number;
             message?: string;
-            /** @description Why the job failed. Codes include `insufficient_storage` (the content store ran short of space). */
+            /**
+             * @description Why the job failed. Codes include `insufficient_storage` (the content store
+             *     ran short of space), `interrupted` (the server stopped while it ran) and
+             *     `internal_error`.
+             */
             error?: components["schemas"]["Problem"] | null;
             /** Format: date-time */
             createdAt: string;
@@ -3566,6 +3594,9 @@ export interface operations {
                 limit?: components["parameters"]["Limit"];
                 cursor?: components["parameters"]["Cursor"];
                 status?: components["schemas"]["JobStatus"];
+                kind?: components["schemas"]["JobKind"];
+                /** @description Jobs for one image, driver package or boot image. */
+                resourceId?: string;
             };
             header?: never;
             path?: never;

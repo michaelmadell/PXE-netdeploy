@@ -10,6 +10,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
+	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
@@ -31,12 +32,24 @@ type Server struct {
 	store    *store.Store
 	events   *events.Bus
 	content  *cas.Store
+	jobs     *jobs.Runner
 }
 
-// New returns a Server. Dependencies may be nil in tests of operations that
-// don't use them.
-func New(version string, s *settings.Service, network *netsvc.Manager, st *store.Store, bus *events.Bus, content *cas.Store) *Server {
-	return &Server{version: version, started: time.Now(), settings: s, network: network, store: st, events: bus, content: content}
+// Deps are the Server's dependencies. Any may be nil in tests of operations
+// that don't use them.
+type Deps struct {
+	Settings *settings.Service
+	Network  *netsvc.Manager
+	Store    *store.Store
+	Events   *events.Bus
+	Content  *cas.Store
+	Jobs     *jobs.Runner
+}
+
+// New returns a Server.
+func New(version string, d Deps) *Server {
+	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
+		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs}
 }
 
 // GetHealth reports per-service health from the running listeners, plus

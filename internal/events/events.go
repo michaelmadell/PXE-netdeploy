@@ -16,6 +16,7 @@ const (
 	LeaseUpdated    = "lease.updated"
 	SettingsUpdated = "settings.updated"
 	HealthUpdated   = "health.updated"
+	JobUpdated      = "job.updated"
 )
 
 // Event is one notification. Data is marshalled as the Event's `data`.

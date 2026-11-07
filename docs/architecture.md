@@ -27,6 +27,12 @@
 The admin and content listeners are separate so machines on the deployment
 network can reach boot content but not the admin API ([ADR 0009](adr/0009-separate-admin-and-content-listeners.md)).
 
+Imported and built files live in a content-addressed store under
+`<data>/content` (`-content` overrides): each file once, named by its SHA-256,
+with trees (an extracted ISO, a driver package, a boot image) described in
+SQLite and served to TFTP and HTTP as a virtual filesystem
+([ADR 0015](adr/0015-content-addressed-store.md)).
+
 ## Windows boot flows
 
 **PXE (TFTP).** Firmware gets a boot file from DHCP (our proxy or full mode, or an

@@ -1,0 +1,200 @@
+package cas
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
+
+	"github.com/michaelmadell/pxe-netdeploy/internal/store"
+)
+
+// Staging collects the files of one tree while a job writes them. Nothing
+// is visible until Commit; Discard (or a restart) throws it away.
+type Staging struct {
+	s   *Store
+	dir string
+
+	mu      sync.Mutex
+	files   []staged
+	folds   map[string]bool
+	written int64 // since the last space check
+	closed  bool
+}
+
+type staged struct {
+	path, fold, sha string
+	size            int64
+	tmp             string
+}
+
+// NewStaging starts a tree. name identifies the job (e.g. its id) and must
+// be unique among running jobs.
+func (s *Store) NewStaging(name string) (*Staging, error) {
+	if name == "" || filepath.Base(name) != name || name == "." || name == ".." {
+		return nil, fmt.Errorf("cas: invalid staging name %q", name)
+	}
+	dir := filepath.Join(s.root, stagingDir, name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("cas: create staging: %w", err)
+	}
+	return &Staging{s: s, dir: dir, folds: map[string]bool{}}, nil
+}
+
+// Add streams r into staging as the file at path p, hashing it. It checks
+// free space before writing and every 256 MiB, failing with
+// ErrInsufficientStorage before the reserve is used.
+func (st *Staging) Add(p string, r io.Reader) error {
+	clean, err := CleanPath(p)
+	if err != nil {
+		return fmt.Errorf("%w: %q", err, p)
+	}
+	fold := Fold(clean)
+	st.mu.Lock()
+	if st.closed {
+		st.mu.Unlock()
+		return errors.New("cas: staging already committed or discarded")
+	}
+	if st.folds[fold] {
+		st.mu.Unlock()
+		return fmt.Errorf("%w: %q", store.ErrDuplicatePath, clean)
+	}
+	st.folds[fold] = true
+	tmp := filepath.Join(st.dir, strconv.Itoa(len(st.files)))
+	st.files = append(st.files, staged{path: clean, fold: fold, tmp: tmp})
+	idx := len(st.files) - 1
+	st.mu.Unlock()
+
+	if err := st.s.CheckSpace(0); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("cas: stage %q: %w", clean, err)
+	}
+	h := sha256.New()
+	n, err := io.CopyBuffer(io.MultiWriter(f, h), &spaceChecked{r: r, st: st}, make([]byte, 1<<20))
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		if errors.Is(err, ErrInsufficientStorage) {
+			return err
+		}
+		return fmt.Errorf("cas: stage %q: %w", clean, err)
+	}
+	st.mu.Lock()
+	st.files[idx].sha = hex.EncodeToString(h.Sum(nil))
+	st.files[idx].size = n
+	st.mu.Unlock()
+	return nil
+}
+
+// spaceChecked checks free space every Store.checkEvery bytes read.
+type spaceChecked struct {
+	r  io.Reader
+	st *Staging
+}
+
+func (c *spaceChecked) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.st.mu.Lock()
+	c.st.written += int64(n)
+	due := c.st.written >= c.st.s.checkEvery
+	if due {
+		c.st.written = 0
+	}
+	c.st.mu.Unlock()
+	if due {
+		if serr := c.st.s.CheckSpace(0); serr != nil {
+			return n, serr
+		}
+	}
+	return n, err
+}
+
+// Commit publishes the staged files and records the tree. attach, if not
+// nil, runs before the store's lock is released and must record an owner
+// for the tree (e.g. set images.tree_id): an unowned tree is garbage. If
+// attach fails the tree is left for the next sweep. The staging directory
+// is removed either way.
+func (st *Staging) Commit(ctx context.Context, kind store.TreeKind, attach func(ctx context.Context, treeID string) error) (string, error) {
+	st.mu.Lock()
+	if st.closed {
+		st.mu.Unlock()
+		return "", errors.New("cas: staging already committed or discarded")
+	}
+	st.closed = true
+	files := st.files
+	st.mu.Unlock()
+	defer os.RemoveAll(st.dir)
+
+	s := st.s
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	t := store.NewTree{Kind: kind, Entries: make([]store.NewTreeEntry, 0, len(files))}
+	for _, f := range files {
+		if f.sha == "" {
+			return "", fmt.Errorf("cas: %q was not fully written", f.path)
+		}
+		if err := s.publish(f.tmp, f.sha); err != nil {
+			return "", err
+		}
+		t.Entries = append(t.Entries, store.NewTreeEntry{Path: f.path, Fold: f.fold, SHA256: f.sha, Size: f.size})
+	}
+	id, err := s.db.InsertTree(ctx, t)
+	if err != nil {
+		return "", err
+	}
+	if attach != nil {
+		if err := attach(ctx, id); err != nil {
+			return "", err
+		}
+	}
+	return id, nil
+}
+
+// publish moves a staged file into sha256/ unless that blob is already
+// there (from an earlier import, or a crash before its row was written:
+// same hash, same bytes), in which case the staged copy is dropped.
+// Caller holds s.mu.
+func (s *Store) publish(tmp, h string) error {
+	dst := s.blobPath(h)
+	if _, err := os.Lstat(dst); err == nil {
+		return os.Remove(tmp)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return fmt.Errorf("cas: publish %s: %w", h, err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		// Another commit published it first (Windows refuses to replace a
+		// file that is open).
+		if _, serr := os.Lstat(dst); serr == nil {
+			return os.Remove(tmp)
+		}
+		return fmt.Errorf("cas: publish %s: %w", h, err)
+	}
+	return nil
+}
+
+// Discard throws the staged files away.
+func (st *Staging) Discard() error {
+	st.mu.Lock()
+	st.closed = true
+	st.mu.Unlock()
+	if err := os.RemoveAll(st.dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("cas: discard staging: %w", err)
+	}
+	return nil
+}

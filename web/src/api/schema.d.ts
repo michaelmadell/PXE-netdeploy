@@ -11,7 +11,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Liveness and per-service health (DHCP, TFTP, HTTP, storage). */
+        /** Liveness and per-service health (database, content store, DHCP, TFTP, HTTP). */
         get: operations["getHealth"];
         put?: never;
         post?: never;
@@ -83,6 +83,9 @@ export interface paths {
          *     a tus client library (e.g. tus-js-client). Once complete, pass the `uploadId`
          *     to an import endpoint (`POST /images`, `POST /driver-packages`).
          *     Incomplete uploads expire after a configurable period.
+         *
+         *     `507` (`code: insufficient_storage`) if `Upload-Length` plus
+         *     `storage.reserveBytes` doesn't fit in the content store's free space.
          */
         post: operations["createUpload"];
         delete?: never;
@@ -133,6 +136,10 @@ export interface paths {
          *     job finishes immediately with `resourceId` set to the existing image and no
          *     second copy is stored. (The hash is only known once the upload is read, so
          *     this is reported through the job rather than as an immediate `200`.)
+         *
+         *     Disk space: `507` (`code: insufficient_storage`) if the extracted size
+         *     (estimated as the upload's size) plus `storage.reserveBytes` doesn't fit.
+         *     A job that runs short of space while writing fails with the same code.
          */
         post: operations["importImage"];
         delete?: never;
@@ -183,7 +190,8 @@ export interface paths {
          *
          *     Every INF is parsed for class, role, provider, version, architecture,
          *     targeted OS versions and hardware IDs, and its catalog signature is checked.
-         *     Identical packages (same SHA-256) are deduplicated as for images.
+         *     Identical packages (same SHA-256) are deduplicated as for images, and
+         *     disk space is checked as for images (`507`, `insufficient_storage`).
          */
         post: operations["importDriverPackage"];
         delete?: never;
@@ -1177,19 +1185,50 @@ export interface components {
         Health: {
             /** @enum {string} */
             status: "ok" | "degraded" | "down";
+            /**
+             * @description Keyed by service: `store` (the database), `storage` (the content
+             *     store), `admin`, `dhcp`, `tftp`, `content`. `storage`
+             *     is `error` when the content store is unusable or a stored file is
+             *     missing or truncated (ADR 0015); `detail` says which.
+             */
             services: {
                 [key: string]: components["schemas"]["ServiceHealth"];
             };
+            storage?: components["schemas"]["StorageHealth"];
             /**
              * @description Configuration the operator should know about; does not change `status`.
              *     Codes: `boot_prompt_password_disabled` (debug mode: anyone at a machine can
              *     re-image it), `boot_prompt_no_password` (only armed deployments can run),
-             *     `no_default_profile` (unknown clients are not answered).
+             *     `no_default_profile` (unknown clients are not answered), `storage_low`
+             *     (free space in the content store is below twice `storage.reserveBytes`).
              */
             warnings?: {
                 code: string;
                 message: string;
             }[];
+        };
+        /** @description Space on the content store's volume (ADR 0015). */
+        StorageHealth: {
+            /**
+             * Format: int64
+             * @description Size of the volume.
+             */
+            totalBytes: number;
+            /**
+             * Format: int64
+             * @description Free space available to netdeployd.
+             */
+            freeBytes: number;
+            /**
+             * Format: int64
+             * @description Total size of the stored files (each counted once).
+             */
+            contentBytes: number;
+            /**
+             * Format: int64
+             * @description `storage.reserveBytes`: space imports never use.
+             */
+            reserveBytes: number;
         };
         ServiceHealth: {
             /** @enum {string} */
@@ -1769,6 +1808,7 @@ export interface components {
             resourceId?: string | null;
             percent?: number;
             message?: string;
+            /** @description Why the job failed. Codes include `insufficient_storage` (the content store ran short of space). */
             error?: components["schemas"]["Problem"] | null;
             /** Format: date-time */
             createdAt: string;
@@ -1895,6 +1935,20 @@ export interface components {
                  *     image source for them. Null: such clients are not answered.
                  */
                 defaultProfileId?: string | null;
+            };
+            /**
+             * @description Content store (ADR 0015). Its location is the `-content` startup flag
+             *     (default `<data>/content`), not a setting.
+             */
+            storage?: {
+                /**
+                 * Format: int64
+                 * @description Free space the content store never uses (default 5 GiB). Uploads and
+                 *     imports that wouldn't leave this much free are refused with `507`;
+                 *     running jobs fail before going below it.
+                 * @default 5368709120
+                 */
+                reserveBytes: number;
             };
             /** @description Which client architectures are answered at all. */
             architectures?: {
@@ -2263,6 +2317,7 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             413: components["responses"]["Problem"];
+            507: components["responses"]["Problem"];
         };
     };
     deleteUpload: {
@@ -2387,6 +2442,7 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            507: components["responses"]["Problem"];
         };
     };
     getImage: {
@@ -2519,6 +2575,7 @@ export interface operations {
             202: components["responses"]["JobAccepted"];
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            507: components["responses"]["Problem"];
         };
     };
     getDriverPackage: {

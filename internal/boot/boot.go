@@ -6,6 +6,7 @@ package boot
 
 import (
 	"context"
+	"io/fs"
 	"net/netip"
 	"sync"
 	"time"
@@ -34,12 +35,12 @@ type Request struct {
 }
 
 // Answer is what to send a client: a TFTP path for PXE, a URL for HTTP Boot,
-// and the directory TFTP serves that client from (its boot image's content;
-// empty means the server's default).
+// and the content TFTP and HTTP serve that client from (its boot image's
+// tree, ADR 0015; nil means the server's default).
 type Answer struct {
 	File string
 	URL  string
-	Root string
+	Root fs.FS
 }
 
 // Booter decides what a client boots. ok=false means it gets no boot answer
@@ -54,7 +55,7 @@ type Booter interface {
 type Static struct {
 	File string // TFTP path for UEFI x64 PXE
 	URL  string // URL for UEFI x64 HTTP Boot
-	Root string // TFTP content directory for every client
+	Root fs.FS  // content for every client
 }
 
 // Boot implements Booter.

@@ -19,6 +19,7 @@ type Config struct {
 	ContentHTTPS  CertPair      `json:"contentHttps"`
 	BootPrompt    BootPrompt    `json:"bootPrompt"`
 	Architectures Architectures `json:"architectures"`
+	Storage       Storage       `json:"storage"`
 }
 
 // Admin is the admin API + UI listener.
@@ -111,6 +112,16 @@ type Architectures struct {
 	HTTPBoot  bool `json:"httpBoot"`
 }
 
+// Storage is the content store's free-space reserve (ADR 0015). Its
+// location is the -content flag, not a setting.
+type Storage struct {
+	ReserveBytes int64 `json:"reserveBytes"`
+}
+
+// DefaultReserveBytes is storage.reserveBytes' default, 5 GiB (as
+// cas.DefaultReserveBytes).
+const DefaultReserveBytes int64 = 5 << 30
+
 // Defaults are the spec's defaults: no interfaces, so a fresh install answers
 // nobody, and the admin listener on localhost.
 func Defaults() Config {
@@ -122,6 +133,7 @@ func Defaults() Config {
 		Architectures: Architectures{
 			BIOS: false, UEFIX64: true, UEFIArm64: true, HTTPBoot: true,
 		},
+		Storage: Storage{ReserveBytes: DefaultReserveBytes},
 	}
 }
 

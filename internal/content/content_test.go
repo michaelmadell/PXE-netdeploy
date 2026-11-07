@@ -2,6 +2,7 @@ package content
 
 import (
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,35 @@ import (
 	"testing"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 )
+
+// hashed stands in for a content store tree: its files report a hash.
+type hashed struct{ fs.FS }
+
+type hashedFile struct{ *os.File }
+
+func (hashedFile) SHA256() string { return "abc123" }
+
+func (h hashed) Open(name string) (fs.File, error) {
+	f, err := h.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return hashedFile{f.(*os.File)}, nil
+}
+
+func TestStoredFilesGetETag(t *testing.T) {
+	h, _, _ := handler(t, nil)
+	w := get(h, http.MethodGet, BootPrefix+"boot/bcd", "10.77.0.140")
+	if w.Code != http.StatusOK || w.Body.String() != "client-bcd" || w.Header().Get("ETag") != `"abc123"` {
+		t.Fatalf("got %d %q etag %q", w.Code, w.Body.String(), w.Header().Get("ETag"))
+	}
+	// Default content is a plain directory: no hash, no ETag.
+	if w := get(h, http.MethodGet, BootPrefix+"Boot/BCD", "10.77.0.9"); w.Header().Get("ETag") != "" {
+		t.Errorf("unexpected ETag %q", w.Header().Get("ETag"))
+	}
+}
 
 func write(t *testing.T, dir, rel, data string) {
 	t.Helper()
@@ -32,17 +61,16 @@ func handler(t *testing.T, agent http.Handler) (*Handler, string, string) {
 	write(t, def, "Boot/BCD", "default-bcd")
 	write(t, other, "Boot/BCD", "client-bcd")
 	h := New(Config{
-		DefaultRoot: def,
-		ClientRoot: func(ip netip.Addr) (string, []any) {
+		DefaultRoot: cas.DirFS(def),
+		ClientRoot: func(ip netip.Addr) (fs.FS, []any) {
 			if ip == netip.MustParseAddr("10.77.0.140") {
-				return other, []any{"boot_session", "dhcp"}
+				return hashed{cas.DirFS(other)}, []any{"boot_session", "dhcp"}
 			}
-			return "", []any{"boot_session", "none"}
+			return nil, []any{"boot_session", "none"}
 		},
 		Agent:  agent,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	t.Cleanup(func() { h.Close() })
 	return h, def, other
 }
 

@@ -88,7 +88,7 @@ paths:
       tags: [system]
       operationId: getHealth
       security: []
-      summary: Liveness and per-service health (DHCP, TFTP, HTTP, storage).
+      summary: Liveness and per-service health (database, content store, DHCP, TFTP, HTTP).
       responses:
         "200":
           description: Healthy or degraded.
@@ -149,6 +149,9 @@ paths:
         a tus client library (e.g. tus-js-client). Once complete, pass the `uploadId`
         to an import endpoint (`POST /images`, `POST /driver-packages`).
         Incomplete uploads expire after a configurable period.
+
+        `507` (`code: insufficient_storage`) if `Upload-Length` plus
+        `storage.reserveBytes` doesn't fit in the content store's free space.
       parameters:
         - { name: Tus-Resumable, in: header, required: true, schema: { type: string, enum: ["1.0.0"] } }
         - { name: Upload-Length, in: header, required: true, schema: { type: integer, minimum: 1 } }
@@ -161,6 +164,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "413": { $ref: "#/components/responses/Problem" }
+        "507": { $ref: "#/components/responses/Problem" }
 
   /uploads/{uploadId}:
     parameters:
@@ -239,6 +243,10 @@ paths:
         job finishes immediately with `resourceId` set to the existing image and no
         second copy is stored. (The hash is only known once the upload is read, so
         this is reported through the job rather than as an immediate `200`.)
+
+        Disk space: `507` (`code: insufficient_storage`) if the extracted size
+        (estimated as the upload's size) plus `storage.reserveBytes` doesn't fit.
+        A job that runs short of space while writing fails with the same code.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -251,6 +259,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "507": { $ref: "#/components/responses/Problem" }
 
   /images/{imageId}:
     parameters:
@@ -333,7 +342,8 @@ paths:
 
         Every INF is parsed for class, role, provider, version, architecture,
         targeted OS versions and hardware IDs, and its catalog signature is checked.
-        Identical packages (same SHA-256) are deduplicated as for images.
+        Identical packages (same SHA-256) are deduplicated as for images, and
+        disk space is checked as for images (`507`, `insufficient_storage`).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -350,6 +360,7 @@ paths:
         "202": { $ref: "#/components/responses/JobAccepted" }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
+        "507": { $ref: "#/components/responses/Problem" }
 
   /driver-packages/{driverPackageId}:
     parameters:
@@ -1906,20 +1917,37 @@ components:
         status: { type: string, enum: [ok, degraded, down] }
         services:
           type: object
+          description: |
+            Keyed by service: `store` (the database), `storage` (the content
+            store), `admin`, `dhcp`, `tftp`, `content`. `storage`
+            is `error` when the content store is unusable or a stored file is
+            missing or truncated (ADR 0015); `detail` says which.
           additionalProperties: { $ref: "#/components/schemas/ServiceHealth" }
+        storage: { $ref: "#/components/schemas/StorageHealth" }
         warnings:
           type: array
           description: |
             Configuration the operator should know about; does not change `status`.
             Codes: `boot_prompt_password_disabled` (debug mode: anyone at a machine can
             re-image it), `boot_prompt_no_password` (only armed deployments can run),
-            `no_default_profile` (unknown clients are not answered).
+            `no_default_profile` (unknown clients are not answered), `storage_low`
+            (free space in the content store is below twice `storage.reserveBytes`).
           items:
             type: object
             required: [code, message]
             properties:
               code: { type: string }
               message: { type: string }
+
+    StorageHealth:
+      type: object
+      description: Space on the content store's volume (ADR 0015).
+      required: [totalBytes, freeBytes, contentBytes, reserveBytes]
+      properties:
+        totalBytes: { type: integer, format: int64, description: Size of the volume. }
+        freeBytes: { type: integer, format: int64, description: Free space available to netdeployd. }
+        contentBytes: { type: integer, format: int64, description: Total size of the stored files (each counted once). }
+        reserveBytes: { type: integer, format: int64, description: "`storage.reserveBytes`: space imports never use." }
 
     ServiceHealth:
       type: object
@@ -2697,7 +2725,11 @@ components:
         resourceId: { type: string, nullable: true }
         percent: { type: integer, minimum: 0, maximum: 100 }
         message: { type: string }
-        error: { nullable: true, type: object, allOf: [{ $ref: "#/components/schemas/Problem" }] }
+        error:
+          nullable: true
+          type: object
+          allOf: [{ $ref: "#/components/schemas/Problem" }]
+          description: "Why the job failed. Codes include `insufficient_storage` (the content store ran short of space)."
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, nullable: true, format: date-time }
         finishedAt: { type: string, nullable: true, format: date-time }
@@ -2848,6 +2880,21 @@ components:
               description: |
                 Preselected in the menu for clients without a profile, and the boot
                 image source for them. Null: such clients are not answered.
+        storage:
+          type: object
+          description: |
+            Content store (ADR 0015). Its location is the `-content` startup flag
+            (default `<data>/content`), not a setting.
+          properties:
+            reserveBytes:
+              type: integer
+              format: int64
+              minimum: 0
+              default: 5368709120
+              description: |
+                Free space the content store never uses (default 5 GiB). Uploads and
+                imports that wouldn't leave this much free are refused with `507`;
+                running jobs fail before going below it.
         architectures:
           type: object
           description: Which client architectures are answered at all.

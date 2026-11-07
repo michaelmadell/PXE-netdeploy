@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"io"
 	"log/slog"
 	"math/big"
@@ -110,7 +111,7 @@ func basePlan(t *testing.T, cert *tls.Certificate, root string) Plan {
 		}},
 		TFTP: []TFTPPlan{{
 			Interface: "lab0", Bind: netip.MustParseAddrPort("10.77.0.1:69"), Field: "interfaces[0].services.tftp",
-			Config: tftp.Config{Root: root},
+			Config: tftp.Config{Root: cas.DirFS(root)},
 		}},
 	}
 }

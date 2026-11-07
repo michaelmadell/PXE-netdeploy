@@ -19,5 +19,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0012](0012-own-tftp-server.md) | Our own read-only TFTP server | accepted |
 | [0013](0013-boot-prompt-password-gate.md) | Every PXE client boots WinPE; a password gate prevents re-imaging | accepted |
 | [0014](0014-sqlite-store.md) | SQLite store with hand-written SQL and embedded migrations | accepted |
+| [0015](0015-content-addressed-store.md) | Content-addressed store for imported and built files | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

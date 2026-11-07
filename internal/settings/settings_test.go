@@ -69,6 +69,9 @@ func TestFromAPIFillsDefaults(t *testing.T) {
 	if !cfg.BootPrompt.RequirePassword || cfg.BootPrompt.TimeoutSeconds != 30 || cfg.BootPrompt.ArmedCountdownSeconds != 10 {
 		t.Errorf("boot prompt defaults: %+v", cfg.BootPrompt)
 	}
+	if cfg.Storage.ReserveBytes != 5<<30 {
+		t.Errorf("storage defaults: %+v", cfg.Storage)
+	}
 	if errs := Validate(cfg, lab); len(errs) > 0 {
 		t.Errorf("Validate: %v", errs)
 	}
@@ -82,7 +85,8 @@ func TestRoundTripKeepsEverything(t *testing.T) {
 			"services":{"tftp":true,"http":false,"httpPort":8080,"https":true,"httpsPort":8443}}],
 		"tftp":{"maxBlockSize":1456,"maxWindowSize":16,"timeoutSeconds":2},
 		"bootPrompt":{"requirePassword":false,"timeoutSeconds":60,"armedCountdownSeconds":0,"defaultProfileId":"p1"},
-		"architectures":{"bios":true,"uefiX64":true,"uefiArm64":false,"httpBoot":false}}`
+		"architectures":{"bios":true,"uefiX64":true,"uefiArm64":false,"httpBoot":false},
+		"storage":{"reserveBytes":1073741824}}`
 	cfg, errs := FromAPI(apiSettings(t, doc), Defaults())
 	if len(errs) > 0 {
 		t.Fatal(errs)
@@ -99,6 +103,9 @@ func TestRoundTripKeepsEverything(t *testing.T) {
 	b, _ := json.Marshal(again)
 	if string(a) != string(b) {
 		t.Errorf("round trip changed the config:\n%s\n%s", a, b)
+	}
+	if cfg.Storage.ReserveBytes != 1<<30 {
+		t.Errorf("storage: %+v", cfg.Storage)
 	}
 	if got := cfg.Interfaces[0].MACPrefixes[0]; got != "00:1b:21" {
 		t.Errorf("mac prefix not normalised: %q", got)

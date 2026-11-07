@@ -3,10 +3,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
@@ -28,12 +30,13 @@ type Server struct {
 	network  *netsvc.Manager
 	store    *store.Store
 	events   *events.Bus
+	content  *cas.Store
 }
 
 // New returns a Server. Dependencies may be nil in tests of operations that
 // don't use them.
-func New(version string, s *settings.Service, network *netsvc.Manager, st *store.Store, bus *events.Bus) *Server {
-	return &Server{version: version, started: time.Now(), settings: s, network: network, store: st, events: bus}
+func New(version string, s *settings.Service, network *netsvc.Manager, st *store.Store, bus *events.Bus, content *cas.Store) *Server {
+	return &Server{version: version, started: time.Now(), settings: s, network: network, store: st, events: bus, content: content}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
@@ -57,6 +60,20 @@ func (s *Server) health(ctx context.Context) api.Health {
 			services["store"] = api.ServiceHealth{Status: api.ServiceHealthStatusOk}
 		}
 	}
+	var storage *api.StorageHealth
+	if s.content != nil {
+		if ok, detail := s.content.Health(); ok {
+			services["storage"] = api.ServiceHealth{Status: api.ServiceHealthStatusOk}
+		} else {
+			services["storage"] = api.ServiceHealth{Status: api.ServiceHealthStatusError, Detail: &detail}
+		}
+		pctx, cancel := context.WithTimeout(ctx, time.Second)
+		sp, err := s.content.Space(pctx)
+		cancel()
+		if err == nil {
+			storage = &api.StorageHealth{TotalBytes: sp.Total, FreeBytes: sp.Free, ContentBytes: sp.Content, ReserveBytes: sp.Reserve}
+		}
+	}
 	if s.network != nil {
 		for name, st := range s.network.Status() {
 			services[name] = serviceHealth(st)
@@ -68,8 +85,13 @@ func (s *Server) health(ctx context.Context) api.Health {
 			status = api.HealthStatusDegraded
 		}
 	}
-	out := api.Health{Status: status, Services: services}
-	if w := s.warnings(); len(w) > 0 {
+	out := api.Health{Status: status, Services: services, Storage: storage}
+	w := s.warnings()
+	if storage != nil && storage.FreeBytes < 2*storage.ReserveBytes {
+		w = append(w, warning{"storage_low", fmt.Sprintf("The content store has %s free; imports stop at %s.",
+			humanBytes(storage.FreeBytes), humanBytes(storage.ReserveBytes))})
+	}
+	if len(w) > 0 {
 		out.Warnings = &w
 	}
 	return out
@@ -97,6 +119,20 @@ func serviceHealth(st netsvc.Status) api.ServiceHealth {
 		return disabled(st.Note)
 	}
 	return disabled("not configured on any interface")
+}
+
+// humanBytes renders n in binary units, e.g. "4.8 GiB".
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func disabled(detail string) api.ServiceHealth {

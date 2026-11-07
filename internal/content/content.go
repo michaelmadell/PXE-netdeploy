@@ -12,11 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -28,12 +26,14 @@ const AgentPrefix = "/api/v1/agent/"
 
 // Config configures a Handler.
 type Config struct {
-	// DefaultRoot serves clients ClientRoot doesn't place ("" or no
-	// ClientRoot). Empty: no boot content (404).
-	DefaultRoot string
-	// ClientRoot picks a client's content directory and log attributes, as
-	// for TFTP (settings.Service.clientRoot).
-	ClientRoot func(client netip.Addr) (dir string, attrs []any)
+	// DefaultRoot serves clients ClientRoot doesn't place (nil or no
+	// ClientRoot). Nil: no boot content (404). Its Open matches paths
+	// case-insensitively and returns files that implement io.ReadSeeker
+	// (cas.Tree and cas.DirFS do).
+	DefaultRoot fs.FS
+	// ClientRoot picks a client's content and log attributes, as for TFTP
+	// (settings.Service.clientRoot).
+	ClientRoot func(client netip.Addr) (root fs.FS, attrs []any)
 	// Agent handles AgentPrefix. Nil: 404.
 	Agent  http.Handler
 	Logger *slog.Logger
@@ -43,9 +43,6 @@ type Config struct {
 type Handler struct {
 	cfg Config
 	log *slog.Logger
-
-	mu    sync.Mutex
-	roots map[string]*os.Root
 }
 
 // New returns a Handler.
@@ -53,19 +50,7 @@ func New(cfg Config) *Handler {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Handler{cfg: cfg, log: cfg.Logger.With("svc", "content"), roots: map[string]*os.Root{}}
-}
-
-// Close releases opened content directories.
-func (h *Handler) Close() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var errs []error
-	for _, r := range h.roots {
-		errs = append(errs, r.Close())
-	}
-	h.roots = map[string]*os.Root{}
-	return errors.Join(errs...)
+	return &Handler{cfg: cfg, log: cfg.Logger.With("svc", "content")}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +72,12 @@ func (h *Handler) serveBoot(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	client := clientAddr(r)
-	dir, attrs := h.cfg.DefaultRoot, []any{}
+	root, attrs := h.cfg.DefaultRoot, []any{}
 	if h.cfg.ClientRoot != nil {
-		var d string
-		d, attrs = h.cfg.ClientRoot(client)
-		if d != "" {
-			dir = d
+		var r fs.FS
+		r, attrs = h.cfg.ClientRoot(client)
+		if r != nil {
+			root = r
 		}
 	}
 	log := h.log.With(append([]any{"client", r.RemoteAddr, "path", r.URL.Path}, attrs...)...)
@@ -103,24 +88,19 @@ func (h *Handler) serveBoot(w http.ResponseWriter, r *http.Request) {
 		notFound(w, "No such file.")
 		return
 	}
-	if dir == "" {
+	if root == nil {
 		log.Warn("content request refused", "reason", "no boot content configured")
 		notFound(w, "No boot content is configured.")
 		return
 	}
-	root, err := h.root(dir)
-	if err != nil {
-		log.Error("content directory unavailable", "dir", dir, "err", err)
-		problem(w, http.StatusInternalServerError, "internal_error", "")
-		return
-	}
 	f, err := root.Open(rel)
 	if err != nil {
-		level := slog.LevelWarn
-		if errors.Is(err, fs.ErrNotExist) {
-			level = slog.LevelInfo
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrInvalid) {
+			log.Error("content open failed", "err", err)
+			problem(w, http.StatusInternalServerError, "internal_error", "")
+			return
 		}
-		log.Log(r.Context(), level, "content request refused", "reason", "not found")
+		log.Info("content request refused", "reason", "not found")
 		notFound(w, "No such file.")
 		return
 	}
@@ -132,8 +112,18 @@ func (h *Handler) serveBoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		log.Error("content file not seekable", "type", fmt.Sprintf("%T", f))
+		problem(w, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if h, ok := f.(interface{ SHA256() string }); ok {
+		// Stored files never change, so their hash is a strong validator.
+		w.Header().Set("ETag", `"`+h.SHA256()+`"`)
+	}
 	rec := &counter{ResponseWriter: w, status: http.StatusOK}
-	http.ServeContent(rec, r, fi.Name(), fi.ModTime(), f)
+	http.ServeContent(rec, r, fi.Name(), fi.ModTime(), rs)
 	elapsed := time.Since(start)
 	mbps := 0.0
 	if s := elapsed.Seconds(); s > 0 {
@@ -144,24 +134,8 @@ func (h *Handler) serveBoot(w http.ResponseWriter, r *http.Request) {
 		"mb_per_s", strconv.FormatFloat(mbps, 'f', 1, 64))
 }
 
-// root returns the opened directory, caching it.
-func (h *Handler) root(dir string) (*os.Root, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if r, ok := h.roots[dir]; ok {
-		return r, nil
-	}
-	r, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	h.roots[dir] = r
-	return r, nil
-}
-
 // cleanPath turns the URL path after BootPrefix into a path inside the
-// content root. "..", empty and drive or stream names (":") are refused;
-// os.Root also refuses escapes, so this is belt and braces.
+// content root. "..", empty and drive or stream names (":") are refused.
 func cleanPath(p string) (string, bool) {
 	if p == "" || strings.ContainsAny(p, "\\:\x00") {
 		return "", false

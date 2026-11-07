@@ -6,6 +6,7 @@ Since Phase 2 step 2, network services come from the stored settings
 | Flag | Purpose |
 |---|---|
 | `-data` | Data directory: `netdeploy.db`, the generated admin certificate |
+| `-content` | Content store (imported and built files, ADR 0015); default `<data>/content`. Point it at a bigger volume if needed; it must not be shared between data directories |
 | `-admin-addr` | Recovery override for the admin listener (health shows a warning while it's set) |
 | `-log`, `-log-level` | Logging |
 | `-tftp-root`, `-boot-file`, `-http-boot-url` | **Temporary** boot content until boot images exist (Phase 2 step 4) |
@@ -61,7 +62,8 @@ Notes:
 - TFTP picks each client's content from its DHCP boot session
   (`boot_session=dhcp` in the log), the lease table after a restart
   (`lease`), or the default (`none`, e.g. with DHCP `off`). Until boot images
-  exist everything is `-tftp-root`. `\BCD` is never served, and misses of
+  exist everything is `-tftp-root`. Paths match case-insensitively over both
+  TFTP and HTTP. `\BCD` is never served, and misses of
   the optional files Boot Manager probes for are logged at debug only.
 - A `PUT` that can't bind a port returns `422 bind_failed` and leaves the
   running configuration as it was. At startup, the same failure doesn't stop

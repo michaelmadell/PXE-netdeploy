@@ -1,7 +1,10 @@
 package tftp
 
 import (
+	"io/fs"
+
 	"errors"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -25,8 +28,11 @@ func TestClientRootSelectsContentPerClient(t *testing.T) {
 		netip.MustParseAddr("127.0.0.2"): a,
 		netip.MustParseAddr("127.0.0.3"): b,
 	}
-	addr := startServer(t, def, Config{ClientRoot: func(ip netip.Addr) (string, []any) {
-		return roots[ip], nil
+	addr := startServer(t, def, Config{ClientRoot: func(ip netip.Addr) (fs.FS, []any) {
+		if d, ok := roots[ip]; ok {
+			return cas.DirFS(d), nil
+		}
+		return nil, nil
 	}})
 
 	for ip, want := range map[string]string{"127.0.0.2": "client-a", "127.0.0.3": "client-b", "127.0.0.4": "default"} {

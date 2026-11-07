@@ -1,6 +1,6 @@
 // Command netdeployd is the deployment server: admin API + UI, DHCP and TFTP.
-// Everything except the data directory and logging comes from the stored
-// settings (GET/PUT /api/v1/settings); see -h for the bootstrap flags.
+// Everything except the data and content directories and logging comes from
+// the stored settings (GET/PUT /api/v1/settings); see -h for the bootstrap flags.
 package main
 
 import (
@@ -12,10 +12,12 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
@@ -29,14 +31,16 @@ import (
 var version = "dev"
 
 type options struct {
-	dataDir   string
-	adminAddr string // empty: use Settings.admin
-	dev       settings.Dev
+	dataDir    string
+	contentDir string // empty: <data>/content
+	adminAddr  string // empty: use Settings.admin
+	dev        settings.Dev
 }
 
 func main() {
 	var o options
 	flag.StringVar(&o.dataDir, "data", "./data", "data directory (database, certificates)")
+	flag.StringVar(&o.contentDir, "content", "", "content store directory (imported and built files); default <data>/content")
 	flag.StringVar(&o.adminAddr, "admin-addr", "", "recovery override for the admin listener, e.g. 127.0.0.1:8443; normally set in settings")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
@@ -107,7 +111,22 @@ func run(o options) error {
 		// forwards /api/v1/agent/ to it.
 		Agent: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }),
 	})
-	impl := server.New(version, svc, network, st, bus)
+	contentDir := o.contentDir
+	if contentDir == "" {
+		contentDir = filepath.Join(o.dataDir, "content")
+	}
+	content, err := cas.Open(ctx, cas.Options{
+		Root:  contentDir,
+		Store: st,
+		Reserve: func() int64 {
+			cfg, _ := svc.Current()
+			return cfg.Storage.ReserveBytes
+		},
+	})
+	if err != nil {
+		return err
+	}
+	impl := server.New(version, svc, network, st, bus, content)
 	if handler, err = adminHandler(impl, st); err != nil {
 		return err
 	}

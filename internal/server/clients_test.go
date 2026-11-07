@@ -32,7 +32,7 @@ func apiHandler(t *testing.T) (http.Handler, *store.Store) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	strict := api.NewStrictHandlerWithOptions(New("test", nil, nil, st, events.New()), nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(New("test", nil, nil, st, events.New(), nil), nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: RequestError, ResponseErrorHandlerFunc: ResponseError,
 	})
 	api.HandlerWithOptions(strict, api.StdHTTPServerOptions{BaseURL: "/api/v1", BaseRouter: mux, ErrorHandlerFunc: RequestError})

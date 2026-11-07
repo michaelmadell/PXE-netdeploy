@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
@@ -58,6 +59,30 @@ func testService(t *testing.T, dir string) *Service {
 	}
 	t.Cleanup(func() { cancel(); <-mgr.Done(); st.Close() })
 	return svc
+}
+
+// A document stored before a field existed gets that field's default.
+func TestStartFillsFieldsAddedLater(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.Open(ctx, dir, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	b, _ := json.Marshal(Defaults())
+	json.Unmarshal(b, &doc)
+	delete(doc, "storage") // as stored by Phase 2
+	b, _ = json.Marshal(doc)
+	if _, err := st.InitSettings(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	svc := testService(t, dir)
+	if cfg, _ := svc.Current(); cfg.Storage.ReserveBytes != DefaultReserveBytes {
+		t.Errorf("reserveBytes = %d, want the default", cfg.Storage.ReserveBytes)
+	}
 }
 
 func TestServiceReplace(t *testing.T) {
@@ -112,13 +137,14 @@ func TestClientRoot(t *testing.T) {
 
 	// A DHCP boot session wins.
 	sessIP := netip.MustParseAddr("10.77.0.140")
-	svc.Sessions().Record(boot.Session{Interface: "lab0", IP: sessIP, MAC: "00:15:5d:00:00:01", Answer: boot.Answer{Root: "/content/a"}})
-	if dir, attrs := resolve(sessIP); dir != "/content/a" || !hasAttr(attrs, "boot_session", "dhcp") {
-		t.Errorf("session: %q %v", dir, attrs)
+	a := cas.DirFS("/content/a")
+	svc.Sessions().Record(boot.Session{Interface: "lab0", IP: sessIP, MAC: "00:15:5d:00:00:01", Answer: boot.Answer{Root: a}})
+	if root, attrs := resolve(sessIP); root != a || !hasAttr(attrs, "boot_session", "dhcp") {
+		t.Errorf("session: %v %v", root, attrs)
 	}
 	// Same IP on another interface: no session there.
-	if dir, _ := svc.clientRoot("lab1")(sessIP); dir != "" {
-		t.Errorf("session leaked across interfaces: %q", dir)
+	if root, _ := svc.clientRoot("lab1")(sessIP); root != nil {
+		t.Errorf("session leaked across interfaces: %v", root)
 	}
 
 	// No session, but a lease (full mode after a restart): the client's content.
@@ -126,13 +152,13 @@ func TestClientRoot(t *testing.T) {
 	if err := svc.opts.Store.PutLease(ctx, store.Lease{Interface: "lab0", IP: leaseIP, MAC: "00:15:5d:00:00:02", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if dir, attrs := resolve(leaseIP); dir != svc.opts.Dev.TFTPRoot || !hasAttr(attrs, "boot_session", "lease") {
-		t.Errorf("lease: %q %v", dir, attrs)
+	if root, attrs := resolve(leaseIP); root != cas.DirFS(svc.opts.Dev.TFTPRoot) || !hasAttr(attrs, "boot_session", "lease") {
+		t.Errorf("lease: %v %v", root, attrs)
 	}
 
 	// Neither (DHCP off): the default content.
-	if dir, attrs := resolve(netip.MustParseAddr("10.77.0.160")); dir != "" || !hasAttr(attrs, "boot_session", "none") {
-		t.Errorf("unknown: %q %v", dir, attrs)
+	if root, attrs := resolve(netip.MustParseAddr("10.77.0.160")); root != nil || !hasAttr(attrs, "boot_session", "none") {
+		t.Errorf("unknown: %v %v", root, attrs)
 	}
 }
 

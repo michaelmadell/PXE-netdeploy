@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -22,7 +23,7 @@ import (
 // startServer serves dir on a loopback port and returns its address.
 func startServer(t *testing.T, dir string, cfg Config) string {
 	t.Helper()
-	cfg.Root = dir
+	cfg.Root = cas.DirFS(dir)
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 200 * time.Millisecond
 	}
@@ -458,9 +459,8 @@ func TestConfigValidation(t *testing.T) {
 	dir := t.TempDir()
 	for _, cfg := range []Config{
 		{},
-		{Root: filepath.Join(dir, "missing")},
-		{Root: dir, MaxBlockSize: 4},
-		{Root: dir, MaxWindowSize: 100_000},
+		{Root: cas.DirFS(dir), MaxBlockSize: 4},
+		{Root: cas.DirFS(dir), MaxWindowSize: 100_000},
 	} {
 		if s, err := New(cfg); err == nil {
 			s.Close()
@@ -573,12 +573,12 @@ func TestDefaultCapsLowerLargeRequests(t *testing.T) {
 }
 
 func TestMaxBlockSizeUpToRFCLimit(t *testing.T) {
-	s, err := New(Config{Root: t.TempDir(), MaxBlockSize: 65464})
+	s, err := New(Config{Root: cas.DirFS(t.TempDir()), MaxBlockSize: 65464})
 	if err != nil {
 		t.Fatalf("65464 should be allowed: %v", err)
 	}
 	s.Close()
-	if s, err := New(Config{Root: t.TempDir(), MaxBlockSize: 65465}); err == nil {
+	if s, err := New(Config{Root: cas.DirFS(t.TempDir()), MaxBlockSize: 65465}); err == nil {
 		s.Close()
 		t.Fatal("65465 should be refused")
 	}

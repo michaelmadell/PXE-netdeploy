@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/content"
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
@@ -121,7 +123,9 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var cfg Config
+	// Start from the defaults so fields added since the document was stored
+	// (e.g. storage, Phase 3) get their default values.
+	cfg := Defaults()
 	if err := json.Unmarshal(st.Doc, &cfg); err != nil {
 		return fmt.Errorf("settings: stored document: %w", err)
 	}
@@ -225,7 +229,7 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 	}
 
 	tftpCfg := tftp.Config{
-		Root:          s.opts.Dev.TFTPRoot,
+		Root:          s.devRoot(),
 		MaxBlockSize:  cfg.TFTP.MaxBlockSize,
 		MaxWindowSize: cfg.TFTP.MaxWindowSize,
 		Timeout:       time.Duration(cfg.TFTP.TimeoutSeconds) * time.Second,
@@ -330,8 +334,8 @@ func (s *Service) dhcpConfig(cfg Config, in Interface, primary netip.Prefix) dhc
 	return c
 }
 
-// contentHandler returns iface's content handler, creating it once so its
-// opened directories are reused across settings changes.
+// contentHandler returns iface's content handler, creating it once and
+// reusing it across settings changes.
 func (s *Service) contentHandler(iface string) *content.Handler {
 	s.contentMu.Lock()
 	defer s.contentMu.Unlock()
@@ -341,7 +345,7 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 	h, ok := s.content[iface]
 	if !ok {
 		h = content.New(content.Config{
-			DefaultRoot: s.opts.Dev.TFTPRoot,
+			DefaultRoot: s.devRoot(),
 			ClientRoot:  s.clientRoot(iface),
 			Agent:       s.opts.Agent,
 			Logger:      s.opts.Logger,
@@ -354,15 +358,23 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 // booter decides what clients boot. Until profiles and boot images exist
 // (Phase 4) everyone gets the temporary -tftp-root / -boot-file content.
 func (s *Service) booter() boot.Booter {
-	return boot.Static{File: s.opts.Dev.BootFile, URL: s.opts.Dev.HTTPBootURL, Root: s.opts.Dev.TFTPRoot}
+	return boot.Static{File: s.opts.Dev.BootFile, URL: s.opts.Dev.HTTPBootURL, Root: s.devRoot()}
+}
+
+// devRoot is the temporary -tftp-root directory as an fs.FS, nil if unset.
+func (s *Service) devRoot() fs.FS {
+	if s.opts.Dev.TFTPRoot == "" {
+		return nil
+	}
+	return cas.DirFS(s.opts.Dev.TFTPRoot)
 }
 
 // clientRoot tells TFTP on iface which content serves a client IP (ADR
 // 0006): the boot session DHCP recorded, else (full mode, after a restart)
 // the client's lease, else the default content. With DHCP off nothing tells
 // clients apart, so they all get the default.
-func (s *Service) clientRoot(iface string) func(netip.Addr) (string, []any) {
-	return func(ip netip.Addr) (string, []any) {
+func (s *Service) clientRoot(iface string) func(netip.Addr) (fs.FS, []any) {
+	return func(ip netip.Addr) (fs.FS, []any) {
 		if sess, ok := s.sessions.Lookup(iface, ip); ok {
 			return sess.Answer.Root, []any{"mac", sess.MAC, "boot_session", "dhcp"}
 		}
@@ -379,7 +391,7 @@ func (s *Service) clientRoot(iface string) func(netip.Addr) (string, []any) {
 				}
 			}
 		}
-		return "", []any{"boot_session", "none"}
+		return nil, []any{"boot_session", "none"}
 	}
 }
 

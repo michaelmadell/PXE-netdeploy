@@ -70,6 +70,9 @@ func FromAPI(in api.Settings, cur Config) (Config, []FieldError) {
 		setBool(&out.Architectures.UEFIArm64, a.UefiArm64)
 		setBool(&out.Architectures.HTTPBoot, a.HttpBoot)
 	}
+	if st := in.Storage; st != nil && st.ReserveBytes != nil {
+		out.Storage.ReserveBytes = *st.ReserveBytes
+	}
 	return out, errs.list()
 }
 
@@ -252,6 +255,7 @@ func ToAPI(cfg Config, etag string, guidance map[string][]Guidance) (api.Setting
 			"defaultProfileId":      defaultProfile,
 		},
 		"architectures": cfg.Architectures,
+		"storage":       cfg.Storage,
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {

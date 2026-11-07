@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
@@ -47,7 +49,7 @@ func TestEventStream(t *testing.T) {
 	defer st.Close()
 	bus := events.New()
 	mux := http.NewServeMux()
-	strict := api.NewStrictHandlerWithOptions(New("test", nil, nil, st, bus), nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(New("test", nil, nil, st, bus, nil), nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: RequestError, ResponseErrorHandlerFunc: ResponseError,
 	})
 	api.HandlerWithOptions(strict, api.StdHTTPServerOptions{BaseURL: "/api/v1", BaseRouter: mux, ErrorHandlerFunc: RequestError})
@@ -101,7 +103,7 @@ func TestHealthReportsStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := New("test", nil, nil, st, nil)
+	s := New("test", nil, nil, st, nil, nil)
 	h := s.health(context.Background())
 	if h.Services["store"].Status != api.ServiceHealthStatusOk || h.Status != api.HealthStatusOk {
 		t.Fatalf("healthy store: %+v", h)
@@ -110,5 +112,40 @@ func TestHealthReportsStore(t *testing.T) {
 	h = s.health(context.Background())
 	if h.Services["store"].Status != api.ServiceHealthStatusError || h.Status != api.HealthStatusDegraded {
 		t.Fatalf("closed store: %+v", h)
+	}
+}
+
+func TestHealthReportsContentStore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.Open(ctx, dir, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	reserve := int64(0)
+	content, err := cas.Open(ctx, cas.Options{Root: filepath.Join(dir, "content"), Store: st, Reserve: func() int64 { return reserve }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New("test", nil, nil, st, nil, content)
+
+	h := s.health(ctx)
+	if h.Services["storage"].Status != api.ServiceHealthStatusOk || h.Storage == nil || h.Storage.FreeBytes <= 0 || h.Warnings != nil {
+		t.Fatalf("healthy: %+v storage %+v warnings %v", h.Services["storage"], h.Storage, h.Warnings)
+	}
+	// A reserve larger than any disk: still ok, but warned.
+	reserve = 1 << 60
+	h = s.health(ctx)
+	if h.Status != api.HealthStatusOk || h.Storage.ReserveBytes != reserve || h.Warnings == nil || (*h.Warnings)[0].Code != "storage_low" {
+		t.Fatalf("low: status %s storage %+v warnings %v", h.Status, h.Storage, h.Warnings)
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	for n, want := range map[int64]string{512: "512 B", 1536: "1.5 KiB", 5 << 30: "5.0 GiB"} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
 	}
 }

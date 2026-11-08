@@ -1697,6 +1697,10 @@ paths:
         * `state: locked`: no armed deployment. The agent shows the boot prompt
           described by `prompt`, and boots the local disk when it times out.
 
+        A client that checks in while one of its deployments is `running` restarted
+        during it: that deployment is marked `failed` (`code: restarted`) first. A
+        successful deployment reports `complete` before rebooting (ADR 0025).
+
         Threat model: spoofing a MAC on the deployment LAN can claim an *armed*
         deployment's config, so treat unattend secrets accordingly. Starting a
         deployment on an un-armed machine requires the boot prompt password.
@@ -1799,6 +1803,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AgentDeploymentPlan" }
         "401": { $ref: "#/components/responses/Problem" }
+
+  /agent/files/{sha256}:
+    parameters:
+      - name: sha256
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+    get:
+      tags: [agent]
+      operationId: agentGetFile
+      summary: Download a file the deployment's plan lists (install image, OS driver files).
+      security:
+        - agentAuth: []
+      description: |
+        Supports `Range` (resumable downloads) and `HEAD`. Only files named by the
+        deployment's plan, by SHA-256, while the deployment is `running`; anything
+        else is `404`.
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "206": { description: Partial content. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
 
   /agent/progress:
     post:
@@ -3532,7 +3562,7 @@ components:
 
     AgentDeploymentPlan:
       type: object
-      required: [deploymentId, installMethod, image, editionIndex]
+      required: [deploymentId, installMethod, image, editionIndex, bootOrderAfterDeploy, bootManager]
       properties:
         deploymentId: { type: string }
         installMethod: { $ref: "#/components/schemas/InstallMethod" }
@@ -3540,7 +3570,7 @@ components:
           type: object
           required: [contentUrl, sha256]
           properties:
-            contentUrl: { type: string, description: HTTP(S) URL of install.wim/esd (agent mode). }
+            contentUrl: { type: string, description: "URL of install.wim/esd (agent mode): `/agent/files/{sha256}` on the content listener." }
             sha256: { type: string }
             sizeBytes: { type: integer }
         editionIndex: { type: integer }
@@ -3573,11 +3603,18 @@ components:
             removeUnattend: { type: boolean, default: true }
         osDrivers:
           type: array
+          description: |
+            Every file of each enabled INF's folder in the profile's OS driver groups;
+            the agent recreates the folders under one directory and adds them with
+            `dism /Add-Driver /Recurse`.
           items:
             type: object
+            required: [path, contentUrl, sha256]
             properties:
+              path: { type: string, description: "Relative path, e.g. `1/e1r68x64.inf`." }
               contentUrl: { type: string }
               sha256: { type: string }
+              sizeBytes: { type: integer }
         smb:
           type: object
           nullable: true
@@ -3590,8 +3627,27 @@ components:
         disk:
           type: object
           properties:
-            layout: { type: string, enum: [uefi-gpt-default], default: uefi-gpt-default }
-            targetDiskIndex: { type: integer, default: 0 }
+            layout:
+              type: string
+              enum: [uefi-gpt-default]
+              default: uefi-gpt-default
+              description: EFI 260 MB, MSR 16 MB, Windows, recovery 1 GB (ADR 0025).
+            targetDiskIndex:
+              type: integer
+              nullable: true
+              description: |
+                Null: auto. Ignore USB, SD and MMC disks and disks under 32 GB, and take
+                the lowest-numbered of the rest (ADR 0025).
+        bootOrderAfterDeploy:
+          type: string
+          enum: [disk-first, network-first]
+          description: From the profile (ADR 0013).
+        bootManager:
+          type: string
+          enum: [windows-pca-2011, windows-uefi-ca-2023]
+          description: |
+            The boot manager the boot image serves; `windows-uefi-ca-2023` makes the
+            agent run `bcdboot /bootex` so the installed OS uses the 2023-signed one.
 
     AgentProgress:
       type: object

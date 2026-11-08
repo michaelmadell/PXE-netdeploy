@@ -1071,6 +1071,10 @@ export interface paths {
          *     * `state: locked`: no armed deployment. The agent shows the boot prompt
          *       described by `prompt`, and boots the local disk when it times out.
          *
+         *     A client that checks in while one of its deployments is `running` restarted
+         *     during it: that deployment is marked `failed` (`code: restarted`) first. A
+         *     successful deployment reports `complete` before rebooting (ADR 0025).
+         *
          *     Threat model: spoofing a MAC on the deployment LAN can claim an *armed*
          *     deployment's config, so treat unattend secrets accordingly. Starting a
          *     deployment on an un-armed machine requires the boot prompt password.
@@ -1144,6 +1148,30 @@ export interface paths {
         };
         /** Everything the agent needs to perform the install. */
         get: operations["agentGetDeployment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/files/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Download a file the deployment's plan lists (install image, OS driver files).
+         * @description Supports `Range` (resumable downloads) and `HEAD`. Only files named by the
+         *     deployment's plan, by SHA-256, while the deployment is `running`; anything
+         *     else is `404`.
+         */
+        get: operations["agentGetFile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2509,7 +2537,7 @@ export interface components {
             deploymentId: string;
             installMethod: components["schemas"]["InstallMethod"];
             image: {
-                /** @description HTTP(S) URL of install.wim/esd (agent mode). */
+                /** @description URL of install.wim/esd (agent mode): `/agent/files/{sha256}` on the content listener. */
                 contentUrl: string;
                 sha256: string;
                 sizeBytes?: number;
@@ -2538,9 +2566,17 @@ export interface components {
                 /** @default true */
                 removeUnattend: boolean;
             };
+            /**
+             * @description Every file of each enabled INF's folder in the profile's OS driver groups;
+             *     the agent recreates the folders under one directory and adds them with
+             *     `dism /Add-Driver /Recurse`.
+             */
             osDrivers?: {
-                contentUrl?: string;
-                sha256?: string;
+                /** @description Relative path, e.g. `1/e1r68x64.inf`. */
+                path: string;
+                contentUrl: string;
+                sha256: string;
+                sizeBytes?: number;
             }[];
             /** @description Present when `installMethod` is `smb`. */
             smb?: {
@@ -2552,13 +2588,28 @@ export interface components {
             } | null;
             disk?: {
                 /**
+                 * @description EFI 260 MB, MSR 16 MB, Windows, recovery 1 GB (ADR 0025).
                  * @default uefi-gpt-default
                  * @enum {string}
                  */
                 layout: "uefi-gpt-default";
-                /** @default 0 */
-                targetDiskIndex: number;
+                /**
+                 * @description Null: auto. Ignore USB, SD and MMC disks and disks under 32 GB, and take
+                 *     the lowest-numbered of the rest (ADR 0025).
+                 */
+                targetDiskIndex?: number | null;
             };
+            /**
+             * @description From the profile (ADR 0013).
+             * @enum {string}
+             */
+            bootOrderAfterDeploy: "disk-first" | "network-first";
+            /**
+             * @description The boot manager the boot image serves; `windows-uefi-ca-2023` makes the
+             *     agent run `bcdboot /bootex` so the installed OS uses the 2023-signed one.
+             * @enum {string}
+             */
+            bootManager: "windows-pca-2011" | "windows-uefi-ca-2023";
         };
         AgentProgress: {
             stage: components["schemas"]["DeploymentStage"];
@@ -4769,6 +4820,37 @@ export interface operations {
                 };
             };
             401: components["responses"]["Problem"];
+        };
+    };
+    agentGetFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Partial content. */
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
         };
     };
     agentReportProgress: {

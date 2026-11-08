@@ -78,6 +78,27 @@ and boot.wim requested with the BCD's 16384/16 (capped to 8192/8);
 boot.wim 583,170,203 bytes in 2.6 s (224 MB/s, 0 retransmits); WinPE's
 DHCP (`MSFT 5.0`) 4 s later, so the agent's `wpeinit` brought the network up.
 
+## Boot decided per client (decision 3, ADR 0024)
+
+**Tested 2026-11-08, `nd-win`:** ISO imported through the API, boot image
+created and built (wimlib, `ready`, 601.5 MB of files), a profile using it
+made `bootPrompt.defaultProfileId`. DHCP offered `bootmgfw.efi`; every TFTP
+request carried `boot_session=dhcp boot_image=… profile=… via="default
+profile"` and was served from the boot image's content-store tree; WinPE
+started the agent. First boot-to-WinPE driven entirely by the API.
+
+Two problems on the way:
+
+- `POST /boot-images` returned 500 on success: the store error mapper read
+  `err.Error()` of a nil error. Fixed; `TestCreateBootImage` covers it.
+- WinPE restarted within seconds: the boot image held a 3-day-old
+  `dist\agent-windows-amd64.exe` (the stub that read `agent.json`), which
+  failed to find its config and exited, so WinPE restarted. Now `just agent`
+  builds the agents, `just dev-server`/`just dev` run it first, the startup
+  log shows the agents' modification time, and a failing agent waits two
+  minutes in WinPE so its error can be read. Rebuilding with the new agent
+  showed the boot image `stale` with reason `agent`, as designed.
+
 To run once elevated, or with wimlib installed:
 
 ```powershell

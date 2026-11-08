@@ -9,6 +9,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 
+./scripts/build-agent.ps1
 $exe = Join-Path '.tmp' ($IsWindows ? 'netdeployd.exe' : 'netdeployd')
 go build -o $exe ./cmd/netdeployd
 if ($LASTEXITCODE) { throw 'go build failed' }

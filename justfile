@@ -32,8 +32,12 @@ test:
 dev:
     ./scripts/dev.ps1
 
-# Run only the Go server
-dev-server:
+# Build the WinPE agents into ./dist (a server built without -tags agent reads them from there)
+agent:
+    ./scripts/build-agent.ps1
+
+# Run only the Go server (rebuilds the agents first)
+dev-server: agent
     go run ./cmd/netdeployd -data ./data
 
 # Run only the Vite dev server (proxies /api to https://127.0.0.1:8443)

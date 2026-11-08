@@ -108,9 +108,14 @@ func loadConfig(path string) (*Config, error) {
 }
 
 // fail logs and exits non-zero. winpeshl.ini launches only the agent, so in
-// WinPE the machine then restarts (the boot prompt UI is Phase 4 decision 4).
+// WinPE the machine then restarts: first wait, so the error can be read
+// (the boot prompt UI is Phase 4 decision 4).
 func fail(err error) {
 	slog.Error("agent failed", "err", err)
+	if inWinPE() {
+		slog.Error("restarting in 2 minutes")
+		time.Sleep(2 * time.Minute)
+	}
 	os.Exit(1)
 }
 

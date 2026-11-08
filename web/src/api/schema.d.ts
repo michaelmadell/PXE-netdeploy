@@ -345,7 +345,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a specific driver group.
-         * @description Fails with `409` (`code: driver_group_in_use`) if a boot image uses it.
+         * @description Fails with `409` (`code: driver_group_in_use`) if a boot image or a profile (OS drivers) uses it.
          */
         delete: operations["deleteDriverGroup"];
         options?: never;
@@ -398,7 +398,8 @@ export interface paths {
         post?: never;
         /**
          * Delete a specific boot image.
-         * @description Fails with `409` (`code: build_in_progress`) while a build is queued or running; cancel its job first.
+         * @description Fails with `409`: `build_in_progress` while a build is queued or running
+         *     (cancel its job first); `boot_image_in_use` while a profile uses it.
          */
         delete: operations["deleteBootImage"];
         options?: never;
@@ -516,7 +517,15 @@ export interface paths {
         /** List available profiles. */
         get: operations["listProfiles"];
         put?: never;
-        /** Create a new profile. */
+        /**
+         * Create a new profile.
+         * @description Checks references (ADR 0024). `422` codes: `unknown_boot_image`,
+         *     `install_image_unavailable` (not a ready `windows` image),
+         *     `architecture_mismatch` (install image vs boot image), `unknown_edition`,
+         *     `unknown_driver_group`, `not_implemented` (`installMethod: smb` until the
+         *     agent's SMB install; `unattendTemplateId` until Phase 5). Identity and
+         *     secret checks come with deployments; see `validate`.
+         */
         post: operations["createProfile"];
         delete?: never;
         options?: never;
@@ -535,10 +544,16 @@ export interface paths {
         };
         /** Get details of a specific profile. */
         get: operations["getProfile"];
-        /** Replace a specific profile. */
+        /**
+         * Replace a specific profile.
+         * @description Same checks as create. Armed deployments keep their snapshot.
+         */
         put: operations["replaceProfile"];
         post?: never;
-        /** Delete a specific profile. */
+        /**
+         * Delete a specific profile.
+         * @description Fails with `409` (`code: profile_in_use`) while it is `bootPrompt.defaultProfileId` or a client's profile.
+         */
         delete: operations["deleteProfile"];
         options?: never;
         head?: never;
@@ -559,8 +574,7 @@ export interface paths {
         /**
          * Check a profile is deployable and report problems.
          * @description Example findings: boot image not built or stale; `smb` method without an
-         *     `smbTargetId`; wimlib-built boot image containing boot-critical storage
-         *     drivers; `unsigned` drivers in the boot image (error); drivers whose
+         *     `smbTargetId`; `unsigned` drivers in the boot image (error); drivers whose
          *     `targetOsVersions` exclude the WinPE or install build (warning); only a
          *     PCA 2011-signed boot manager available (clients that have revoked it will
          *     refuse to boot); host DISM older than the image build (warning);
@@ -1440,7 +1454,7 @@ export interface components {
         };
         Event: {
             /** @enum {string} */
-            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated" | "driverPackage.updated";
+            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated" | "driverPackage.updated" | "profile.updated";
             /** Format: date-time */
             at: string;
             resourceId?: string;
@@ -2236,7 +2250,8 @@ export interface components {
                 armedCountdownSeconds: number;
                 /**
                  * @description Preselected in the menu for clients without a profile, and the boot
-                 *     image source for them. Null: such clients are not answered.
+                 *     image source for them (ADR 0024). Must name an existing profile.
+                 *     Null: such clients are not answered.
                  */
                 defaultProfileId?: string | null;
             };
@@ -3701,6 +3716,7 @@ export interface operations {
             };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     getProfile: {
@@ -3757,6 +3773,7 @@ export interface operations {
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
             412: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     deleteProfile: {

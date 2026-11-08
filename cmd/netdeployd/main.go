@@ -140,7 +140,8 @@ func run(o options) error {
 	})
 	runner := jobs.New(jobs.Options{Store: st, Events: bus})
 	runner.Register(imports.NewImages(imports.ImagesOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
-	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner})
+	runner.Register(imports.NewDrivers(imports.DriversOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
+	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}

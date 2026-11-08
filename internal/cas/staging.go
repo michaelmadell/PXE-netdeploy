@@ -248,6 +248,45 @@ func (s *Store) publish(tmp, h string) error {
 	return nil
 }
 
+// Dir is the staging directory; scratch files may be created in it (they
+// go when the staging is committed or discarded).
+func (st *Staging) Dir() string { return st.dir }
+
+// Paths lists the staged tree files in the order they were added.
+func (st *Staging) Paths() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var out []string
+	for _, f := range st.files {
+		if f.path != "" && f.sha != "" {
+			out = append(out, f.path)
+		}
+	}
+	return out
+}
+
+// Open opens a staged tree file by path (case-insensitive) before commit.
+func (st *Staging) Open(p string) (*os.File, error) {
+	clean, err := CleanPath(p)
+	if err != nil {
+		return nil, err
+	}
+	fold := Fold(clean)
+	st.mu.Lock()
+	tmp := ""
+	for _, f := range st.files {
+		if f.path != "" && f.fold == fold && f.sha != "" {
+			tmp = f.tmp
+			break
+		}
+	}
+	st.mu.Unlock()
+	if tmp == "" {
+		return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+	}
+	return os.Open(tmp)
+}
+
 // Discard throws the staged files away.
 func (st *Staging) Discard() error {
 	st.mu.Lock()

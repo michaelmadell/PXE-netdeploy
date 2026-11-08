@@ -18,6 +18,7 @@ const (
 	HealthUpdated   = "health.updated"
 	JobUpdated      = "job.updated"
 	ImageUpdated    = "image.updated"
+	DriverUpdated   = "driverPackage.updated"
 )
 
 // Event is one notification. Data is marshalled as the Event's `data`.

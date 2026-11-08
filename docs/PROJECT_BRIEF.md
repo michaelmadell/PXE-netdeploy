@@ -76,6 +76,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0016 | Jobs: the `jobs` table is the queue (one active job per resource), an in-process runner with lanes (builds 1, imports 2), throttled progress on `/events`, and no resume: a restart fails running jobs with `interrupted`. |
 | 0017 | Uploads: own tus 1.0.0 server (creation, termination, expiration) ahead of the validator; hash computed while uploading; 64 GiB limit; imported uploads kept until deleted, others expire after 24 h. |
 | 0018 | Media: own read-only UDF reader and WIM XML reader, `go-wim` for files inside `boot.wim`, `go-uefi` Authenticode with pinned Microsoft CAs for signers; no mounts or external tools for import. |
+| 0019 | Driver packages: zip/7z/CAB (LZX via `expand.exe`/`cabextract`), own INF parser, catalog signature chained to pinned Microsoft roots plus a per-file hash check; `whql`/`vendor`/`unsigned`/`unknown`. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -123,7 +124,11 @@ to Phase 6.
 **In progress (Phase 3):** content store (ADR 0015), jobs (ADR 0016), tus
 uploads (ADR 0017) and ISO image import (ADR 0018) are built. A Win11 ISO
 uploads, resumes after a server crash, and imports with its editions and its
-2011- and 2023-signed boot managers. Driver import (decision 5) is next.
+2011- and 2023-signed boot managers. Driver packages (ADR 0019) import from
+zip, 7z and CAB (LZX through `expand.exe`/`cabextract`), with every INF parsed
+and its catalog checked against Microsoft's roots; driver groups and
+`/system/capabilities` are in place. Left: the Phase 3 wrap-up (backup
+procedure, findings, Phase 4 handover).
 
 ## Next step
 

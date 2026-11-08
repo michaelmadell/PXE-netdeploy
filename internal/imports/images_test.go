@@ -48,6 +48,7 @@ func newHarness(t *testing.T) *harness {
 	up := uploads.New(uploads.Options{Store: st, Content: content, Logger: quiet})
 	runner := jobs.New(jobs.Options{Store: st, Logger: quiet, ProgressInterval: 10 * time.Millisecond})
 	runner.Register(NewImages(ImagesOptions{Store: st, Content: content, Uploads: up, Logger: quiet}).Kind())
+	runner.Register(NewDrivers(DriversOptions{Store: st, Content: content, Uploads: up, Logger: quiet}).Kind())
 	rctx, cancel := context.WithCancel(ctx)
 	if err := runner.Start(rctx); err != nil {
 		t.Fatal(err)

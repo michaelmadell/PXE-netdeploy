@@ -1,5 +1,5 @@
-// Package imports holds the import job kinds: ISO images (ADR 0018) and,
-// later, driver packages.
+// Package imports holds the import job kinds: ISO images (ADR 0018) and
+// driver packages (ADR 0019).
 package imports
 
 import (
@@ -15,7 +15,6 @@ import (
 	"os"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
@@ -70,10 +69,6 @@ func (im *Images) Kind() jobs.Kind {
 	return jobs.Kind{Name: KindImageImport, Lane: jobs.LaneImport, Run: im.run, Abandon: im.abandon}
 }
 
-type params struct {
-	UploadID string `json:"uploadId"`
-}
-
 func (im *Images) run(ctx context.Context, r *jobs.Run) error {
 	var p params
 	if err := r.Params(&p); err != nil || r.Job.ResourceID == nil {
@@ -93,7 +88,7 @@ func (im *Images) run(ctx context.Context, r *jobs.Run) error {
 		return err
 	}
 	if ctx.Err() != nil {
-		err = jobs.Fail(http.StatusConflict, "cancelled", "Import cancelled", "The import was cancelled.")
+		err = cancelledError()
 	}
 	return im.fail(context.WithoutCancel(ctx), r.Job.ID, imageID, p.UploadID, err)
 }
@@ -101,16 +96,7 @@ func (im *Images) run(ctx context.Context, r *jobs.Run) error {
 // fail records the failure on the image, saying until when the upload is
 // kept for a retry, and returns the job's error with the same text.
 func (im *Images) fail(ctx context.Context, jobID, imageID, uploadID string, cause error) error {
-	e := jobs.AsError(cause)
-	if u, err := im.uploads.Release(ctx, uploadID, jobID, false); err == nil {
-		switch {
-		case u.Imported:
-			e.Detail = strings.TrimSpace(e.Detail + " The upload is kept until it is deleted.")
-		case u.ExpiresAt != nil:
-			e.Detail = strings.TrimSpace(fmt.Sprintf("%s The upload is kept until %s for a retry: import it again before then.",
-				e.Detail, u.ExpiresAt.UTC().Format(time.RFC3339)))
-		}
-	}
+	e := failure(ctx, im.uploads, jobID, uploadID, cause)
 	if err := im.st.FailImage(ctx, imageID, jobs.Problem(e)); err != nil {
 		im.log.Error("record image failure", "image_id", imageID, "err", err)
 	}
@@ -124,16 +110,7 @@ func (im *Images) abandon(ctx context.Context, j store.Job, reason string) error
 	if j.ResourceID == nil {
 		return nil
 	}
-	e := jobs.Fail(http.StatusServiceUnavailable, reason, "Import "+reason, "")
-	switch reason {
-	case "interrupted":
-		e.Detail = "The server stopped during the import."
-	case "cancelled":
-		e.Status, e.Detail = http.StatusConflict, "The import was cancelled before it started."
-	case "failed":
-		e.Code, e.Status, e.Detail = "internal_error", http.StatusInternalServerError, "The import failed unexpectedly."
-	}
-	im.fail(ctx, j.ID, *j.ResourceID, p.UploadID, e)
+	im.fail(ctx, j.ID, *j.ResourceID, p.UploadID, abandoned(reason))
 	return nil
 }
 
@@ -292,6 +269,7 @@ func (im *Images) importISO(ctx context.Context, r *jobs.Run, imageID, uploadID 
 	if err != nil {
 		return err
 	}
+	r.Progress(100, "Imported ("+res.Kind+" media)")
 	log.Info("image imported", "kind", res.Kind, "label", res.VolumeLabel, "boot_managers", len(res.BootManagers), "warnings", len(res.Warnings))
 	return nil
 }

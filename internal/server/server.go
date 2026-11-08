@@ -14,6 +14,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
+	"github.com/michaelmadell/pxe-netdeploy/internal/uploads"
 )
 
 // Server implements api.StrictServerInterface.
@@ -33,6 +34,8 @@ type Server struct {
 	events   *events.Bus
 	content  *cas.Store
 	jobs     *jobs.Runner
+	uploads  *uploads.Manager
+	caps     capsCache
 }
 
 // Deps are the Server's dependencies. Any may be nil in tests of operations
@@ -44,12 +47,13 @@ type Deps struct {
 	Events   *events.Bus
 	Content  *cas.Store
 	Jobs     *jobs.Runner
+	Uploads  *uploads.Manager
 }
 
 // New returns a Server.
 func New(version string, d Deps) *Server {
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
-		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs}
+		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads}
 }
 
 // GetHealth reports per-service health from the running listeners, plus

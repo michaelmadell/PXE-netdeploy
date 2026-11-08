@@ -200,6 +200,26 @@ Measured 2026-11-08 on the dev machine with a Win11 en-GB ISO (8.9 GB,
 `CPBA_X64FRE_EN-GB_DV9`): upload 24 s, import 14 s, 10 editions, five boot
 managers (2011- and 2023-signed as in the Phase 1 findings), 1,002 blobs.
 
+### Driver packages
+
+Same server and upload client. Upload a zip, 7z or CAB of driver folders
+(an `.exe` or `.msi` is refused with `400 unsupported_archive`), then:
+
+```powershell
+@{ uploadId = '<id>'; name = 'Intel NICs' } | ConvertTo-Json | Set-Content body.json
+$job = Invoke-RestMethod "$b/driver-packages" -Method Post -SkipCertificateCheck -ContentType application/json -InFile body.json
+Invoke-RestMethod "$b/jobs/$($job.id)" -SkipCertificateCheck
+(Invoke-RestMethod "$b/driver-packages/$($job.resourceId)" -SkipCertificateCheck).infs |
+  Format-Table path, class, signature, enabled, signatureDetail
+Invoke-RestMethod "$b/system/capabilities" -SkipCertificateCheck   # cabLzx: expand.exe found?
+```
+
+A zip of any `DriverStore\FileRepository` folder makes a good test package
+(`Compress-Archive`); `makecab` with `.Set CompressionType=LZX` in a DDF makes
+an LZX CAB. `.tmp\drv-e2e\run.ps1` (git-ignored) does both plus an
+installer, against a throwaway server. Measured 2026-11-08: a 4.5 MB Realtek
+Wi-Fi zip and an LZX CAB both import in 0.2 s as `whql`.
+
 **Tests against real media** (not run in CI): set `NETDEPLOY_TEST_ISO` to a
 Windows ISO and run
 
@@ -210,3 +230,10 @@ go test -v -run RealMedia ./internal/media/signer
 ```
 
 The import test copies the whole ISO into a temporary content store.
+`NETDEPLOY_TEST_DRIVERSTORE=1` runs the driver tests against this machine's
+DriverStore (every INF parsed, every catalog verified, one package imported):
+
+```powershell
+$env:NETDEPLOY_TEST_DRIVERSTORE = '1'
+go test -v -run DriverStore ./internal/drivers/... ./internal/imports
+```

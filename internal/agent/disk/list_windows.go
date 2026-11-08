@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package disk
 
 import (
 	"encoding/binary"
@@ -22,9 +22,9 @@ var busTypes = map[uint32]string{
 	10: "SAS", 11: "SATA", 12: "SD", 13: "MMC", 14: "Virtual", 15: "FileBackedVirtual", 16: "Spaces", 17: "NVMe", 18: "SCM", 19: "UFS",
 }
 
-// listDisks returns the physical disks Windows sees (\\.\PhysicalDriveN).
-func listDisks() []disk {
-	var out []disk
+// List returns the physical disks Windows sees (\\.\PhysicalDriveN).
+func List() []Disk {
+	var out []Disk
 	for i := 0; i < maxPhysicalDrives; i++ {
 		name, _ := windows.UTF16PtrFromString(fmt.Sprintf(`\\.\PhysicalDrive%d`, i))
 		// No access rights needed for these IOCTLs.
@@ -32,7 +32,7 @@ func listDisks() []disk {
 		if err != nil {
 			continue
 		}
-		d := disk{Number: i}
+		d := Disk{Number: i}
 		var geo [256]byte
 		var n uint32
 		if windows.DeviceIoControl(h, ioctlDiskGetDriveGeometryEx, nil, 0, &geo[0], uint32(len(geo)), &n, nil) == nil && n >= 32 {

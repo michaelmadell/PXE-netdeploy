@@ -1,12 +1,12 @@
 //go:build windows
 
-package main
+package disk
 
 import "testing"
 
 // The host has at least one disk, with a size and a bus type.
 func TestListDisks(t *testing.T) {
-	disks := listDisks()
+	disks := List()
 	if len(disks) == 0 {
 		t.Fatal("no disks")
 	}

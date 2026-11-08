@@ -12,15 +12,16 @@ import (
 
 // Event types (api Event.type).
 const (
-	ClientUpdated    = "client.updated"
-	LeaseUpdated     = "lease.updated"
-	SettingsUpdated  = "settings.updated"
-	HealthUpdated    = "health.updated"
-	JobUpdated       = "job.updated"
-	ImageUpdated     = "image.updated"
-	DriverUpdated    = "driverPackage.updated"
-	BootImageUpdated = "bootImage.updated"
-	ProfileUpdated   = "profile.updated"
+	ClientUpdated     = "client.updated"
+	LeaseUpdated      = "lease.updated"
+	SettingsUpdated   = "settings.updated"
+	HealthUpdated     = "health.updated"
+	JobUpdated        = "job.updated"
+	ImageUpdated      = "image.updated"
+	DriverUpdated     = "driverPackage.updated"
+	BootImageUpdated  = "bootImage.updated"
+	ProfileUpdated    = "profile.updated"
+	DeploymentUpdated = "deployment.updated"
 )
 
 // Event is one notification. Data is marshalled as the Event's `data`.

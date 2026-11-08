@@ -42,6 +42,7 @@ type Server struct {
 	backup   *backup.Service
 	boot     *bootimage.Service
 	caps     capsCache
+	agent    agentState
 }
 
 // Deps are the Server's dependencies. Any may be nil in tests of operations

@@ -73,6 +73,30 @@ with boot images this phase), and `boot.Static` as the `Booter`.
 | `/smb-targets` now reference a `share-credential` secret | The SMB install method (ADR 0007) decrypts it with `Vault.Credential` |
 | Admin API has no auth (localhost by default) | Agent endpoints are on the content listener (ADR 0009); agent auth is the check-in token, not admin auth |
 
+## Progress (end of 2026-11-08)
+
+Decisions 1–4 are decided (ADRs 0022–0025), implemented and lab-tested: an
+ISO imported through the API, a boot image built with wimlib, a profile
+made the default, and `nd-client-01` (the lab's `nd-win`) deployed Windows
+11 from the boot prompt. See `spikes/phase-4-findings.md`.
+
+Next session, in order:
+
+1. **Reboot-to-PXE after a deployment** (findings): read the firmware boot
+   entries from WinPE before/after `bcdboot`; make `disk-first` set
+   `BootOrder` explicitly. Check `bcdboot /bootex` and the prompt timeout's
+   BootNext on the same run.
+2. **Decision 5: profiles and deployments**: `POST /deployments` (arming),
+   cancel, timeouts, secret-version snapshots, the built-in unattend per
+   identity mode (`unattendUrl`), `POST /profiles/{id}/validate`.
+3. Later in Phase 4: SMB/`setup.exe` install method; per-edition image
+   export to shrink the 8 GB download.
+
+Lab state: server data in `./data` (lab interface full DHCP, content
+listener on :8080, boot prompt password set, default profile `Win11 Pro`);
+wimlib in `.tmp\wimlib`; run `just agent` after changing `cmd/agent` or
+`internal/agent`, restart the server, rebuild the boot image.
+
 ## Decisions to make first
 
 Phase 4 is the largest phase. Suggested order: 1 → 2 → 3 (server side
@@ -124,6 +148,10 @@ DHCP path is hot) and how `boot_session` maps TFTP/HTTP requests back to
 the decision.
 
 ### 4. The agent (ADR 0003, 0007, 0013)
+
+**Decided 2026-11-08: [ADR 0025](../adr/0025-agent.md); implemented**
+(server `/agent/*`, `internal/agent/…`, `cmd/agent`). SMB/`setup.exe` and
+per-edition image exports are still to do.
 
 `cmd/agent` is a 70-line stub. Decide: the boot prompt UI in WinPE (console;
 password check via `/agent/unlock`, countdown, profile menu), check-in and

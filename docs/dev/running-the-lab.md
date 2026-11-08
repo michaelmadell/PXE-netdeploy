@@ -104,7 +104,7 @@ the boot file from the proxy offer without using port 4011.
 
 Setup: `nd-linux` is the real DHCP server on the lab switch (dnsmasq, which
 knows nothing about PXE), the Windows host runs netdeployd in proxy mode, and
-`nd-win` boots.
+`nd-client-01` boots.
 
 1. DHCP Guard must be off for `nd-linux`, or Hyper-V drops its offers
    (elevated, on the host):
@@ -137,7 +137,7 @@ knows nothing about PXE), the Windows host runs netdeployd in proxy mode, and
    ```powershell
    New-NetFirewallRule -DisplayName 'netdeploy proxyDHCP 4011' -Direction Inbound -Protocol UDP -LocalPort 4011 -Action Allow
    go run .\cmd\netdeployd\ -data .tmp\proxy-data *>&1 |
-     Tee-Object .tmp\logs\proxy-nd-win.log
+     Tee-Object .tmp\logs\proxy-nd-client-01.log
    ```
 
    Then set the interface to proxy:
@@ -151,8 +151,8 @@ knows nothing about PXE), the Windows host runs netdeployd in proxy mode, and
 
    and `PUT` as before. Health should show DHCP on both `:67` and `:4011`.
 
-3. `Start-VM nd-win; vmconnect localhost nd-win` and save the netdeployd log
-   to `.tmp\logs\proxy-nd-win.log`.
+3. `Start-VM nd-client-01; vmconnect localhost nd-client-01` and save the netdeployd log
+   to `.tmp\logs\proxy-nd-client-01.log`.
 
 Record in the Phase 1 findings (or a Phase 2 findings file):
 
@@ -338,8 +338,45 @@ $s.bootPrompt | Add-Member -Force defaultProfileId $p.id
 api Put /settings $s $r.Headers.ETag[0]
 ```
 
-Boot `nd-win`. The DHCP log offers `bootmgfw.efi`; TFTP lines carry
+Boot `nd-client-01`. The DHCP log offers `bootmgfw.efi`; TFTP lines carry
 `boot_image=… profile=… via="default profile"`. Without a profile to offer
 the DHCP log says "no profile to offer" and the client gets an address but
 no boot file.
+
+## Deploying from the boot prompt (Phase 4, ADR 0025)
+
+Continues from "Boot images end to end" (a built boot image, a profile made
+the default). Once:
+
+```powershell
+# nd-client-01 needs a disk of at least 32 GB to install to (elevated).
+New-VHD -Path "$env:PUBLIC\Documents\Hyper-V\Virtual hard disks\nd-client-01-os.vhdx" -SizeBytes 64GB -Dynamic
+Add-VMHardDiskDrive -VMName nd-client-01 -Path "$env:PUBLIC\Documents\Hyper-V\Virtual hard disks\nd-client-01-os.vhdx"
+
+# The agent talks to the content listener: turn it on at the port the boot
+# image's serverUrls name (http://10.77.0.1:8080).
+$r = Invoke-WebRequest "$b/settings" -SkipCertificateCheck
+$s = $r.Content | ConvertFrom-Json
+$s.interfaces[0].services | Add-Member -Force http $true
+$s.interfaces[0].services | Add-Member -Force httpPort 8080
+api Put /settings $s $r.Headers.ETag[0]
+```
+
+After changing the agent (`just agent`, then restart the server), the boot
+image is `stale` (reason `agent`): build it again. Then boot `nd-client-01`:
+
+1. The agent checks in (`agent checked in … state=locked` in the server log)
+   and asks for the boot prompt password; waiting boots the local disk.
+2. The right password shows the profile menu; choose, then type `yes` on
+   the screen naming the disk to erase.
+3. Progress: partitioning, applying-image (download, then DISM),
+   injecting-drivers, configuring, finalizing; then it reports completion
+   and restarts into Windows setup.
+
+Follow it from the host:
+
+```powershell
+$d = (api Get "/deployments").items[0]; $d | Select-Object status, stage, percent, message
+(api Get "/deployments/$($d.id)/logs").items | Select-Object at, level, message
+```
 

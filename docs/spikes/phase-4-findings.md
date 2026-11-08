@@ -99,6 +99,28 @@ Two problems on the way:
   minutes in WinPE so its error can be read. Rebuilding with the new agent
   showed the boot image `stale` with reason `agent`, as designed.
 
+## First deployment from the boot prompt (decision 4, ADR 0025)
+
+**Tested 2026-11-08, `nd-client-01`** (the lab's `nd-win`; 64 GB virtual
+disk added, content listener on :8080): boot prompt password, profile
+menu, disk confirmation, then partitioning, download of `install.wim`,
+`dism /Apply-Image`, configuring, `bcdboot`; the agent reported completion
+and Windows setup ran from the disk. **Install worked.**
+
+Open from this run:
+
+- **After the deployment the VM rebooted to PXE**, not the installed
+  Windows, with the profile's `disk-first`. bcdboot should have put Windows
+  Boot Manager first in `BootOrder`; either it didn't from this WinPE, or
+  Hyper-V kept the network first. To look at next: read `BootOrder` and the
+  `Boot####` entries from WinPE (the agent's `firmware` package) before and
+  after `bcdboot`, and set `BootOrder` ourselves for `disk-first`.
+- Not yet checked: whether `bcdboot /bootex` was accepted (the deployment
+  log says, `bcdboot /bootex failed` if not); the prompt timeout's BootNext
+  to the local disk.
+- A build was `failed` before this run; most likely `interrupted` by a
+  server restart during the build (ADR 0016).
+
 To run once elevated, or with wimlib installed:
 
 ```powershell

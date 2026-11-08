@@ -270,7 +270,13 @@ func adminHandler(impl *server.Server, st *store.Store, up *uploads.Manager) (ht
 			up.ServeHTTP(w, r)
 			return
 		}
+		// Agent downloads are streamed with Range, outside the strict
+		// handler (ADR 0025).
+		if strings.HasPrefix(r.URL.Path, "/api/v1/agent/files/") {
+			impl.AgentFiles(w, r)
+			return
+		}
 		validated.ServeHTTP(w, r)
 	})
-	return server.Recover(server.Logging(routed)), nil
+	return server.Recover(server.Logging(server.WithRequestInfo(routed))), nil
 }

@@ -23,5 +23,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0016](0016-jobs.md) | Jobs: rows as the queue, an in-process runner, no resume | accepted |
 | [0017](0017-uploads-own-tus-server.md) | Uploads: our own minimal tus server | accepted |
 | [0018](0018-reading-media.md) | Reading install media: own UDF and WIM metadata readers, go-wim, go-uefi | accepted |
+| [0019](0019-driver-packages.md) | Driver packages: archives, INF parsing, catalog verification | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

@@ -428,12 +428,18 @@ paths:
       operationId: importDriverPackage
       summary: Import a driver archive from a completed upload.
       description: |
-        Accepted formats: zip, cab, 7z. Vendor `.exe` and `.msi` installers are
-        rejected with `400` (`code: unsupported_archive`); extract them first
-        (most vendors document an extract-only switch).
+        Accepted formats: zip, cab, 7z (ADR 0019). Vendor `.exe` and `.msi` installers
+        are rejected with `400` (`code: unsupported_archive`); extract them first
+        (most vendors document an extract-only switch). LZX-compressed CABs need
+        `expand.exe` (Windows) or `cabextract` (Linux) on the host
+        (`/system/capabilities` `cabLzx`); without one the job fails with
+        `unsupported_archive`. Archives that expand to more than 32 times their size
+        or 200,000 files fail with `invalid_archive`; archives without an INF fail
+        with `no_drivers`.
 
-        Every INF is parsed for class, role, provider, version, architecture,
-        targeted OS versions and hardware IDs, and its catalog signature is checked.
+        Every INF is parsed for class, role, provider, version, architectures,
+        targeted OS versions and hardware IDs, and its catalog signature is checked,
+        including that the INF and the files it installs are covered by the catalog.
         Identical packages (same SHA-256) are deduplicated as for images, and
         disk space and the upload are checked as for images (`507`
         `insufficient_storage`; `404`; `409` `upload_incomplete` / `upload_in_use`).
@@ -467,6 +473,8 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            ETag: { schema: { type: string } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DriverPackage" }
@@ -500,6 +508,7 @@ paths:
       tags: [drivers]
       operationId: deleteDriverPackage
       summary: Delete a specific driver package.
+      description: "Fails with `409` (`code: package_in_use`) while a driver group includes it."
       responses:
         "204": { description: Deleted. }
         "401": { $ref: "#/components/responses/Problem" }
@@ -542,6 +551,7 @@ paths:
               schema: { $ref: "#/components/schemas/DriverGroup" }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
 
   /driver-groups/{driverGroupId}:
     parameters:
@@ -553,6 +563,8 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            ETag: { schema: { type: string } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DriverGroup" }
@@ -562,7 +574,9 @@ paths:
       tags: [drivers]
       operationId: replaceDriverGroup
       summary: Replace a specific driver group.
-      description: Changing membership marks dependent boot images `stale`.
+      description: |
+        Changing membership marks dependent boot images `stale`. Unknown driver
+        package ids give `422` (`code: unknown_driver_package`), as on create.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
       requestBody:
@@ -580,6 +594,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "412": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
     delete:
       tags: [drivers]
       operationId: deleteDriverGroup
@@ -2090,6 +2105,16 @@ components:
           properties:
             installed: { type: boolean }
             version: { type: string, nullable: true }
+        cabLzx:
+          type: object
+          description: |
+            Whether LZX-compressed CABs (common for Microsoft Update Catalog drivers) can
+            be imported: `expand.exe` on Windows, `cabextract` on Linux (ADR 0019).
+          required: [available]
+          properties:
+            available: { type: boolean }
+            tool: { type: string, nullable: true }
+            reason: { type: string }
         bcdTool:
           type: object
           description: Tool used to write BCD stores (`bcdedit` on Windows, `hivex` on Linux).
@@ -2105,7 +2130,7 @@ components:
       properties:
         type:
           type: string
-          enum: [client.updated, lease.updated, settings.updated, health.updated, job.updated, deployment.updated, bootImage.updated, image.updated]
+          enum: [client.updated, lease.updated, settings.updated, health.updated, job.updated, deployment.updated, bootImage.updated, image.updated, driverPackage.updated]
         at: { type: string, format: date-time }
         resourceId: { type: string }
         data:
@@ -2123,8 +2148,10 @@ components:
               in `data` is the job's resource; the event's `resourceId` is the
               job id). Sent when the status changes and at most twice a second
               for progress.
-            * `deployment.updated`, `bootImage.updated`, `image.updated`: from
-              Phase 3 onwards.
+            * `image.updated`, `driverPackage.updated`: the resource changed
+              (created, import finished, edited); `data.change` is `deleted`
+              when it was deleted. `resourceId` is the image or package id.
+            * `deployment.updated`, `bootImage.updated`: from Phase 4.
 
     # ---------- images
     ImageKind:
@@ -2279,16 +2306,18 @@ components:
       type: string
       enum: [whql, vendor, unsigned, unknown]
       description: |
-        `whql` = catalog signed by Microsoft (Windows Hardware Compatibility);
+        `whql` = catalog signed by Microsoft (WHQL, attestation or inbox signing);
         `vendor` = catalog signed by the vendor's own certificate;
-        `unsigned` = no catalog or no valid signature;
-        `unknown` = catalog present but the chain could not be fully verified on
-        this host (full verification is only reliable on Windows).
+        `unsigned` = no catalog, no valid signature, or a file the INF installs isn't
+        covered by the catalog;
+        `unknown` = catalog present but it can't be evaluated here (e.g. an
+        unsupported algorithm). `DriverInf.signatureDetail` says why for anything
+        but `whql`.
         Boot images reject `unsigned` drivers: x64 WinPE under Secure Boot won't load them.
 
     DriverInf:
       type: object
-      required: [id, path, class, role, enabled, signature]
+      required: [id, path, class, role, enabled, signature, architectures]
       properties:
         id: { type: string, readOnly: true }
         path: { type: string, description: Path of the INF inside the package. }
@@ -2301,7 +2330,12 @@ components:
         provider: { type: string }
         version: { type: string }
         driverDate: { type: string, format: date }
-        architecture: { $ref: "#/components/schemas/Architecture" }
+        architectures:
+          type: array
+          items: { $ref: "#/components/schemas/Architecture" }
+          description: |
+            From the INF's decorations (`NTamd64`, `NTarm64`; undecorated means all).
+            Empty when it supports neither x64 nor arm64; such INFs start disabled.
         targetOsVersions:
           type: array
           description: |
@@ -2311,6 +2345,10 @@ components:
         hardwareIds: { type: array, items: { type: string } }
         signature: { $ref: "#/components/schemas/DriverSignature" }
         signer: { type: string, nullable: true, description: Certificate subject of the catalog signer. }
+        signatureDetail:
+          type: string
+          nullable: true
+          description: Why the signature isn't `whql`, e.g. `e1r68x64.sys is not in e1r68x64.cat`.
         enabled:
           type: boolean
           default: true
@@ -2329,8 +2367,11 @@ components:
               type: object
               allOf:
                 - $ref: "#/components/schemas/Problem"
-            sha256: { type: string }
-            sizeBytes: { type: integer }
+            sha256: { type: string, description: SHA-256 of the archive. }
+            sizeBytes: { type: integer, format: int64, description: Size of the archive. }
+            sourceFilename: { type: string, nullable: true, description: The uploaded archive's file name. }
+            uploadId: { type: string, nullable: true, description: The upload it was imported from; null once deleted. }
+            warnings: { type: array, items: { type: string } }
             infs:
               type: array
               items: { $ref: "#/components/schemas/DriverInf" }
@@ -2909,8 +2950,9 @@ components:
           description: |
             Why the job failed. Codes include `insufficient_storage` (the content store
             ran short of space), `interrupted` (the server stopped while it ran),
-            `unsupported_media` and `invalid_media` (image import), and
-            `internal_error`. For imports, `detail` also says until when the upload is
+            `unsupported_media` and `invalid_media` (image import),
+            `unsupported_archive`, `invalid_archive` and `no_drivers` (driver import),
+            and `internal_error`. For imports, `detail` also says until when the upload is
             kept for a retry.
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, nullable: true, format: date-time }

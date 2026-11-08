@@ -226,12 +226,18 @@ export interface paths {
         put?: never;
         /**
          * Import a driver archive from a completed upload.
-         * @description Accepted formats: zip, cab, 7z. Vendor `.exe` and `.msi` installers are
-         *     rejected with `400` (`code: unsupported_archive`); extract them first
-         *     (most vendors document an extract-only switch).
+         * @description Accepted formats: zip, cab, 7z (ADR 0019). Vendor `.exe` and `.msi` installers
+         *     are rejected with `400` (`code: unsupported_archive`); extract them first
+         *     (most vendors document an extract-only switch). LZX-compressed CABs need
+         *     `expand.exe` (Windows) or `cabextract` (Linux) on the host
+         *     (`/system/capabilities` `cabLzx`); without one the job fails with
+         *     `unsupported_archive`. Archives that expand to more than 32 times their size
+         *     or 200,000 files fail with `invalid_archive`; archives without an INF fail
+         *     with `no_drivers`.
          *
-         *     Every INF is parsed for class, role, provider, version, architecture,
-         *     targeted OS versions and hardware IDs, and its catalog signature is checked.
+         *     Every INF is parsed for class, role, provider, version, architectures,
+         *     targeted OS versions and hardware IDs, and its catalog signature is checked,
+         *     including that the INF and the files it installs are covered by the catalog.
          *     Identical packages (same SHA-256) are deduplicated as for images, and
          *     disk space and the upload are checked as for images (`507`
          *     `insufficient_storage`; `404`; `409` `upload_incomplete` / `upload_in_use`).
@@ -256,7 +262,10 @@ export interface paths {
         get: operations["getDriverPackage"];
         put?: never;
         post?: never;
-        /** Delete a specific driver package. */
+        /**
+         * Delete a specific driver package.
+         * @description Fails with `409` (`code: package_in_use`) while a driver group includes it.
+         */
         delete: operations["deleteDriverPackage"];
         options?: never;
         head?: never;
@@ -299,7 +308,8 @@ export interface paths {
         get: operations["getDriverGroup"];
         /**
          * Replace a specific driver group.
-         * @description Changing membership marks dependent boot images `stale`.
+         * @description Changing membership marks dependent boot images `stale`. Unknown driver
+         *     package ids give `422` (`code: unknown_driver_package`), as on create.
          */
         put: operations["replaceDriverGroup"];
         post?: never;
@@ -1313,6 +1323,15 @@ export interface components {
                 installed?: boolean;
                 version?: string | null;
             };
+            /**
+             * @description Whether LZX-compressed CABs (common for Microsoft Update Catalog drivers) can
+             *     be imported: `expand.exe` on Windows, `cabextract` on Linux (ADR 0019).
+             */
+            cabLzx?: {
+                available: boolean;
+                tool?: string | null;
+                reason?: string;
+            };
             /** @description Tool used to write BCD stores (`bcdedit` on Windows, `hivex` on Linux). */
             bcdTool: {
                 /** @enum {string} */
@@ -1323,7 +1342,7 @@ export interface components {
         };
         Event: {
             /** @enum {string} */
-            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated";
+            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated" | "driverPackage.updated";
             /** Format: date-time */
             at: string;
             resourceId?: string;
@@ -1340,8 +1359,10 @@ export interface components {
              *       in `data` is the job's resource; the event's `resourceId` is the
              *       job id). Sent when the status changes and at most twice a second
              *       for progress.
-             *     * `deployment.updated`, `bootImage.updated`, `image.updated`: from
-             *       Phase 3 onwards.
+             *     * `image.updated`, `driverPackage.updated`: the resource changed
+             *       (created, import finished, edited); `data.change` is `deleted`
+             *       when it was deleted. `resourceId` is the image or package id.
+             *     * `deployment.updated`, `bootImage.updated`: from Phase 4.
              */
             data?: Record<string, never>;
         };
@@ -1452,11 +1473,13 @@ export interface components {
          */
         DriverRole: "network" | "storage" | "other";
         /**
-         * @description `whql` = catalog signed by Microsoft (Windows Hardware Compatibility);
+         * @description `whql` = catalog signed by Microsoft (WHQL, attestation or inbox signing);
          *     `vendor` = catalog signed by the vendor's own certificate;
-         *     `unsigned` = no catalog or no valid signature;
-         *     `unknown` = catalog present but the chain could not be fully verified on
-         *     this host (full verification is only reliable on Windows).
+         *     `unsigned` = no catalog, no valid signature, or a file the INF installs isn't
+         *     covered by the catalog;
+         *     `unknown` = catalog present but it can't be evaluated here (e.g. an
+         *     unsupported algorithm). `DriverInf.signatureDetail` says why for anything
+         *     but `whql`.
          *     Boot images reject `unsigned` drivers: x64 WinPE under Secure Boot won't load them.
          * @enum {string}
          */
@@ -1474,7 +1497,11 @@ export interface components {
             version?: string;
             /** Format: date */
             driverDate?: string;
-            architecture?: components["schemas"]["Architecture"];
+            /**
+             * @description From the INF's decorations (`NTamd64`, `NTarm64`; undecorated means all).
+             *     Empty when it supports neither x64 nor arm64; such INFs start disabled.
+             */
+            architectures: components["schemas"]["Architecture"][];
             /**
              * @description From the INF's [Manufacturer] decorations, e.g. `10.0...22000`
              *     (Windows 11 21H2+). Empty means no OS version restriction.
@@ -1484,6 +1511,8 @@ export interface components {
             signature: components["schemas"]["DriverSignature"];
             /** @description Certificate subject of the catalog signer. */
             signer?: string | null;
+            /** @description Why the signature isn't `whql`, e.g. `e1r68x64.sys is not in e1r68x64.cat`. */
+            signatureDetail?: string | null;
             /**
              * @description Disabled INFs are skipped when the package is injected.
              * @default true
@@ -1495,8 +1524,18 @@ export interface components {
             /** @enum {string} */
             status: "importing" | "ready" | "failed";
             error?: components["schemas"]["Problem"] | null;
+            /** @description SHA-256 of the archive. */
             sha256?: string;
+            /**
+             * Format: int64
+             * @description Size of the archive.
+             */
             sizeBytes?: number;
+            /** @description The uploaded archive's file name. */
+            sourceFilename?: string | null;
+            /** @description The upload it was imported from; null once deleted. */
+            uploadId?: string | null;
+            warnings?: string[];
             infs: components["schemas"]["DriverInf"][];
         };
         DriverPackageUpdate: {
@@ -1937,8 +1976,9 @@ export interface components {
             /**
              * @description Why the job failed. Codes include `insufficient_storage` (the content store
              *     ran short of space), `interrupted` (the server stopped while it ran),
-             *     `unsupported_media` and `invalid_media` (image import), and
-             *     `internal_error`. For imports, `detail` also says until when the upload is
+             *     `unsupported_media` and `invalid_media` (image import),
+             *     `unsupported_archive`, `invalid_archive` and `no_drivers` (driver import),
+             *     and `internal_error`. For imports, `detail` also says until when the upload is
              *     kept for a retry.
              */
             error?: components["schemas"]["Problem"] | null;
@@ -2837,6 +2877,7 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -2953,6 +2994,7 @@ export interface operations {
             };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     getDriverGroup: {
@@ -2969,6 +3011,7 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3009,6 +3052,7 @@ export interface operations {
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
             412: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     deleteDriverGroup: {

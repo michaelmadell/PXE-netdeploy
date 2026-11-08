@@ -81,6 +81,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0021 | Secrets storage: AES-256-GCM under one data key wrapped by DPAPI (Windows) or a 0600 key file (Linux); key never in backups; passphrase export/import; `share-credential` kind. |
 | 0022 | Building boot images: export one boot.wim index, add agent/config/`winpeshl.ini` (DISM also injects drivers; wimlib stages them for `drvload`), boot files from the built WIM, a content-store tree; wimlib preferred (1.3 s vs DISM's 43 s; required on Linux), DISM (inbox, elevated) otherwise, no ADK; storage drivers (PERC, RST VMD) load in WinPE with `drvload`; `inputHash` caching and reuse; stale computed on read; last good build keeps serving. |
 | 0023 | Own BCD writer (`internal/bcd`): REGF hive in Go with the Phase 1 RAM-disk elements, fixed GUID and timestamps (reproducible), no bcdedit/hivex; capabilities drop `bcdTool`. |
+| 0024 | What a client boots: armed deployment's profile, else the client's, else the default; no fallback past a broken choice; sessions pin their trees against GC; no cache; profile storage brought forward; temporary `-tftp-root` flags removed. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -135,9 +136,10 @@ forward from Phase 5). A 9 GB Win11 ISO uploads in 24 s and imports in 14 s;
 the whole store backs up to an encrypted share in 31 s and restores in 27 s.
 Results: [spikes/phase-3-findings.md](spikes/phase-3-findings.md).
 
-**In progress (Phase 4, from 2026-11-08):** decisions 1 and 2: building a boot
-image (ADR 0022: `/boot-images`, the build job, both builders, the agent
-embedded in the server) and writing its BCD (ADR 0023, `internal/bcd`).
+**In progress (Phase 4, from 2026-11-08):** decisions 1–3: building a boot image
+(ADR 0022: `/boot-images`, the build job, both builders, the agent embedded
+in the server), writing its BCD (ADR 0023, `internal/bcd`), and deciding what
+each client boots (ADR 0024: `boot.Profiles`, `/profiles` storage).
 Results: [spikes/phase-4-findings.md](spikes/phase-4-findings.md).
 
 ## Next step

@@ -90,7 +90,8 @@ type Config struct {
 	Archs       *Archs   // nil: all
 	MACPrefixes []string // lower-case, colon-separated; empty: everyone
 
-	// What they boot. Booter nil uses boot.Static{BootFileUEFI, HTTPBootURL}.
+	// What they boot (ADR 0024). Booter nil uses boot.Static{BootFileUEFI,
+	// HTTPBootURL} (protocol tests).
 	Booter       boot.Booter
 	BootFileUEFI string
 	HTTPBootURL  string

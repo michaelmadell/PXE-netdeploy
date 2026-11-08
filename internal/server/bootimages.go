@@ -74,6 +74,9 @@ func (s *Server) checkBootImage(ctx context.Context, in store.BootImageInput) (*
 }
 
 func bootImageStoreError(err error) (api.Problem, bool) {
+	if err == nil {
+		return api.Problem{}, false
+	}
 	msg := strings.TrimPrefix(err.Error(), "store: ")
 	switch {
 	case errors.Is(err, store.ErrUnknownDriverGroup):
@@ -217,6 +220,9 @@ func (s *Server) DeleteBootImage(ctx context.Context, req api.DeleteBootImageReq
 		return api.DeleteBootImage404ApplicationProblemPlusJSONResponse(bootImageNotFound(req.BootImageId)), nil
 	case errors.Is(err, store.ErrBuildInProgress):
 		return api.DeleteBootImage409ApplicationProblemPlusJSONResponse(buildInProgress()), nil
+	case errors.Is(err, store.ErrBootImageInUse):
+		return api.DeleteBootImage409ApplicationProblemPlusJSONResponse(newProblem(http.StatusConflict, "boot_image_in_use", "Boot image in use",
+			"A profile uses this boot image: point it at another boot image first.", nil)), nil
 	case err != nil:
 		return nil, err
 	}

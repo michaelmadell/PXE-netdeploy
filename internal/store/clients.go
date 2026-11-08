@@ -103,6 +103,8 @@ func clientWriteErr(op string, err error) error {
 		return ErrMACTaken
 	case uniqueViolation(err, "clients.reserved_ip"):
 		return ErrReservedIPTaken
+	case fkViolation(err):
+		return ErrUnknownProfile // profile_id is the only foreign key
 	}
 	return fmt.Errorf("store: %s client: %w", op, err)
 }

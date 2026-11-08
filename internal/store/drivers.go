@@ -559,6 +559,9 @@ func (s *Store) DeleteDriverGroup(ctx context.Context, id string) error {
 		if used > 0 {
 			return ErrDriverGroupInUse
 		}
+		if err := inUse(ctx, t, `SELECT count(*) FROM profile_os_driver_groups WHERE group_id = ?`, id, ErrDriverGroupInUse); err != nil {
+			return err
+		}
 		res, err := t.ExecContext(ctx, `DELETE FROM driver_groups WHERE id = ?`, id)
 		if err != nil {
 			return fmt.Errorf("store: delete driver group: %w", err)

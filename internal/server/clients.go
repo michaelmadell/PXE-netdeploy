@@ -63,6 +63,9 @@ func (s *Server) CreateClient(ctx context.Context, req api.CreateClientRequestOb
 		return api.CreateClient422ApplicationProblemPlusJSONResponse(unprocessable(fields)), nil
 	}
 	c, err := s.store.CreateClient(ctx, in)
+	if errors.Is(err, store.ErrUnknownProfile) {
+		return api.CreateClient422ApplicationProblemPlusJSONResponse(unprocessable([]fieldError{{"profileId", "no such profile"}})), nil
+	}
 	if p, ok := clientConflict(err); ok {
 		return api.CreateClient409ApplicationProblemPlusJSONResponse(p), nil
 	}
@@ -105,6 +108,9 @@ func (s *Server) ReplaceClient(ctx context.Context, req api.ReplaceClientRequest
 		return api.ReplaceClient404ApplicationProblemPlusJSONResponse(clientNotFound(req.ClientId)), nil
 	case errors.Is(err, store.ErrVersionMismatch):
 		return api.ReplaceClient412ApplicationProblemPlusJSONResponse(etagMismatch()), nil
+	}
+	if errors.Is(err, store.ErrUnknownProfile) {
+		return api.ReplaceClient422ApplicationProblemPlusJSONResponse(unprocessable([]fieldError{{"profileId", "no such profile"}})), nil
 	}
 	if p, ok := clientConflict(err); ok {
 		return api.ReplaceClient409ApplicationProblemPlusJSONResponse(p), nil
@@ -161,9 +167,6 @@ func clientFromAPI(in api.ClientInput) (store.ClientInput, []fieldError) {
 			canon := a.String()
 			out.ReservedIP = &canon
 		}
-	}
-	if in.ProfileId != nil {
-		fields = append(fields, fieldError{"profileId", "must be null until profiles exist (Phase 4)"})
 	}
 	if in.SecretRefs != nil && in.SecretRefs.OdjBlob != nil {
 		fields = append(fields, fieldError{"secretRefs.odjBlob", "must be null until secrets exist (Phase 5)"})

@@ -9,7 +9,6 @@ Since Phase 2 step 2, network services come from the stored settings
 | `-content` | Content store (imported and built files, ADR 0015); default `<data>/content`. Point it at a bigger volume if needed; it must not be shared between data directories |
 | `-admin-addr` | Recovery override for the admin listener (health shows a warning while it's set) |
 | `-log`, `-log-level` | Logging |
-| `-tftp-root`, `-boot-file`, `-http-boot-url` | **Temporary** boot content until boot images exist (Phase 2 step 4) |
 | `-agent-dir` | Where a server built without `-tags agent` finds `agent-windows-<arch>.exe` (default `dist`, after `just build`) |
 | `-wimlib` | Path to `wimlib-imagex` if it isn't on PATH |
 
@@ -25,7 +24,7 @@ anything that differs.
 Start the server (elevated, for UDP 67/69):
 
 ```powershell
-go run .\cmd\netdeployd\ -tftp-root .tmp\spike -boot-file bootmgfw_EX.efi
+go run .\cmd\netdeployd\
 ```
 
 In another shell, add the lab interface in full DHCP mode:
@@ -63,8 +62,9 @@ Notes:
   `GET /clients` with `source: discovered`.
 - TFTP picks each client's content from its DHCP boot session
   (`boot_session=dhcp` in the log), the lease table after a restart
-  (`lease`), or the default (`none`, e.g. with DHCP `off`). Until boot images
-  exist everything is `-tftp-root`. Paths match case-insensitively over both
+  (`lease`), or the default profile's boot image (`none`, e.g. with DHCP
+  `off`). What a client boots comes from profiles (ADR 0024; see "Boot
+  images end to end" below). Paths match case-insensitively over both
   TFTP and HTTP. `\BCD` is never served, and misses of
   the optional files Boot Manager probes for are logged at debug only.
 - A `PUT` that can't bind a port returns `422 bind_failed` and leaves the
@@ -136,7 +136,7 @@ knows nothing about PXE), the Windows host runs netdeployd in proxy mode, and
 
    ```powershell
    New-NetFirewallRule -DisplayName 'netdeploy proxyDHCP 4011' -Direction Inbound -Protocol UDP -LocalPort 4011 -Action Allow
-   go run .\cmd\netdeployd\ -data .tmp\proxy-data -tftp-root .tmp\spike -boot-file bootmgfw_EX.efi *>&1 |
+   go run .\cmd\netdeployd\ -data .tmp\proxy-data *>&1 |
      Tee-Object .tmp\logs\proxy-nd-win.log
    ```
 
@@ -298,4 +298,48 @@ The real builder against an ISO's boot.wim (elevated for DISM; set
 $env:NETDEPLOY_TEST_ISO = 'C:\path\to\Win11.iso'
 go test -count=1 -v -run TestRealTools ./internal/bootimage
 ```
+
+## Boot images end to end (Phase 4, ADR 0022–0024)
+
+The server's default data directory already has the lab interface
+(`vEthernet (NetDeployLab)`, full DHCP). Start it elevated, with wimlib:
+
+```powershell
+go run .\cmd\netdeployd\ -wimlib .tmp\wimlib\wimlib-imagex.exe
+```
+
+Then, in PowerShell 7 (`$b` is the admin API):
+
+```powershell
+$b = 'https://127.0.0.1:8443/api/v1'
+function api($method, $path, $body, $etag) {
+  $h = @{}; if ($etag) { $h['If-Match'] = $etag }
+  $json = if ($body) { $body | ConvertTo-Json -Depth 8 } else { $null }
+  Invoke-RestMethod "$b$path" -Method $method -SkipCertificateCheck -ContentType application/json -Body $json -Headers $h
+}
+
+# 1. Import the ISO (upload with .tmp\tus-smoke\smoke.mjs first, as above).
+$job = api Post /images @{ uploadId = '<upload id>'; name = 'Windows 11' }
+$imageId = (api Get "/jobs/$($job.id)").resourceId     # repeat until the job succeeds
+(api Get "/images/$imageId").details.editions | Format-Table index, name
+
+# 2. A boot image, built (auto: wimlib).
+$bi = api Post /boot-images @{ name = 'WinPE x64'; sourceImageId = $imageId; architecture = 'x64'; serverUrls = @('http://10.77.0.1:8080') }
+$build = api Post "/boot-images/$($bi.id)/build" @{}
+api Get "/jobs/$($build.id)"                           # until succeeded
+api Get "/boot-images/$($bi.id)" | Select-Object status, builtWith, sizeBytes
+
+# 3. A profile using it, made the default.
+$p = api Post /profiles @{ name = 'Win11 Pro'; bootImageId = $bi.id; installImageId = $imageId; editionIndex = 6;
+                           installMethod = 'agent'; identity = @{ mode = 'none' } }
+$r = Invoke-WebRequest "$b/settings" -SkipCertificateCheck
+$s = $r.Content | ConvertFrom-Json
+$s.bootPrompt | Add-Member -Force defaultProfileId $p.id
+api Put /settings $s $r.Headers.ETag[0]
+```
+
+Boot `nd-win`. The DHCP log offers `bootmgfw.efi`; TFTP lines carry
+`boot_image=… profile=… via="default profile"`. Without a profile to offer
+the DHCP log says "no profile to offer" and the client gets an address but
+no boot file.
 

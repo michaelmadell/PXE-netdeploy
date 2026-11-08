@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math/big"
 	"net"
@@ -53,7 +54,7 @@ func testService(t *testing.T, dir string) *Service {
 		ListenTCP:  func(netip.AddrPort) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
 	})
 	svc := NewService(Options{Store: st, Network: mgr, Host: lab, Logger: quiet,
-		GeneratedAdminCert: generatedCert(t), Dev: Dev{TFTPRoot: t.TempDir(), BootFile: "bootmgfw.efi"}})
+		GeneratedAdminCert: generatedCert(t), Booter: testBooter{root: cas.DirFS(testRoot)}})
 	if err := svc.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +107,10 @@ func TestServiceReplace(t *testing.T) {
 	if _, _, err := svc.Replace(ctx, bad, `"1"`); !errors.As(err, &verr) {
 		t.Fatalf("unknown interface = %v, want ValidationError", err)
 	}
+	noProfile := apiSettings(t, `{"admin":{"bindAddress":"127.0.0.1","port":8443},"bootPrompt":{"defaultProfileId":"nope"}}`)
+	if _, _, err := svc.Replace(ctx, noProfile, `"1"`); !errors.As(err, &verr) || verr.Fields[0].Field != "bootPrompt.defaultProfileId" {
+		t.Fatalf("unknown default profile = %v, want ValidationError", err)
+	}
 
 	out, tag, err := svc.Replace(ctx, in, `"1"`)
 	if err != nil || tag != `"2"` || !*out.BootPrompt.HasPassword || out.BootPrompt.Password != nil {
@@ -152,7 +157,7 @@ func TestClientRoot(t *testing.T) {
 	if err := svc.opts.Store.PutLease(ctx, store.Lease{Interface: "lab0", IP: leaseIP, MAC: "00:15:5d:00:00:02", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if root, attrs := resolve(leaseIP); root != cas.DirFS(svc.opts.Dev.TFTPRoot) || !hasAttr(attrs, "boot_session", "lease") {
+	if root, attrs := resolve(leaseIP); root != cas.DirFS(testRoot) || !hasAttr(attrs, "boot_session", "lease") {
 		t.Errorf("lease: %v %v", root, attrs)
 	}
 
@@ -160,6 +165,19 @@ func TestClientRoot(t *testing.T) {
 	if root, attrs := resolve(netip.MustParseAddr("10.77.0.160")); root != nil || !hasAttr(attrs, "boot_session", "none") {
 		t.Errorf("unknown: %v %v", root, attrs)
 	}
+}
+
+const testRoot = "/content/default"
+
+// testBooter answers everyone with root.
+type testBooter struct{ root fs.FS }
+
+func (b testBooter) Boot(context.Context, boot.Request) (boot.Answer, bool, string) {
+	return boot.Answer{File: boot.PXEBootFile, Root: b.root}, true, ""
+}
+
+func (b testBooter) Default(context.Context, boot.Arch) (boot.Answer, bool, string) {
+	return boot.Answer{File: boot.PXEBootFile, Root: b.root}, true, ""
 }
 
 func hasAttr(attrs []any, k, v string) bool {

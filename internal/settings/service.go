@@ -19,7 +19,6 @@ import (
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
-	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/content"
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
@@ -28,20 +27,13 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/tftp"
 )
 
-// Dev holds temporary command-line options for boot content, until boot
-// images provide it (Phase 2 step 4).
-type Dev struct {
-	TFTPRoot    string // served read-only on every interface with services.tftp
-	BootFile    string // DHCP boot file for UEFI x64 PXE clients
-	HTTPBootURL string // DHCP boot URL for UEFI x64 HTTP Boot clients
-}
-
 // Options configure a Service.
 type Options struct {
 	Store   *store.Store
 	Network *netsvc.Manager
 	Host    Host // nil: SystemHost
-	Dev     Dev
+	// Booter decides what clients boot (ADR 0024). Nil: nobody is answered.
+	Booter boot.Decider
 	// AdminOverride, when valid, replaces Settings.admin's address (the
 	// -admin-addr recovery flag).
 	AdminOverride netip.AddrPort
@@ -187,6 +179,13 @@ func (s *Service) Replace(ctx context.Context, in api.Settings, ifMatch string) 
 	if s.opts.CheckBackup != nil {
 		ferrs = append(ferrs, s.opts.CheckBackup(ctx, next.Backup)...)
 	}
+	if id := next.BootPrompt.DefaultProfileID; id != "" && s.opts.Store != nil {
+		if ok, err := s.opts.Store.ProfileExists(ctx, id); err != nil {
+			return api.Settings{}, "", err
+		} else if !ok {
+			ferrs = append(ferrs, FieldError{Field: "bootPrompt.defaultProfileId", Message: "no profile " + id})
+		}
+	}
 	if len(ferrs) > 0 {
 		return api.Settings{}, "", &ValidationError{Fields: dedupe(ferrs)}
 	}
@@ -236,13 +235,12 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 	}
 
 	tftpCfg := tftp.Config{
-		Root:          s.devRoot(),
+		Root:          s.defaultRoot(),
 		MaxBlockSize:  cfg.TFTP.MaxBlockSize,
 		MaxWindowSize: cfg.TFTP.MaxWindowSize,
 		Timeout:       time.Duration(cfg.TFTP.TimeoutSeconds) * time.Second,
 		Logger:        s.opts.Logger,
 	}
-	wantTFTP := false
 	for i, in := range cfg.Interfaces {
 		hi, err := s.opts.Host.Interface(in.Name)
 		if err != nil {
@@ -262,14 +260,11 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 			})
 		}
 		if in.Services.TFTP {
-			wantTFTP = true
-			if s.opts.Dev.TFTPRoot != "" {
-				c := tftpCfg
-				c.ClientRoot = s.clientRoot(in.Name)
-				p.TFTP = append(p.TFTP, netsvc.TFTPPlan{
-					Interface: in.Name, Bind: netip.AddrPortFrom(ip, 69), Config: c, Field: path + ".services.tftp",
-				})
-			}
+			c := tftpCfg
+			c.ClientRoot = s.clientRoot(in.Name)
+			p.TFTP = append(p.TFTP, netsvc.TFTPPlan{
+				Interface: in.Name, Bind: netip.AddrPortFrom(ip, 69), Config: c, Field: path + ".services.tftp",
+			})
 		}
 		// Linux binds 0.0.0.0 per device (SO_BINDTODEVICE) so broadcasts
 		// arrive; Windows binds the interface address, which receives them.
@@ -295,12 +290,6 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 				})
 			}
 		}
-	}
-	if wantTFTP && s.opts.Dev.TFTPRoot == "" {
-		p.Notes["tftp"] = "enabled on interfaces but no boot content yet: start with -tftp-root until boot images arrive (Phase 2 step 4)"
-	}
-	if len(p.HTTP) > 0 && s.opts.Dev.TFTPRoot == "" {
-		p.Notes["content"] = "no boot content yet (-tftp-root); only the agent API is served"
 	}
 	return p
 }
@@ -352,7 +341,7 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 	h, ok := s.content[iface]
 	if !ok {
 		h = content.New(content.Config{
-			DefaultRoot: s.devRoot(),
+			DefaultRoot: s.defaultRoot(),
 			ClientRoot:  s.clientRoot(iface),
 			Agent:       s.opts.Agent,
 			Logger:      s.opts.Logger,
@@ -362,18 +351,38 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 	return h
 }
 
-// booter decides what clients boot. Until profiles and boot images exist
-// (Phase 4) everyone gets the temporary -tftp-root / -boot-file content.
-func (s *Service) booter() boot.Booter {
-	return boot.Static{File: s.opts.Dev.BootFile, URL: s.opts.Dev.HTTPBootURL, Root: s.devRoot()}
+// booter decides what clients boot (ADR 0024).
+func (s *Service) booter() boot.Decider {
+	if s.opts.Booter == nil {
+		return noBooter{}
+	}
+	return s.opts.Booter
 }
 
-// devRoot is the temporary -tftp-root directory as an fs.FS, nil if unset.
-func (s *Service) devRoot() fs.FS {
-	if s.opts.Dev.TFTPRoot == "" {
-		return nil
+type noBooter struct{}
+
+func (noBooter) Boot(context.Context, boot.Request) (boot.Answer, bool, string) {
+	return boot.Answer{}, false, "no boot decisions configured"
+}
+
+func (noBooter) Default(context.Context, boot.Arch) (boot.Answer, bool, string) {
+	return boot.Answer{}, false, "no boot decisions configured"
+}
+
+// defaultRoot is the content for clients nothing tells apart (DHCP off, no
+// session or lease): the default profile's boot image, looked up per file.
+func (s *Service) defaultRoot() fs.FS { return defaultFS{s} }
+
+type defaultFS struct{ s *Service }
+
+func (d defaultFS) Open(name string) (fs.File, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ans, ok, _ := d.s.booter().Default(ctx, boot.ArchUEFIX64)
+	if !ok || ans.Root == nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
-	return cas.DirFS(s.opts.Dev.TFTPRoot)
+	return ans.Root.Open(name)
 }
 
 // clientRoot tells TFTP on iface which content serves a client IP (ADR
@@ -383,7 +392,7 @@ func (s *Service) devRoot() fs.FS {
 func (s *Service) clientRoot(iface string) func(netip.Addr) (fs.FS, []any) {
 	return func(ip netip.Addr) (fs.FS, []any) {
 		if sess, ok := s.sessions.Lookup(iface, ip); ok {
-			return sess.Answer.Root, []any{"mac", sess.MAC, "boot_session", "dhcp"}
+			return sess.Answer.Root, append([]any{"mac", sess.MAC, "boot_session", "dhcp"}, sess.Answer.LogAttrs()...)
 		}
 		if s.opts.Store != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -394,11 +403,11 @@ func (s *Service) clientRoot(iface string) func(netip.Addr) (fs.FS, []any) {
 					arch = boot.Arch(*l.Arch)
 				}
 				if ans, ok, _ := s.booter().Boot(ctx, boot.Request{Interface: iface, MAC: l.MAC, Arch: arch}); ok {
-					return ans.Root, []any{"mac", l.MAC, "boot_session", "lease"}
+					return ans.Root, append([]any{"mac", l.MAC, "boot_session", "lease"}, ans.LogAttrs()...)
 				}
 			}
 		}
-		return nil, []any{"boot_session", "none"}
+		return nil, []any{"boot_session", "none"} // the default content
 	}
 }
 
@@ -431,11 +440,11 @@ func (s *Service) guidance(cfg Config) map[string][]Guidance {
 			server = p.Addr()
 		}
 		var g []Guidance
-		if cfg.Architectures.UEFIX64 && s.opts.Dev.BootFile != "" {
-			g = append(g, Guidance{Arch: api.ClientArchUefiX64, NextServer: server.String(), BootFile: s.opts.Dev.BootFile, VendorClass: "PXEClient"})
+		if cfg.Architectures.UEFIX64 {
+			g = append(g, Guidance{Arch: api.ClientArchUefiX64, NextServer: server.String(), BootFile: boot.PXEBootFile, VendorClass: "PXEClient"})
 		}
-		if cfg.Architectures.HTTPBoot && s.opts.Dev.HTTPBootURL != "" {
-			g = append(g, Guidance{Arch: api.ClientArchUefiX64Http, NextServer: server.String(), BootFile: s.opts.Dev.HTTPBootURL, VendorClass: "HTTPClient"})
+		if cfg.Architectures.UEFIArm64 {
+			g = append(g, Guidance{Arch: api.ClientArchUefiArm64, NextServer: server.String(), BootFile: boot.PXEBootFile, VendorClass: "PXEClient"})
 		}
 		out[in.Name] = g
 	}

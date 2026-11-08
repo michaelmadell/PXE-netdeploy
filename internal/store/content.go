@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Content store rows (ADR 0015). The files themselves are managed by
@@ -178,11 +179,19 @@ func (s *Store) ContentBytes(ctx context.Context) (int64, error) {
 
 // SweepContent deletes trees nothing refers to (tree_refs), then blobs no
 // tree entry or owner refers to (blob_refs), and returns the deleted blobs'
-// hashes so their files can be removed. One transaction.
-func (s *Store) SweepContent(ctx context.Context) (trees int64, blobs []string, err error) {
+// hashes so their files can be removed. Trees in keep are kept (boot
+// sessions use them). One transaction.
+func (s *Store) SweepContent(ctx context.Context, keep ...string) (trees int64, blobs []string, err error) {
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`DELETE FROM trees WHERE id NOT IN (SELECT tree_id FROM tree_refs WHERE tree_id IS NOT NULL)`)
+		q := `DELETE FROM trees WHERE id NOT IN (SELECT tree_id FROM tree_refs WHERE tree_id IS NOT NULL)`
+		args := []any{}
+		if len(keep) > 0 {
+			q += ` AND id NOT IN (?` + strings.Repeat(", ?", len(keep)-1) + `)`
+			for _, k := range keep {
+				args = append(args, k)
+			}
+		}
+		res, err := tx.ExecContext(ctx, q, args...)
 		if err != nil {
 			return fmt.Errorf("store: sweep trees: %w", err)
 		}

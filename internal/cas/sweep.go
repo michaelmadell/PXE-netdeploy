@@ -24,7 +24,11 @@ func (s *Store) Sweep(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	trees, hashes, err := s.db.SweepContent(ctx)
+	var keep []string
+	if s.pinned != nil {
+		keep = s.pinned() // trees clients are booting from (ADR 0024)
+	}
+	trees, hashes, err := s.db.SweepContent(ctx, keep...)
 	if err != nil {
 		return err
 	}

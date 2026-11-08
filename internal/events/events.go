@@ -20,6 +20,7 @@ const (
 	ImageUpdated     = "image.updated"
 	DriverUpdated    = "driverPackage.updated"
 	BootImageUpdated = "bootImage.updated"
+	ProfileUpdated   = "profile.updated"
 )
 
 // Event is one notification. Data is marshalled as the Event's `data`.

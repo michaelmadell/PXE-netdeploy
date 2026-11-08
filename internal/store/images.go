@@ -244,6 +244,9 @@ func (s *Store) DeleteImage(ctx context.Context, id string) error {
 		if used > 0 {
 			return ErrImageInUse
 		}
+		if err := inUse(ctx, t, `SELECT count(*) FROM profiles WHERE install_image_id = ?`, id, ErrImageInUse); err != nil {
+			return err
+		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM images WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("store: delete image: %w", err)
 		}

@@ -13,7 +13,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
+	"time"
 )
 
 // Architectures and their file names (as scripts/build.ps1 writes them).
@@ -41,7 +43,10 @@ func (b Binary) Open() io.Reader { return bytes.NewReader(b.data) }
 type Set struct {
 	Version string
 	Source  string // "embedded", a directory, or "" when empty
-	bins    map[string]Binary
+	// Modified is the newest agent file's time when read from a directory
+	// (logged at startup: a stale ./dist agent is an easy mistake).
+	Modified time.Time
+	bins     map[string]Binary
 }
 
 // Load returns the embedded agents, or, when this build has none, the
@@ -57,7 +62,16 @@ func Load(version, dir string) (*Set, error) {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return &Set{Version: version, bins: map[string]Binary{}}, nil
 	}
-	return load(version, dir, os.DirFS(dir))
+	s, err := load(version, dir, os.DirFS(dir))
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range files {
+		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && fi.ModTime().After(s.Modified) {
+			s.Modified = fi.ModTime()
+		}
+	}
+	return s, nil
 }
 
 func load(version, source string, fsys fs.FS) (*Set, error) {

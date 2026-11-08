@@ -50,7 +50,10 @@ type Options struct {
 	Store *store.Store // manifest rows
 	// Reserve returns storage.reserveBytes. Nil: DefaultReserveBytes.
 	Reserve func() int64
-	Logger  *slog.Logger
+	// Pinned returns trees to keep even when unreferenced: those boot
+	// sessions are serving (ADR 0024). Nil: none.
+	Pinned func() []string
+	Logger *slog.Logger
 }
 
 // Store is the content store. Safe for concurrent use.
@@ -58,6 +61,7 @@ type Store struct {
 	root    string
 	db      *store.Store
 	reserve func() int64
+	pinned  func() []string
 	log     *slog.Logger
 
 	// Commits hold mu for reading while they rename blobs into place and
@@ -100,7 +104,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("cas: content root: %w", err)
 	}
 	s := &Store{
-		root: root, db: opts.Store, reserve: opts.Reserve,
+		root: root, db: opts.Store, reserve: opts.Reserve, pinned: opts.Pinned,
 		log:       opts.Logger.With("svc", "content-store"),
 		diskSpace: diskSpace, checkEvery: spaceCheckEvery,
 	}

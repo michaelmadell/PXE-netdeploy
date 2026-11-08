@@ -20,6 +20,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/agentbin"
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
+	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 	"github.com/michaelmadell/pxe-netdeploy/internal/bootimage"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
@@ -60,7 +61,6 @@ type options struct {
 	adminAddr  string // empty: use Settings.admin
 	agentDir   string // agents when the binary embeds none
 	wimlibPath string // empty: wimlib-imagex from PATH
-	dev        settings.Dev
 }
 
 func main() {
@@ -82,11 +82,6 @@ func main() {
 	flag.StringVar(&o.wimlibPath, "wimlib", "", "path to wimlib-imagex (default: found on PATH)")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
-
-	// Temporary until boot images provide boot content (Phase 2 step 4).
-	flag.StringVar(&o.dev.TFTPRoot, "tftp-root", "", "TEMPORARY: directory served read-only over TFTP on interfaces with services.tftp")
-	flag.StringVar(&o.dev.BootFile, "boot-file", "bootmgfw.efi", "TEMPORARY: DHCP boot file for UEFI x64 PXE clients")
-	flag.StringVar(&o.dev.HTTPBootURL, "http-boot-url", "", "TEMPORARY: DHCP boot URL for UEFI x64 HTTP Boot clients")
 	flag.Parse()
 
 	var level slog.Level
@@ -145,14 +140,23 @@ func run(o options) error {
 		contentDir = filepath.Join(o.dataDir, "content")
 	}
 
+	// What clients boot (ADR 0024): its content store and settings are
+	// filled in below, before anything starts.
+	booter := &boot.Profiles{Store: st}
+	var svc *settings.Service
+	booter.DefaultProfileID = func() string {
+		cfg, _ := svc.Current()
+		return cfg.BootPrompt.DefaultProfileID
+	}
+
 	var handler http.Handler
 	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
 	}), netsvc.Options{})
-	svc := settings.NewService(settings.Options{
+	svc = settings.NewService(settings.Options{
 		Store:              st,
 		Network:            network,
-		Dev:                o.dev,
+		Booter:             booter,
 		AdminOverride:      override,
 		GeneratedAdminCert: &generated.Certificates[0],
 		Events:             bus,
@@ -180,10 +184,12 @@ func run(o options) error {
 			cfg, _ := svc.Current()
 			return cfg.Storage.ReserveBytes
 		},
+		Pinned: svc.Sessions().TreeIDs, // trees clients are booting from
 	})
 	if err != nil {
 		return err
 	}
+	booter.Tree = content.Tree
 	up := uploads.New(uploads.Options{
 		Store:   st,
 		Content: content,
@@ -205,7 +211,7 @@ func run(o options) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("agents", "version", agents.Version, "source", agents.Source, "architectures", agents.Architectures())
+	slog.Info("agents", "version", agents.Version, "source", agents.Source, "architectures", agents.Architectures(), "modified", agents.Modified)
 	boot := bootimage.New(bootimage.Options{Store: st, Content: content, Agents: agents, Events: bus, WimlibPath: o.wimlibPath})
 	runner.Register(boot.Kind())
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,

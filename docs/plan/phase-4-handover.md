@@ -101,6 +101,9 @@ optional components, `bootmgr`. Settle:
 
 ### 2. Writing the BCD
 
+**Decided 2026-11-08: [ADR 0023](../adr/0023-own-bcd-writer.md); implemented
+and lab-tested.**
+
 ADR 0006 says `bcdedit` on Windows and `hivex` on Linux. Options: those
 tools (bcdedit needs elevation and a store file; hivex is a C library with a
 Perl/CLI wrapper), or our own minimal REGF hive writer in Go (no tools, no
@@ -109,6 +112,9 @@ Phase 1 recorded the BCD elements that worked (ramdisk options, TFTP block
 and window sizes). Probably an ADR either way.
 
 ### 3. The real `Booter` (ADR 0013)
+
+**Decided 2026-11-08: [ADR 0024](../adr/0024-booter.md); implemented**
+(`boot.Profiles`, profile storage and `/profiles`).
 
 Replace `boot.Static`: per request, decide whether to answer and with which
 boot image (client's profile, an armed deployment, `bootPrompt.defaultProfileId`

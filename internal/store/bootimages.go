@@ -321,8 +321,9 @@ func (s *Store) ReplaceBootImage(ctx context.Context, id string, in BootImageInp
 	return s.BootImage(ctx, id)
 }
 
-// DeleteBootImage deletes a boot image that isn't building (a content
-// store sweep reclaims its build). ErrNotFound, ErrBuildInProgress.
+// DeleteBootImage deletes a boot image that isn't building or used by a
+// profile (a content store sweep reclaims its build). ErrNotFound,
+// ErrBuildInProgress, ErrBootImageInUse.
 func (s *Store) DeleteBootImage(ctx context.Context, id string) error {
 	return s.tx(ctx, func(t *sql.Tx) error {
 		var state string
@@ -334,6 +335,9 @@ func (s *Store) DeleteBootImage(ctx context.Context, id string) error {
 		}
 		if state == BootImageBuilding {
 			return ErrBuildInProgress
+		}
+		if err := inUse(ctx, t, `SELECT count(*) FROM profiles WHERE boot_image_id = ?`, id, ErrBootImageInUse); err != nil {
+			return err
 		}
 		_, err := t.ExecContext(ctx, `DELETE FROM boot_images WHERE id = ?`, id)
 		return err

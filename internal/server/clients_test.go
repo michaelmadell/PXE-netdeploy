@@ -66,7 +66,7 @@ func TestClientsCRUD(t *testing.T) {
 		t.Errorf("duplicate reservation: %d %v", rec.Code, p)
 	}
 	if rec, p := call(h, "POST", "/api/v1/clients", `{"mac":"00:15:5d:00:00:03","profileId":"p1"}`); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "profileId") {
-		t.Errorf("profileId before profiles exist: %d %v", rec.Code, p)
+		t.Errorf("unknown profileId: %d %v", rec.Code, p)
 	}
 	if rec, _ := call(h, "POST", "/api/v1/clients", `{"mac":"00:15:5d:00:00:04","reservedIp":"10.77.0"}`); rec.Code != http.StatusUnprocessableEntity && rec.Code != http.StatusBadRequest {
 		t.Errorf("bad reservedIp: %d", rec.Code)

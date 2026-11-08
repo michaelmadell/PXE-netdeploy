@@ -41,6 +41,21 @@ type Answer struct {
 	File string
 	URL  string
 	Root fs.FS
+	// TreeID is Root's content-store tree: kept while the session lives
+	// (ADR 0024). Empty for content outside the store.
+	TreeID string
+	// For logs: the boot image, the profile and why that profile.
+	BootImageID string
+	ProfileID   string
+	Source      string // "deployment", "client profile" or "default profile"
+}
+
+// LogAttrs describes the answer for logs.
+func (a Answer) LogAttrs() []any {
+	if a.BootImageID == "" {
+		return nil
+	}
+	return []any{"boot_image", a.BootImageID, "profile", a.ProfileID, "via", a.Source}
 }
 
 // Booter decides what a client boots. ok=false means it gets no boot answer
@@ -49,9 +64,8 @@ type Booter interface {
 	Boot(ctx context.Context, r Request) (a Answer, ok bool, reason string)
 }
 
-// Static answers every UEFI x64 client with fixed boot content. It stands in
-// for the ADR 0013 decision (armed deployment, else the client's profile, else
-// the default profile) until profiles and boot images exist in Phase 4.
+// Static answers every UEFI x64 client with fixed boot content: protocol
+// tests use it. The server decides with Profiles (ADR 0024).
 type Static struct {
 	File string // TFTP path for UEFI x64 PXE
 	URL  string // URL for UEFI x64 HTTP Boot
@@ -130,6 +144,22 @@ func (s *Sessions) Record(sess Session) {
 	sess.At = s.now()
 	s.byIP[sessionKey{sess.Interface, sess.IP}] = sess
 	s.expireLocked()
+}
+
+// TreeIDs returns the content-store trees unexpired sessions serve, so
+// garbage collection keeps them (ADR 0024).
+func (s *Sessions) TreeIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range s.byIP {
+		if t := v.Answer.TreeID; t != "" && !seen[t] && s.now().Sub(v.At) <= s.ttl() {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // Lookup returns the unexpired session for ip on iface.

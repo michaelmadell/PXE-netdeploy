@@ -187,6 +187,12 @@ func uniqueViolation(err error, target string) bool {
 	return false
 }
 
+// fkViolation reports a FOREIGN KEY constraint failure.
+func fkViolation(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+}
+
 // Ping checks the database answers a query (health).
 func (s *Store) Ping(ctx context.Context) error {
 	var one int

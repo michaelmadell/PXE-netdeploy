@@ -51,6 +51,33 @@ fine; we keep `Fonts_EX`); files wimlib adds on Windows without security
 descriptors (`--no-acls`) run in WinPE; a `winpeshl.ini` that launches only
 the agent, which runs `wpeinit` itself, brings WinPE up.
 
+## Our BCD (decision 2, ADR 0023)
+
+Reading the Phase 1 store (`internal/bcd/testdata/phase1.bcd`, made with
+`bcdedit`): hive 1.3, `lf` subkey lists, root `NewStoreRoot` with
+`Description` (KeyName `BCD00000001`, FirmwareModified 1) and three objects:
+`{bootmgr}` (description, default, displayorder, timeout 5), the WinPE loader
+(device/osdevice `ramdisk=[boot]\Boot\boot.wim,{ramdiskoptions}` as a
+170-byte element, path `\windows\system32\winload.efi`, systemroot
+`\windows`, detecthal, winpe) and `{ramdiskoptions}` (ramdisksdidevice
+`boot`, ramdisksdipath `\Boot\boot.sdi`, TFTP block 16384 and window 16 as
+8-byte integers). The root key's parent offset points at unused space, so
+loaders ignore it. The security descriptor's group was the creating user's
+SID; ours uses Administrators.
+
+**`bcdedit` and `reg load`, tested 2026-11-08** (`TestBcdedit`, elevated):
+`bcdedit /store … /enum all /v` lists Windows Boot Manager, the Windows Boot
+Loader (`ramdisk=[boot]\Boot\boot.wim,{ae5534e0-…}`, winpe Yes, detecthal
+Yes) and Setup Ramdisk Options (sdi device `boot`, 16384/16) exactly as
+intended; `reg load` accepts the hive.
+
+**Lab boot with our BCD, tested 2026-11-08:** wimlib build of the Win11 ISO
+(`.tmp\spike5`), BCD from `internal/bcd`, `nd-win` under Secure Boot. Boot
+Manager loaded `\Boot\BCD` (12,288 bytes) and followed it: font, boot.sdi
+and boot.wim requested with the BCD's 16384/16 (capped to 8192/8);
+boot.wim 583,170,203 bytes in 2.6 s (224 MB/s, 0 retransmits); WinPE's
+DHCP (`MSFT 5.0`) 4 s later, so the agent's `wpeinit` brought the network up.
+
 To run once elevated, or with wimlib installed:
 
 ```powershell

@@ -35,7 +35,8 @@ and `{ramdiskoptions}` (ramdisksdidevice `boot`, ramdisksdipath
   machine-specific SIDs).
 - Checks: the written store reads back with our reader as the Phase 1
   store apart from the loader GUID (unit test); `bcdedit /enum all /v` and
-  `reg load` accept it (opt-in test, elevated); a lab boot of `nd-win`.
+  `reg load` accept it (opt-in test, elevated); a lab boot of `nd-win`
+  (all passed 2026-11-08, Phase 4 findings).
 - `/system/capabilities` drops `bcdTool`.
 
 ## Consequences

@@ -24,5 +24,7 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0017](0017-uploads-own-tus-server.md) | Uploads: our own minimal tus server | accepted |
 | [0018](0018-reading-media.md) | Reading install media: own UDF and WIM metadata readers, go-wim, go-uefi | accepted |
 | [0019](0019-driver-packages.md) | Driver packages: archives, INF parsing, catalog verification | accepted |
+| [0020](0020-backups.md) | Backups: scheduled, incremental, to a folder or an SMB share | accepted |
+| [0021](0021-secrets-storage.md) | Secrets storage: one data key, protected by DPAPI or a key file | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

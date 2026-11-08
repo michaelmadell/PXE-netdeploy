@@ -43,6 +43,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the backups at the configured destination, newest first.
+         * @description Reads `snapshots/` at `backup.destination` (ADR 0020). `409`
+         *     (`code: backup_not_configured`) without a destination; `502`
+         *     (`code: backup_destination_error`) when it can't be reached or read,
+         *     with the reason in `detail`.
+         */
+        get: operations["listBackups"];
+        put?: never;
+        /**
+         * Back up now.
+         * @description Queues a `system.backup` job, whatever `backup.schedule` says. If a
+         *     backup is already queued or running, returns that job. `409`
+         *     (`code: backup_not_configured`) without `backup.destination`. Also the
+         *     way to test a destination: a failure shows in the job's `error`.
+         */
+        post: operations["runBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events": {
         parameters: {
             query?: never;
@@ -838,7 +868,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a specific secret.
-         * @description `409` (`code: secret_in_use`) while referenced by a profile or client.
+         * @description `409` (`code: secret_in_use`) while referenced by a profile, client, SMB target or the backup settings.
          */
         delete: operations["deleteSecret"];
         options?: never;
@@ -887,6 +917,8 @@ export interface paths {
          *     returned with one `errors[]` entry per failure, e.g.
          *     `{ field: "interfaces[0].dhcp", message: "UDP 67 in use by svchost.exe (SharedAccess)" }`.
          *     Schema violations return `400` with the same `errors[]` shape.
+         *     `backup.destination` is checked for form only (path shape, an existing
+         *     `share-credential` secret), never by connecting: `422` on a bad one.
          *
          *     Read-only fields (`etag`, `hasPassword`, `externalDhcpGuidance`) are
          *     ignored. Write-only fields keep their current value when omitted or null.
@@ -1256,17 +1288,59 @@ export interface components {
                 [key: string]: components["schemas"]["ServiceHealth"];
             };
             storage?: components["schemas"]["StorageHealth"];
+            backup?: components["schemas"]["BackupHealth"];
             /**
              * @description Configuration the operator should know about; does not change `status`.
              *     Codes: `boot_prompt_password_disabled` (debug mode: anyone at a machine can
              *     re-image it), `boot_prompt_no_password` (only armed deployments can run),
              *     `no_default_profile` (unknown clients are not answered), `storage_low`
-             *     (free space in the content store is below twice `storage.reserveBytes`).
+             *     (free space in the content store is below twice `storage.reserveBytes`),
+             *     `backup_failed` (the last backup failed), `backup_overdue` (scheduled
+             *     backups haven't succeeded for two intervals), `secrets_key_not_exported`
+             *     (secrets exist but the key was never exported with `netdeployd key
+             *     export`; without it they can't be restored on other hardware, ADR 0021).
              */
             warnings?: {
                 code: string;
                 message: string;
             }[];
+        };
+        /** @description Backups (ADR 0020). Absent fields mean "never". */
+        BackupHealth: {
+            /** Format: date-time */
+            lastSuccessAt?: string | null;
+            /** Format: date-time */
+            lastFailureAt?: string | null;
+            /** @description The last failure's detail, if it is newer than the last success. */
+            lastError?: string | null;
+            /**
+             * Format: date-time
+             * @description Next scheduled run; null when `backup.schedule.frequency` is `disabled` or no destination is set.
+             */
+            nextRunAt?: string | null;
+        };
+        /** @description One snapshot at the destination (ADR 0020). */
+        Backup: {
+            /** @description Snapshot directory name, the UTC start time, e.g. `20261108T020000Z`. */
+            id: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            trigger: "scheduled" | "manual" | "offline";
+            serverVersion: string;
+            /** @description Database schema version; restore needs a server at least this new. */
+            schemaVersion: number;
+            /** @description Stored files this snapshot references. */
+            blobCount: number;
+            /**
+             * Format: int64
+             * @description Their total size (shared with other snapshots).
+             */
+            blobBytes: number;
+            /** Format: int64 */
+            databaseBytes: number;
+            /** @description SHA-256 of the secrets key at backup time (ADR 0021); null if there were no secrets. */
+            secretsKeyFingerprint?: string | null;
         };
         /** @description Space on the content store's volume (ADR 0015). */
         StorageHealth: {
@@ -1811,13 +1885,17 @@ export interface components {
             /** @description Secret of kind `product-key`. Null uses the edition's default/KMS behaviour. */
             productKeySecretId?: string | null;
         };
-        /** @enum {string} */
-        SecretKind: "password" | "product-key" | "domain-credential" | "odj-blob" | "autopilot-json" | "provisioning-package";
+        /**
+         * @description `share-credential`: a username and password for an SMB share (backup
+         *     destination, SMB targets); the username is the secret's `hint`.
+         * @enum {string}
+         */
+        SecretKind: "password" | "product-key" | "domain-credential" | "share-credential" | "odj-blob" | "autopilot-json" | "provisioning-package";
         /** @description Exactly one of `value`, `credential` or `uploadId`, depending on kind. */
         SecretValue: {
             /** @description For `password` and `product-key`. */
             value?: string;
-            /** @description For `domain-credential`. */
+            /** @description For `domain-credential` and `share-credential`. */
             credential?: {
                 /** @description e.g. CORP\svc-join or svc-join@corp.example */
                 username: string;
@@ -1954,10 +2032,11 @@ export interface components {
         /** @enum {string} */
         JobStatus: "queued" | "running" | "succeeded" | "failed" | "cancelled";
         /** @enum {string} */
-        JobKind: "image.import" | "driverPackage.import" | "bootImage.build";
+        JobKind: "image.import" | "driverPackage.import" | "bootImage.build" | "system.backup";
         /**
          * @description Background work (ADR 0016). Jobs queue and run in order: boot image builds
-         *     one at a time, imports two at a time. A job that was running when the
+         *     one at a time, imports two at a time, backups one at a time on their own
+         *     lane (ADR 0020). A job that was running when the
          *     server stopped fails with `interrupted`; it is not resumed.
          */
         Job: {
@@ -1995,16 +2074,14 @@ export interface components {
             uncPath: string;
             /** @description Where this server writes the share's content. */
             localPath: string;
-            username?: string | null;
-            /** @description Stored encrypted; never returned. */
-            password?: string | null;
+            /** @description Secret of kind `share-credential` clients use to connect (ADR 0021). Null for none. */
+            credentialSecretId?: string | null;
         };
         SmbTarget: components["schemas"]["Meta"] & {
             name: string;
             uncPath: string;
             localPath: string;
-            username?: string | null;
-            hasPassword?: boolean;
+            credentialSecretId?: string | null;
         };
         BindFailure: {
             interface: string;
@@ -2129,6 +2206,7 @@ export interface components {
                  */
                 uploadExpiryHours: number;
             };
+            backup?: components["schemas"]["BackupSettings"];
             /** @description Which client architectures are answered at all. */
             architectures?: {
                 /**
@@ -2146,6 +2224,64 @@ export interface components {
                  */
                 httpBoot: boolean;
             };
+        };
+        /**
+         * @description Scheduled backups (ADR 0020): the database, admin certificate and the
+         *     stored files they reference; incremental after the first run.
+         */
+        BackupSettings: {
+            /**
+             * @description In the server's local time. A time skipped by a clock change runs at
+             *     the next valid moment; a repeated one runs once. If the server was
+             *     down at a scheduled time, one backup runs as soon as it starts.
+             */
+            schedule?: {
+                /**
+                 * @default disabled
+                 * @enum {string}
+                 */
+                frequency: "disabled" | "hourly" | "daily" | "weekly" | "monthly";
+                /**
+                 * @description `hourly`: minutes past the hour.
+                 * @default 0
+                 */
+                minute: number;
+                /**
+                 * @description `daily`, `weekly`, `monthly`: HH:MM, 24-hour.
+                 * @default 02:00
+                 */
+                time: string;
+                /**
+                 * @description `weekly`.
+                 * @default [
+                 *       "sun"
+                 *     ]
+                 */
+                daysOfWeek: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
+                /**
+                 * @description `monthly`. Months shorter than this run on their last day, so 31 means the last day of every month.
+                 * @default 1
+                 */
+                dayOfMonth: number;
+            };
+            /**
+             * @description Snapshots to keep; older ones and the files only they reference are deleted after each successful backup. 0 keeps all.
+             * @default 5
+             */
+            retention: number;
+            /** @description Where backups go. Null disables backups (including `POST /system/backups`). */
+            destination?: {
+                /** @enum {string} */
+                type: "local" | "smb";
+                /**
+                 * @description `local`: an absolute directory path on this server, not inside the data
+                 *     or content directories. `smb`: `\\server\share` with an optional
+                 *     subdirectory, e.g. `\\nas01\backups\netdeploy`.
+                 */
+                path: string;
+                /** @description `smb` only (required there): a secret of kind `share-credential` (ADR 0021). */
+                credentialSecretId?: string | null;
+            } | null;
         };
         InterfaceSettings: {
             /** @description OS interface name, e.g. `Ethernet 2` or `enp3s0`. */
@@ -2449,6 +2585,45 @@ export interface operations {
                 };
             };
             401: components["responses"]["Problem"];
+        };
+    };
+    listBackups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Backup"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            502: components["responses"]["Problem"];
+        };
+    };
+    runBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: components["responses"]["JobAccepted"];
+            401: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
         };
     };
     streamEvents: {

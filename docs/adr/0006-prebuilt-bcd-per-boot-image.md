@@ -1,6 +1,7 @@
 # 6. Pre-built BCD per boot image, selected per client
 
-Status: accepted
+Status: accepted; the tool choice (`bcdedit`/`hivex`) is replaced by
+[0023](0023-own-bcd-writer.md), our own BCD writer.
 
 ## Context
 WDS serves each client the boot configuration for its deployment. A BCD store

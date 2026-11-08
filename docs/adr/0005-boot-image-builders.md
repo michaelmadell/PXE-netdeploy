@@ -1,6 +1,8 @@
 # 5. Two boot image builders: DISM and wimlib
 
-Status: accepted
+Status: accepted; refined by [0022](0022-building-boot-images.md), which
+allows storage drivers with wimlib (WinPE runs from a RAM disk, so the
+agent can `drvload` them) and makes `auto` prefer wimlib.
 
 ## Context
 Devices such as the Intel I210 need their NIC driver inside WinPE before the

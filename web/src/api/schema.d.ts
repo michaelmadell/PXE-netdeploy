@@ -343,7 +343,10 @@ export interface paths {
          */
         put: operations["replaceDriverGroup"];
         post?: never;
-        /** Delete a specific driver group. */
+        /**
+         * Delete a specific driver group.
+         * @description Fails with `409` (`code: driver_group_in_use`) if a boot image uses it.
+         */
         delete: operations["deleteDriverGroup"];
         options?: never;
         head?: never;
@@ -360,7 +363,14 @@ export interface paths {
         /** List available boot images. */
         get: operations["listBootImages"];
         put?: never;
-        /** Define a boot image (does not build it). */
+        /**
+         * Define a boot image (does not build it).
+         * @description Checks the inputs that don't depend on the host or on driver contents:
+         *     the source image (a ready `windows` image of the same architecture),
+         *     `sourceIndex`, the driver groups, `agentVersion` and `bootmgr`.
+         *     `optionalComponents` and `produceHttpBootIso: true` are refused with
+         *     `422` (`code: not_implemented`) for now (ADR 0022).
+         */
         post: operations["createBootImage"];
         delete?: never;
         options?: never;
@@ -381,11 +391,15 @@ export interface paths {
         get: operations["getBootImage"];
         /**
          * Replace a specific boot image.
-         * @description Changing inputs marks the image `stale` until rebuilt.
+         * @description Same checks as create. Changing inputs marks the image `stale` until
+         *     rebuilt; it keeps serving its last build meanwhile.
          */
         put: operations["replaceBootImage"];
         post?: never;
-        /** Delete a specific boot image. */
+        /**
+         * Delete a specific boot image.
+         * @description Fails with `409` (`code: build_in_progress`) while a build is queued or running; cancel its job first.
+         */
         delete: operations["deleteBootImage"];
         options?: never;
         head?: never;
@@ -405,13 +419,20 @@ export interface paths {
         put?: never;
         /**
          * Build (or rebuild) the boot image.
-         * @description If a build with an identical `inputHash` already exists, returns `200` with the
-         *     existing image instead of rebuilding. Only one build per boot image runs at a
-         *     time; a second request while building returns `409` (`code: build_in_progress`).
-         *     Builds are queued and run one at a time per host by default (DISM mount
-         *     directories do not tolerate parallel builds well).
-         *     Fails with `422` (`code: builder_unavailable`) if the requested builder is not
-         *     available on this host.
+         * @description Resolves the inputs (ADR 0022) and computes `inputHash`. Unless `force`,
+         *     if this boot image's current build, or another boot image's build, has the
+         *     same `inputHash`, returns `200` and serves that build without a job.
+         *     Otherwise queues a `bootImage.build` job (`202`). Builds run one at a time
+         *     per host. Only one build per boot image is queued or running at a time; a
+         *     second request returns `409` (`code: build_in_progress`).
+         *
+         *     `422` codes: `builder_unavailable` (no usable builder: DISM needs an
+         *     elevated server, wimlib needs `wimlib-imagex`), `unsigned_driver` (an
+         *     enabled INF in the selected groups is unsigned),
+         *     `driver_architecture` (an enabled INF doesn't support the architecture),
+         *     `source_image_unavailable`, `agent_unavailable` (no bundled agent for the
+         *     architecture). `507` (`code: insufficient_storage`): about four times the
+         *     source boot.wim must fit above the storage reserve.
          */
         post: operations["buildBootImage"];
         delete?: never;
@@ -1389,9 +1410,19 @@ export interface components {
                  *     the source image build.
                  */
                 version?: string;
-                /** @description Why unavailable, if not available. */
+                /** @description Why unavailable, if not available (e.g. DISM when the server isn't elevated). */
                 reason?: string;
+                /** @description The tool used (wimlib: from `-wimlib` or PATH). */
+                path?: string;
             }[];
+            /** @description Windows hosts: whether the server runs elevated (DISM needs it). Always false on Linux. */
+            elevated?: boolean;
+            /** @description The WinPE agent bundled with this server (ADR 0022). */
+            agent?: {
+                version: string;
+                /** @description Architectures with a bundled agent binary; empty in a build without agents. */
+                architectures: components["schemas"]["Architecture"][];
+            };
             /** @description Windows ADK / WinPE add-on, needed only for optional components. */
             adk?: {
                 installed?: boolean;
@@ -1404,13 +1435,6 @@ export interface components {
             cabLzx?: {
                 available: boolean;
                 tool?: string | null;
-                reason?: string;
-            };
-            /** @description Tool used to write BCD stores (`bcdedit` on Windows, `hivex` on Linux). */
-            bcdTool: {
-                /** @enum {string} */
-                name: "bcdedit" | "hivex";
-                available: boolean;
                 reason?: string;
             };
         };
@@ -1638,13 +1662,18 @@ export interface components {
             /** @description A `windows` Image. */
             sourceImageId: string;
             /**
-             * @description Index inside boot.wim (2 = Windows Setup on standard media).
-             * @default 2
+             * @description Index inside boot.wim. 1 (plain WinPE on standard media) is the default:
+             *     index 2 (Windows Setup) is larger and its Setup program blocks in WDS mode
+             *     (Phase 1 findings). Must be one of the image's `bootImageIndexes`.
+             * @default 1
              */
             sourceIndex: number;
             architecture: components["schemas"]["Architecture"];
             driverGroupIds?: string[];
-            /** @description Defaults to the bundled agent. */
+            /**
+             * @description Defaults to the bundled agent; only the bundled version
+             *     (`Capabilities.agent.version`) is accepted for now.
+             */
             agentVersion?: string;
             /**
              * @description Baked into the image as the agent's config; tried in order. Changing
@@ -1652,13 +1681,21 @@ export interface components {
              */
             serverUrls: string[];
             /**
-             * @description `auto` prefers `dism` when available, else `wimlib`. With `wimlib`,
-             *     drivers are staged as files and loaded by the agent via `drvload`.
+             * @description `auto` uses `wimlib` when `wimlib-imagex` is available, else `dism` (the
+             *     server elevated on Windows, DISM not older than the image). `dism` injects
+             *     drivers into WinPE's driver store; with `wimlib` they are staged as files
+             *     and the agent loads them with `drvload` before it looks at disks. WinPE
+             *     runs from a RAM disk, so storage drivers (RAID, VMD) work either way
+             *     (ADR 0022).
              * @default auto
              * @enum {string}
              */
             builder: "auto" | "dism" | "wimlib";
-            /** @description Requires the `dism` builder and an ADK matching the image build. Empty by default. */
+            /**
+             * @description Requires the `dism` builder and an ADK matching the image build. Empty by
+             *     default. Not implemented yet: a non-empty list is refused with `422`
+             *     (`code: not_implemented`).
+             */
             optionalComponents?: components["schemas"]["WinPeOptionalComponent"][];
             /**
              * @description Which signed boot manager to serve, chosen from the source image's
@@ -1693,28 +1730,44 @@ export interface components {
             /**
              * @description Also build a small bootable ISO (bootmgr + BCD + boot.wim) for UEFI HTTP
              *     Boot, which the firmware loads as a RAM disk. Firmware support varies.
+             *     Not implemented yet (Phase 1 task 9): `true` is refused with `422`
+             *     (`code: not_implemented`).
              * @default false
              */
             produceHttpBootIso: boolean;
         };
+        /**
+         * @description One file of a built boot image's tree, served to the clients that boot it
+         *     (ADR 0006, 0022): `bootmgfw.efi`, `Boot/BCD`, `Boot/boot.sdi`, `Boot/boot.wim`
+         *     and `EFI/Microsoft/Boot/Fonts/*.ttf`.
+         */
         BootArtifact: {
             /** @enum {string} */
-            kind: "wim" | "bcd" | "bootmgr" | "http-boot-iso";
+            kind: "wim" | "bcd" | "bootmgr" | "sdi" | "font" | "http-boot-iso";
+            /** @description Path in the tree, e.g. `Boot/boot.wim`; the TFTP path is `\` plus this with backslashes. */
+            path: string;
             sha256: string;
             sizeBytes: number;
-            /** @description HTTP(S) URL; the TFTP path is derived from it. */
-            contentUrl: string;
-            tftpPath?: string | null;
         };
         BootImage: components["schemas"]["Meta"] & components["schemas"]["BootImageInput"] & {
-            /** @enum {string} */
-            status: "draft" | "building" | "ready" | "stale" | "failed";
             /**
-             * @description Hash of every build input: source image + index, enabled INFs of the
-             *     selected driver groups, agent version, serverUrls, builder,
-             *     optional components, bootmgr choice, TFTP settings, ISO flag.
+             * @description `draft`: never built. `building`: a build is queued or running.
+             *     `ready`: built from the current inputs. `stale`: built, but the inputs
+             *     have changed since (`staleReasons`). `failed`: the last build failed.
+             *     Whatever the status, a boot image with `artifacts` keeps serving its
+             *     last good build.
+             * @enum {string}
              */
-            readonly inputHash?: string;
+            status: "draft" | "building" | "ready" | "stale" | "failed";
+            /** @description What changed since the last build (only when `stale`). */
+            readonly staleReasons?: ("source-image" | "source-index" | "architecture" | "builder" | "agent" | "server-urls" | "bootmgr" | "tftp" | "drivers" | "recipe")[];
+            /**
+             * @description `inputHash` of the build being served (ADR 0022): a hash of every build
+             *     input (recipe version, the source boot.wim, index, architecture, resolved
+             *     builder, agent binary, serverUrls, bootmgr choice, TFTP settings and the
+             *     enabled INFs of the selected driver groups).
+             */
+            readonly inputHash?: string | null;
             builtWith?: components["schemas"]["BuilderName"];
             /** Format: date-time */
             builtAt?: string | null;
@@ -1724,6 +1777,8 @@ export interface components {
             warnings?: string[];
             error?: components["schemas"]["Problem"] | null;
             lastJobId?: string | null;
+            /** @description Total size of the served build's files. */
+            readonly sizeBytes?: number | null;
         };
         UnattendTemplateInput: {
             name: string;
@@ -3304,6 +3359,7 @@ export interface operations {
             };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     getBootImage: {
@@ -3360,6 +3416,7 @@ export interface operations {
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
             412: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     deleteBootImage: {
@@ -3423,6 +3480,7 @@ export interface operations {
             404: components["responses"]["Problem"];
             409: components["responses"]["Problem"];
             422: components["responses"]["Problem"];
+            507: components["responses"]["Problem"];
         };
     };
     listUnattendTemplates: {

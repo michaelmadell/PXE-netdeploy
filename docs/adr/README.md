@@ -26,5 +26,7 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0019](0019-driver-packages.md) | Driver packages: archives, INF parsing, catalog verification | accepted |
 | [0020](0020-backups.md) | Backups: scheduled, incremental, to a folder or an SMB share | accepted |
 | [0021](0021-secrets-storage.md) | Secrets storage: one data key, protected by DPAPI or a key file | accepted |
+| [0022](0022-building-boot-images.md) | Building boot images: pipeline, inputs, caching, cleanup | accepted |
+| [0023](0023-own-bcd-writer.md) | Our own BCD writer (replaces bcdedit/hivex from 0006) | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

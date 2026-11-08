@@ -39,8 +39,9 @@ type Kind struct {
 	Run func(ctx context.Context, r *Run) error
 	// Abandon fixes up the resource of a job whose Run never cleaned up: a
 	// queued job that was cancelled, or one interrupted by a restart.
-	// reason is "cancelled", "interrupted" or "failed" (Run panicked). May
-	// be nil. Must be idempotent.
+	// reason is "cancelled", "interrupted" or "failed" (Run panicked). It
+	// runs before the job's final status is recorded (for "cancelled", just
+	// after: the job was never started). May be nil. Must be idempotent.
 	Abandon func(ctx context.Context, j store.Job, reason string) error
 }
 
@@ -126,14 +127,22 @@ func (r *Runner) Wake() {
 	}
 }
 
+// interrupt handles jobs a previous process left running: each kind's
+// Abandon fixes up the resource first, then the jobs are failed.
 func (r *Runner) interrupt(ctx context.Context) error {
+	running, _, err := r.opts.Store.ListJobs(ctx, store.JobFilter{Status: store.JobRunning, Limit: 200})
+	if err != nil {
+		return err
+	}
+	for _, j := range running {
+		r.abandon(ctx, j, "interrupted")
+	}
 	jobs, err := r.opts.Store.InterruptRunningJobs(ctx, interrupted)
 	if err != nil {
 		return err
 	}
 	for _, j := range jobs {
 		r.log.Warn("job interrupted by a restart", "job_id", j.ID, "kind", j.Kind)
-		r.abandon(ctx, j, "interrupted")
 		r.publish(j)
 	}
 	return nil
@@ -268,16 +277,18 @@ func (r *Runner) execute(ctx context.Context, k Kind, j store.Job) {
 	default:
 		out.Status, out.Error = store.JobFailed, problem(err)
 	}
+	// Fix up the resource before the job reads as finished, so nobody sees
+	// a failed job next to a resource still marked in progress.
+	switch {
+	case panicked:
+		r.abandon(bg, j, "failed")
+	case out.Error != nil && string(out.Error) == string(interrupted):
+		r.abandon(bg, j, "interrupted")
+	}
 	f, ferr := r.opts.Store.FinishJob(bg, j.ID, out)
 	if ferr != nil {
 		log.Error("record job outcome", "status", out.Status, "err", ferr)
 		return
-	}
-	switch {
-	case panicked:
-		r.abandon(bg, f, "failed")
-	case out.Error != nil && string(out.Error) == string(interrupted):
-		r.abandon(bg, f, "interrupted")
 	}
 	dur := time.Since(*f.StartedAt).Round(time.Millisecond)
 	switch out.Status {

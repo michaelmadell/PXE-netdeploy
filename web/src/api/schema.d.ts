@@ -160,7 +160,13 @@ export interface paths {
          * @description Extracts the ISO, detects its kind, and fills in `details`. For Windows media
          *     this means enumerating editions, recording the install image format
          *     (wim/esd/swm), and extracting every boot manager found (including any
-         *     2023-signed `EFI_EX` variant inside the WIMs) with its signer.
+         *     2023-signed `EFI_EX` variant inside the WIMs) with its signer (ADR 0018).
+         *     The image keeps the ISO's file name, volume label and SHA-256; it doesn't
+         *     need the upload afterwards, so the upload can be deleted.
+         *
+         *     Media must be UDF (all Windows ISOs are); plain ISO9660 media fails the
+         *     job with `unsupported_media` until the Linux phase. Unreadable media fails
+         *     with `invalid_media`.
          *
          *     Deduplication: if an image with the same SHA-256 already exists, the import
          *     job finishes immediately with `resourceId` set to the existing image and no
@@ -1362,12 +1368,26 @@ export interface components {
         Image: components["schemas"]["Meta"] & {
             name: string;
             notes?: string;
-            kind: components["schemas"]["ImageKind"];
+            /** @description Null while importing. */
+            kind: (string & components["schemas"]["ImageKind"]) | null;
             /** @enum {string} */
             status: "importing" | "ready" | "failed";
+            /** @description The uploaded ISO's file name (from the upload's metadata). */
+            sourceFilename?: string | null;
+            /** @description The ISO's volume label, e.g. `CPBA_X64FRE_EN-GB_DV9`. */
+            volumeLabel?: string | null;
+            /** @description The upload it was imported from; null once that upload is deleted. */
+            uploadId?: string | null;
+            /** @description Things the import couldn't do that don't make it fail (e.g. a `boot.wim` it couldn't read). */
+            warnings?: string[];
             /** @description Why the import failed (when `status` is `failed`). */
             error?: components["schemas"]["Problem"] | null;
+            /**
+             * Format: int64
+             * @description Size of the ISO.
+             */
             sizeBytes?: number;
+            /** @description SHA-256 of the ISO. */
             sha256?: string;
             retainIso: boolean;
             /** @description Kind-specific metadata. Absent until the import finishes. */
@@ -1916,8 +1936,10 @@ export interface components {
             message?: string;
             /**
              * @description Why the job failed. Codes include `insufficient_storage` (the content store
-             *     ran short of space), `interrupted` (the server stopped while it ran) and
-             *     `internal_error`.
+             *     ran short of space), `interrupted` (the server stopped while it ran),
+             *     `unsupported_media` and `invalid_media` (image import), and
+             *     `internal_error`. For imports, `detail` also says until when the upload is
+             *     kept for a retry.
              */
             error?: components["schemas"]["Problem"] | null;
             /** Format: date-time */

@@ -167,3 +167,46 @@ lab switch and keep the capture with the findings before changing anything.
 
 Afterwards, stop dnsmasq so it doesn't compete with full-mode runs:
 `sudo systemctl disable --now dnsmasq`.
+
+## Uploading and importing an ISO (Phase 3)
+
+No lab VMs needed. Start a throwaway server (PowerShell 7):
+
+```powershell
+go run .\cmd\netdeployd -data .tmp\img-test -admin-addr 127.0.0.1:18443
+```
+
+Upload with any tus 1.0.0 client. `.tmp\tus-smoke\smoke.mjs` (git-ignored)
+uses tus-js-client; `send` prints the upload URL and progress, `resume`
+continues an interrupted one:
+
+```powershell
+$env:NODE_TLS_REJECT_UNAUTHORIZED = '0'   # local self-signed cert only
+node .tmp\tus-smoke\smoke.mjs send C:\path\to\Win11.iso https://127.0.0.1:18443
+```
+
+Import it and watch the job (send JSON from a file: Windows PowerShell 5.1
+strips the quotes from JSON passed inline to `curl.exe`):
+
+```powershell
+$b = 'https://127.0.0.1:18443/api/v1'
+@{ uploadId = '<id>'; name = 'Windows 11'; retainIso = $true } | ConvertTo-Json | Set-Content body.json
+$job = Invoke-RestMethod "$b/images" -Method Post -SkipCertificateCheck -ContentType application/json -InFile body.json
+Invoke-RestMethod "$b/jobs/$($job.id)" -SkipCertificateCheck          # percent, message
+Invoke-RestMethod "$b/images/$($job.resourceId)" -SkipCertificateCheck | ConvertTo-Json -Depth 6
+```
+
+Measured 2026-11-08 on the dev machine with a Win11 en-GB ISO (8.9 GB,
+`CPBA_X64FRE_EN-GB_DV9`): upload 24 s, import 14 s, 10 editions, five boot
+managers (2011- and 2023-signed as in the Phase 1 findings), 1,002 blobs.
+
+**Tests against real media** (not run in CI): set `NETDEPLOY_TEST_ISO` to a
+Windows ISO and run
+
+```powershell
+$env:NETDEPLOY_TEST_ISO = 'C:\path\to\Win11.iso'
+go test -v -run RealISO ./internal/media/... ./internal/imports
+go test -v -run RealMedia ./internal/media/signer
+```
+
+The import test copies the whole ISO into a temporary content store.

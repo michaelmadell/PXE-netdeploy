@@ -33,6 +33,22 @@ func Fail(status int, code, title, detail string) *Error {
 	return &Error{Status: status, Code: code, Title: title, Detail: detail}
 }
 
+// Problem turns an error into Problem JSON as a failed job records it, for
+// kinds that also record it on their resource.
+func Problem(err error) json.RawMessage { return problem(err) }
+
+// AsError returns err as an *Error with the code a failed job would get.
+func AsError(err error) *Error {
+	var p struct {
+		Status int    `json:"status"`
+		Code   string `json:"code"`
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
+	}
+	_ = json.Unmarshal(problem(err), &p)
+	return &Error{Status: p.Status, Code: p.Code, Title: p.Title, Detail: p.Detail, Err: err}
+}
+
 // problem turns a Run error into Problem JSON: *Error keeps its code; known
 // errors map to theirs; anything else is internal_error with its text.
 func problem(err error) json.RawMessage {

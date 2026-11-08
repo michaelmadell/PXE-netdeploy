@@ -420,6 +420,12 @@ func (r *Run) progress() (int, string) {
 	return r.percent, r.message
 }
 
+// CancelRequested reports whether the admin cancelled the job (as opposed
+// to the server shutting down, which also cancels its context). A job uses
+// it to record a cancelled outcome on its resource; an interrupted one is
+// left to Kind.Abandon.
+func (r *Run) CancelRequested() bool { return r.cancelRequested() }
+
 // cancelRequested re-reads the row: a cancel request sets it before
 // cancelling the context.
 func (r *Run) cancelRequested() bool {

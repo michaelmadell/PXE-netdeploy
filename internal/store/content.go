@@ -29,10 +29,19 @@ type TreeEntry struct {
 
 // NewTree is a tree to insert. Fold is computed by the caller (cas.Fold) so
 // the Go and SQL rules can't drift silently: the CHECK on tree_entries.fold
-// rejects a mismatch.
+// rejects a mismatch. Blobs are extra files stored with the tree but not in
+// it (e.g. boot managers read out of a WIM); something must reference them
+// (blob_refs) once the commit's attach step runs, or they are swept.
 type NewTree struct {
 	Kind    TreeKind
 	Entries []NewTreeEntry
+	Blobs   []NewBlob
+}
+
+// NewBlob is a blob recorded with a tree.
+type NewBlob struct {
+	SHA256 string
+	Size   int64
 }
 
 // NewTreeEntry is a file in a NewTree.
@@ -71,6 +80,11 @@ func (s *Store) InsertTree(ctx context.Context, t NewTree) (string, error) {
 			return fmt.Errorf("store: insert tree: %w", err)
 		}
 		defer entry.Close()
+		for _, b := range t.Blobs {
+			if _, err := blob.ExecContext(ctx, b.SHA256, b.Size, now); err != nil {
+				return fmt.Errorf("store: insert blob %s: %w", b.SHA256, err)
+			}
+		}
 		for _, e := range t.Entries {
 			if _, err := blob.ExecContext(ctx, e.SHA256, e.Size, now); err != nil {
 				return fmt.Errorf("store: insert blob %s: %w", e.SHA256, err)

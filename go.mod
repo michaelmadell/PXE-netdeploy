@@ -5,8 +5,10 @@ go 1.27.3
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
 
 require (
+	github.com/foxboron/go-uefi v0.0.0-20261004203234-c7f1f57bdc6e
 	github.com/getkin/kin-openapi v0.127.0
 	github.com/insomniacslk/dhcp v0.0.0-20261014062924-c6bb46ad3f3a
+	github.com/nradchenko/go-wim v0.2.0
 	github.com/oapi-codegen/runtime v1.8.0
 	github.com/oklog/ulid/v2 v2.1.2
 	golang.org/x/crypto v0.57.0
@@ -31,9 +33,11 @@ require (
 	github.com/oapi-codegen/oapi-codegen/v2 v2.4.1 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/speakeasy-api/openapi-overlay v0.9.0 // indirect
-	github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 // indirect
+	github.com/spf13/afero v1.9.3 // indirect
+	github.com/u-root/uio v0.0.0-20230305220412-3e8cd9d6bf63 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect

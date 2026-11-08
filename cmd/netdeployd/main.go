@@ -21,6 +21,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
+	"github.com/michaelmadell/pxe-netdeploy/internal/imports"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/server"
@@ -138,7 +139,7 @@ func run(o options) error {
 		},
 	})
 	runner := jobs.New(jobs.Options{Store: st, Events: bus})
-	// Job kinds are registered here as Phase 3 adds them (imports, then builds).
+	runner.Register(imports.NewImages(imports.ImagesOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err

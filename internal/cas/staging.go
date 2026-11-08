@@ -30,7 +30,7 @@ type Staging struct {
 }
 
 type staged struct {
-	path, fold, sha string
+	path, fold, sha string // path "" : a blob outside the tree
 	size            int64
 	tmp             string
 }
@@ -48,36 +48,91 @@ func (s *Store) NewStaging(name string) (*Staging, error) {
 	return &Staging{s: s, dir: dir, folds: map[string]bool{}}, nil
 }
 
-// Add streams r into staging as the file at path p, hashing it. It checks
-// free space before writing and every 256 MiB, failing with
-// ErrInsufficientStorage before the reserve is used.
-func (st *Staging) Add(p string, r io.Reader) error {
+// Add streams r into staging as the file at path p, hashing it, and
+// returns its SHA-256 and size. It checks free space before writing and
+// every 256 MiB, failing with ErrInsufficientStorage before the reserve is
+// used.
+func (st *Staging) Add(p string, r io.Reader) (string, int64, error) {
 	clean, err := CleanPath(p)
 	if err != nil {
-		return fmt.Errorf("%w: %q", err, p)
+		return "", 0, fmt.Errorf("%w: %q", err, p)
 	}
-	fold := Fold(clean)
-	st.mu.Lock()
-	if st.closed {
-		st.mu.Unlock()
-		return errors.New("cas: staging already committed or discarded")
+	idx, tmp, err := st.reserve(staged{path: clean, fold: Fold(clean)})
+	if err != nil {
+		return "", 0, err
 	}
-	if st.folds[fold] {
-		st.mu.Unlock()
-		return fmt.Errorf("%w: %q", store.ErrDuplicatePath, clean)
-	}
-	st.folds[fold] = true
-	tmp := filepath.Join(st.dir, strconv.Itoa(len(st.files)))
-	st.files = append(st.files, staged{path: clean, fold: fold, tmp: tmp})
-	idx := len(st.files) - 1
-	st.mu.Unlock()
+	return st.write(idx, tmp, clean, r)
+}
 
-	if err := st.s.CheckSpace(0); err != nil {
+// AddBlob stores r as a blob outside the tree (see store.NewTree.Blobs)
+// and returns its SHA-256 and size.
+func (st *Staging) AddBlob(r io.Reader) (string, int64, error) {
+	idx, tmp, err := st.reserve(staged{})
+	if err != nil {
+		return "", 0, err
+	}
+	return st.write(idx, tmp, "blob", r)
+}
+
+// LinkBlob adds an existing, never-modified file (a complete upload) as a
+// blob outside the tree, without copying it where the volume supports hard
+// links. sha256 and size must be the file's (the caller verified them).
+func (st *Staging) LinkBlob(path, sha256 string, size int64) error {
+	if !validHash(sha256) {
+		return fmt.Errorf("cas: invalid sha256 %q", sha256)
+	}
+	idx, tmp, err := st.reserve(staged{})
+	if err != nil {
 		return err
+	}
+	if err := os.Link(path, tmp); err != nil {
+		// No hard links (e.g. FAT, some network shares): copy.
+		in, oerr := os.Open(path)
+		if oerr != nil {
+			return fmt.Errorf("cas: link %s: %w", path, err)
+		}
+		defer in.Close()
+		got, n, werr := st.write(idx, tmp, "linked blob", in)
+		if werr != nil {
+			return werr
+		}
+		if got != sha256 || n != size {
+			return fmt.Errorf("cas: %s changed: sha256 %s, %d bytes", path, got, n)
+		}
+		return nil
+	}
+	st.mu.Lock()
+	st.files[idx].sha, st.files[idx].size = sha256, size
+	st.mu.Unlock()
+	return nil
+}
+
+// reserve registers a staged file and returns its index and temp path.
+func (st *Staging) reserve(f staged) (int, string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.closed {
+		return 0, "", errors.New("cas: staging already committed or discarded")
+	}
+	if f.path != "" {
+		if st.folds[f.fold] {
+			return 0, "", fmt.Errorf("%w: %q", store.ErrDuplicatePath, f.path)
+		}
+		st.folds[f.fold] = true
+	}
+	f.tmp = filepath.Join(st.dir, strconv.Itoa(len(st.files)))
+	st.files = append(st.files, f)
+	return len(st.files) - 1, f.tmp, nil
+}
+
+func (st *Staging) write(idx int, tmp, what string, r io.Reader) (string, int64, error) {
+	clean := what
+	if err := st.s.CheckSpace(0); err != nil {
+		return "", 0, err
 	}
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("cas: stage %q: %w", clean, err)
+		return "", 0, fmt.Errorf("cas: stage %q: %w", clean, err)
 	}
 	h := sha256.New()
 	n, err := io.CopyBuffer(io.MultiWriter(f, h), &spaceChecked{r: r, st: st}, make([]byte, 1<<20))
@@ -89,15 +144,16 @@ func (st *Staging) Add(p string, r io.Reader) error {
 	}
 	if err != nil {
 		if errors.Is(err, ErrInsufficientStorage) {
-			return err
+			return "", 0, err
 		}
-		return fmt.Errorf("cas: stage %q: %w", clean, err)
+		return "", 0, fmt.Errorf("cas: stage %q: %w", clean, err)
 	}
+	sum := hex.EncodeToString(h.Sum(nil))
 	st.mu.Lock()
-	st.files[idx].sha = hex.EncodeToString(h.Sum(nil))
+	st.files[idx].sha = sum
 	st.files[idx].size = n
 	st.mu.Unlock()
-	return nil
+	return sum, n, nil
 }
 
 // spaceChecked checks free space every Store.checkEvery bytes read.
@@ -150,6 +206,10 @@ func (st *Staging) Commit(ctx context.Context, kind store.TreeKind, attach func(
 		}
 		if err := s.publish(f.tmp, f.sha); err != nil {
 			return "", err
+		}
+		if f.path == "" {
+			t.Blobs = append(t.Blobs, store.NewBlob{SHA256: f.sha, Size: f.size})
+			continue
 		}
 		t.Entries = append(t.Entries, store.NewTreeEntry{Path: f.path, Fold: f.fold, SHA256: f.sha, Size: f.size})
 	}

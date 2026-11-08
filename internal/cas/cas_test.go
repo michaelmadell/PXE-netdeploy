@@ -87,7 +87,7 @@ func (h *harness) commit(t *testing.T, name string, files map[string]string, att
 		t.Fatal(err)
 	}
 	for p, body := range files {
-		if err := st.Add(p, strings.NewReader(body)); err != nil {
+		if _, _, err := st.Add(p, strings.NewReader(body)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -176,13 +176,13 @@ func TestDuplicatePathInStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Discard()
-	if err := st.Add("Sources/Boot.wim", strings.NewReader("a")); err != nil {
+	if h, n, err := st.Add("Sources/Boot.wim", strings.NewReader("a")); err != nil || h != sum("a") || n != 1 {
 		t.Fatal(err)
 	}
-	if err := st.Add(`sources\boot.WIM`, strings.NewReader("b")); !errors.Is(err, store.ErrDuplicatePath) {
+	if _, _, err := st.Add(`sources\boot.WIM`, strings.NewReader("b")); !errors.Is(err, store.ErrDuplicatePath) {
 		t.Errorf("err = %v, want ErrDuplicatePath", err)
 	}
-	if err := st.Add("a/../b", strings.NewReader("c")); !errors.Is(err, ErrBadPath) {
+	if _, _, err := st.Add("a/../b", strings.NewReader("c")); !errors.Is(err, ErrBadPath) {
 		t.Errorf("err = %v, want ErrBadPath", err)
 	}
 }
@@ -263,7 +263,7 @@ func TestInsufficientStorage(t *testing.T) {
 		free = 500
 		return copy(p, make([]byte, 100)), io.EOF
 	}))
-	if err := st.Add("big", r); !errors.Is(err, ErrInsufficientStorage) {
+	if _, _, err := st.Add("big", r); !errors.Is(err, ErrInsufficientStorage) {
 		t.Errorf("Add = %v, want ErrInsufficientStorage", err)
 	}
 	sp, err := h.cas.Space(context.Background())
@@ -311,5 +311,51 @@ func TestCleanPath(t *testing.T) {
 	}
 	if Fold("Boot/BCD-É") != "boot/bcd-É" {
 		t.Errorf("Fold folds non-ASCII")
+	}
+}
+
+func TestBlobsOutsideTheTree(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	// An existing file to link in, as a kept upload would be.
+	src := filepath.Join(t.TempDir(), "upload")
+	os.WriteFile(src, []byte("the whole iso"), 0o600)
+
+	st, _ := h.cas.NewStaging("job")
+	st.Add("efi/boot/bootx64.efi", strings.NewReader("boot"))
+	bh, bn, err := st.AddBlob(strings.NewReader("from inside a wim"))
+	if err != nil || bh != sum("from inside a wim") || bn != 17 {
+		t.Fatalf("AddBlob: %s %d %v", bh, bn, err)
+	}
+	if err := st.LinkBlob(src, sum("the whole iso"), 13); err != nil {
+		t.Fatal(err)
+	}
+	var tree string
+	if _, err := st.Commit(ctx, store.TreeImage, func(ctx context.Context, id string) error {
+		tree = id
+		return h.own(t)(ctx, id)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The tree holds only its entry; both blobs are stored.
+	if es, _ := h.db.TreeEntries(ctx, tree); len(es) != 1 {
+		t.Errorf("tree entries: %v", es)
+	}
+	for _, body := range []string{"from inside a wim", "the whole iso"} {
+		if b, err := os.ReadFile(h.cas.blobPath(sum(body))); err != nil || string(b) != body {
+			t.Errorf("blob %q: %q %v", body, b, err)
+		}
+	}
+	// The linked blob outlives the source.
+	os.Remove(src)
+	if _, err := os.Stat(h.cas.blobPath(sum("the whole iso"))); err != nil {
+		t.Errorf("linked blob gone with its source: %v", err)
+	}
+	// Unreferenced extra blobs are swept.
+	if err := h.cas.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(h.cas.blobPath(sum("from inside a wim"))); err == nil {
+		t.Error("unreferenced extra blob survived the sweep")
 	}
 }

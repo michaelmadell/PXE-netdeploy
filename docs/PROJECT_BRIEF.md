@@ -75,6 +75,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0015 | Content-addressed store: blobs named by SHA-256 under `<data>/content` (`-content` overrides), trees as manifests in SQLite served as a virtual `fs.FS`, mark-and-sweep GC, a free-space reserve. |
 | 0016 | Jobs: the `jobs` table is the queue (one active job per resource), an in-process runner with lanes (builds 1, imports 2), throttled progress on `/events`, and no resume: a restart fails running jobs with `interrupted`. |
 | 0017 | Uploads: own tus 1.0.0 server (creation, termination, expiration) ahead of the validator; hash computed while uploading; 64 GiB limit; imported uploads kept until deleted, others expire after 24 h. |
+| 0018 | Media: own read-only UDF reader and WIM XML reader, `go-wim` for files inside `boot.wim`, `go-uefi` Authenticode with pinned Microsoft CAs for signers; no mounts or external tools for import. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -118,6 +119,11 @@ per-client content; a content HTTP listener per interface (ADR 0009); the
 WinPE on Hyper-V with dnsmasq as the real DHCP server. Results:
 [spikes/phase-2-findings.md](spikes/phase-2-findings.md). Content HTTPS moved
 to Phase 6.
+
+**In progress (Phase 3):** content store (ADR 0015), jobs (ADR 0016), tus
+uploads (ADR 0017) and ISO image import (ADR 0018) are built. A Win11 ISO
+uploads, resumes after a server crash, and imports with its editions and its
+2011- and 2023-signed boot managers. Driver import (decision 5) is next.
 
 ## Next step
 

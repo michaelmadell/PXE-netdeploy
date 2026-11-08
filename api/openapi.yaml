@@ -140,29 +140,72 @@ paths:
 
   # ---------------------------------------------------------------- uploads (tus)
   /uploads:
+    options:
+      tags: [uploads]
+      operationId: getUploadCapabilities
+      summary: tus discovery (versions, extensions, maximum size).
+      responses:
+        "204":
+          description: Supported tus features.
+          headers:
+            Tus-Resumable: { schema: { type: string, enum: ["1.0.0"] } }
+            Tus-Version: { schema: { type: string, example: "1.0.0" } }
+            Tus-Extension: { schema: { type: string, example: "creation,termination,expiration" } }
+            Tus-Max-Size: { schema: { type: integer, format: int64, example: 68719476736 }, description: "64 GiB." }
+        "401": { $ref: "#/components/responses/Problem" }
+    get:
+      tags: [uploads]
+      operationId: listUploads
+      summary: List uploads (JSON, not part of tus).
+      description: Newest last. Includes incomplete uploads and imported ones kept until deleted.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadPage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
     post:
       tags: [uploads]
       operationId: createUpload
       summary: Create a resumable upload (tus 1.0.0 creation extension).
       description: |
-        Resumable uploads follow the tus protocol, not plain JSON. Clients should use
-        a tus client library (e.g. tus-js-client). Once complete, pass the `uploadId`
-        to an import endpoint (`POST /images`, `POST /driver-packages`).
-        Incomplete uploads expire after a configurable period.
+        Resumable uploads follow the tus 1.0.0 protocol (core plus the creation,
+        termination and expiration extensions), not plain JSON (ADR 0017). Use a
+        tus client library (e.g. tus-js-client). Once complete, pass the
+        `uploadId` (the last path segment of `Location`) to an import endpoint
+        (`POST /images`, `POST /driver-packages`).
 
-        `507` (`code: insufficient_storage`) if `Upload-Length` plus
-        `storage.reserveBytes` doesn't fit in the content store's free space.
+        * Every response carries `Tus-Resumable: 1.0.0`; requests without it get
+          `412`.
+        * `Upload-Metadata` may carry `filename` and `filetype` (tus format:
+          comma-separated `key base64value` pairs).
+        * `Upload-Defer-Length` is not supported (`400`, `code: defer_length_unsupported`).
+        * At most 64 GiB (`413`, `code: upload_too_large`).
+        * `507` (`code: insufficient_storage`) if `Upload-Length`, plus the bytes
+          still to come for other incomplete uploads, plus `storage.reserveBytes`
+          doesn't fit in the content store's free space.
+        * Uploads that were never imported expire `storage.uploadExpiryHours` after
+          their last activity (`Upload-Expires`). An upload whose import succeeded
+          is kept until deleted.
       parameters:
         - { name: Tus-Resumable, in: header, required: true, schema: { type: string, enum: ["1.0.0"] } }
-        - { name: Upload-Length, in: header, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: Upload-Length, in: header, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { name: Upload-Metadata, in: header, required: false, schema: { type: string } }
       responses:
         "201":
           description: Created. `Location` header holds the upload URL.
           headers:
             Location: { schema: { type: string } }
+            Tus-Resumable: { schema: { type: string } }
+            Upload-Expires: { schema: { type: string }, description: RFC 9110 HTTP date. }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
         "413": { $ref: "#/components/responses/Problem" }
         "507": { $ref: "#/components/responses/Problem" }
 
@@ -175,18 +218,41 @@ paths:
       summary: Current offset (for resuming).
       responses:
         "200":
-          description: OK
+          description: "OK (no body; `Cache-Control: no-store`)."
           headers:
-            Upload-Offset: { schema: { type: integer } }
-            Upload-Length: { schema: { type: integer } }
+            Tus-Resumable: { schema: { type: string } }
+            Upload-Offset: { schema: { type: integer, format: int64 } }
+            Upload-Length: { schema: { type: integer, format: int64 } }
+            Upload-Expires: { schema: { type: string }, description: Absent when the upload is kept until deleted. }
+            Cache-Control: { schema: { type: string } }
+        "401": { description: Unauthorized (no body). }
+        "404": { description: "No such upload, or it expired (no body)." }
+    get:
+      tags: [uploads]
+      operationId: getUpload
+      summary: Get an upload (JSON, not part of tus).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upload" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
     patch:
       tags: [uploads]
       operationId: appendUpload
-      summary: Append a chunk.
+      summary: Append bytes.
+      description: |
+        `Upload-Offset` must equal the server's offset (`409`, `code:
+        upload_offset_mismatch`). Bytes received are kept even if the connection
+        drops; `HEAD` tells the client where to resume. A new `PATCH` for an
+        upload still being written stops the earlier request first. If free
+        space runs short the bytes so far are kept and the request ends with
+        `507`.
       parameters:
-        - { name: Upload-Offset, in: header, required: true, schema: { type: integer } }
+        - { name: Tus-Resumable, in: header, required: true, schema: { type: string, enum: ["1.0.0"] } }
+        - { name: Upload-Offset, in: header, required: true, schema: { type: integer, format: int64, minimum: 0 } }
       requestBody:
         required: true
         content:
@@ -194,21 +260,34 @@ paths:
             schema: { type: string, format: binary }
       responses:
         "204":
-          description: Chunk accepted.
+          description: Bytes accepted.
           headers:
-            Upload-Offset: { schema: { type: integer } }
+            Tus-Resumable: { schema: { type: string } }
+            Upload-Offset: { schema: { type: integer, format: int64 } }
+            Upload-Expires: { schema: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
+        "415": { $ref: "#/components/responses/Problem" }
+        "507": { $ref: "#/components/responses/Problem" }
     delete:
       tags: [uploads]
       operationId: deleteUpload
-      summary: Abandon an upload.
+      summary: Delete an upload (tus termination extension).
+      description: |
+        Works at any stage, including imported uploads kept until deleted. `409`
+        (`code: upload_in_use`) while an import job using it is queued or running.
+        Files already imported from it are not affected.
+      parameters:
+        - { name: Tus-Resumable, in: header, required: true, schema: { type: string, enum: ["1.0.0"] } }
       responses:
         "204": { description: Deleted. }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "412": { $ref: "#/components/responses/Problem" }
 
   # ---------------------------------------------------------------- images
   /images:
@@ -247,6 +326,12 @@ paths:
         Disk space: `507` (`code: insufficient_storage`) if the extracted size
         (estimated as the upload's size) plus `storage.reserveBytes` doesn't fit.
         A job that runs short of space while writing fails with the same code.
+
+        The upload must be complete (`409`, `code: upload_incomplete`) and not in
+        use by another queued or running import (`409`, `code: upload_in_use`);
+        an unknown upload is `404`. After a successful import the upload is kept
+        until deleted; after a failed one it is kept for a retry until
+        `storage.uploadExpiryHours` later, and the job's error says when.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -259,6 +344,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
         "507": { $ref: "#/components/responses/Problem" }
 
   /images/{imageId}:
@@ -343,7 +429,8 @@ paths:
         Every INF is parsed for class, role, provider, version, architecture,
         targeted OS versions and hardware IDs, and its catalog signature is checked.
         Identical packages (same SHA-256) are deduplicated as for images, and
-        disk space is checked as for images (`507`, `insufficient_storage`).
+        disk space and the upload are checked as for images (`507`
+        `insufficient_storage`; `404`; `409` `upload_incomplete` / `upload_in_use`).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -360,6 +447,8 @@ paths:
         "202": { $ref: "#/components/responses/JobAccepted" }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
         "507": { $ref: "#/components/responses/Problem" }
 
   /driver-packages/{driverPackageId}:
@@ -1950,11 +2039,12 @@ components:
     StorageHealth:
       type: object
       description: Space on the content store's volume (ADR 0015).
-      required: [totalBytes, freeBytes, contentBytes, reserveBytes]
+      required: [totalBytes, freeBytes, contentBytes, uploadBytes, reserveBytes]
       properties:
         totalBytes: { type: integer, format: int64, description: Size of the volume. }
         freeBytes: { type: integer, format: int64, description: Free space available to netdeployd. }
         contentBytes: { type: integer, format: int64, description: Total size of the stored files (each counted once). }
+        uploadBytes: { type: integer, format: int64, description: "Bytes held by uploads, including imported ones kept until deleted." }
         reserveBytes: { type: integer, format: int64, description: "`storage.reserveBytes`: space imports never use." }
 
     ServiceHealth:
@@ -2051,6 +2141,8 @@ components:
           description: |
             Keep the original ISO alongside the extracted files. Only needed for
             features that serve the whole ISO (e.g. future UEFI HTTP Boot of ISOs).
+            The ISO is hardlinked from the upload where the volume allows, so it
+            costs no extra space while the upload is also kept.
 
     ImageUpdate:
       type: object
@@ -2723,6 +2815,39 @@ components:
         source: { type: string }
 
     # ---------- jobs
+    # ---------- uploads
+    Upload:
+      type: object
+      description: A tus upload (ADR 0017).
+      required: [id, length, offset, status, imported, inUse, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        filename: { type: string, nullable: true, description: From `Upload-Metadata`. }
+        filetype: { type: string, nullable: true, description: From `Upload-Metadata`. }
+        length: { type: integer, format: int64 }
+        offset: { type: integer, format: int64, description: Bytes received. }
+        status: { type: string, enum: [receiving, complete] }
+        sha256: { type: string, nullable: true, description: Set once complete. }
+        imported:
+          type: boolean
+          description: An import from this upload succeeded, so it is kept until deleted.
+        inUse: { type: boolean, description: A queued or running import job is using it. }
+        lastJobId: { type: string, nullable: true, description: The most recent import job that used it. }
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When it will be deleted. Null when kept until deleted (imported).
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    UploadPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Upload" } }
+        nextCursor: { type: string, nullable: true }
+
     JobStatus:
       type: string
       enum: [queued, running, succeeded, failed, cancelled]
@@ -2924,6 +3049,15 @@ components:
                 Free space the content store never uses (default 5 GiB). Uploads and
                 imports that wouldn't leave this much free are refused with `507`;
                 running jobs fail before going below it.
+            uploadExpiryHours:
+              type: integer
+              minimum: 1
+              maximum: 720
+              default: 24
+              description: |
+                Uploads that were never imported, or whose last import failed, are
+                deleted this long after their last activity. Uploads whose import
+                succeeded are kept until deleted.
         architectures:
           type: object
           description: Which client architectures are answered at all.

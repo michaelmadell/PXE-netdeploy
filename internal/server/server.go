@@ -85,6 +85,9 @@ func (s *Server) health(ctx context.Context) api.Health {
 		cancel()
 		if err == nil {
 			storage = &api.StorageHealth{TotalBytes: sp.Total, FreeBytes: sp.Free, ContentBytes: sp.Content, ReserveBytes: sp.Reserve}
+			if held, _, err := s.store.UploadBytes(ctx, ""); err == nil {
+				storage.UploadBytes = held
+			}
 		}
 	}
 	if s.network != nil {

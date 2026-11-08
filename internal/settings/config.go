@@ -115,7 +115,8 @@ type Architectures struct {
 // Storage is the content store's free-space reserve (ADR 0015). Its
 // location is the -content flag, not a setting.
 type Storage struct {
-	ReserveBytes int64 `json:"reserveBytes"`
+	ReserveBytes      int64 `json:"reserveBytes"`
+	UploadExpiryHours int   `json:"uploadExpiryHours"`
 }
 
 // DefaultReserveBytes is storage.reserveBytes' default, 5 GiB (as
@@ -133,7 +134,7 @@ func Defaults() Config {
 		Architectures: Architectures{
 			BIOS: false, UEFIX64: true, UEFIArm64: true, HTTPBoot: true,
 		},
-		Storage: Storage{ReserveBytes: DefaultReserveBytes},
+		Storage: Storage{ReserveBytes: DefaultReserveBytes, UploadExpiryHours: 24},
 	}
 }
 

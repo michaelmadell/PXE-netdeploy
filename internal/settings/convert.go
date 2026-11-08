@@ -70,8 +70,11 @@ func FromAPI(in api.Settings, cur Config) (Config, []FieldError) {
 		setBool(&out.Architectures.UEFIArm64, a.UefiArm64)
 		setBool(&out.Architectures.HTTPBoot, a.HttpBoot)
 	}
-	if st := in.Storage; st != nil && st.ReserveBytes != nil {
-		out.Storage.ReserveBytes = *st.ReserveBytes
+	if st := in.Storage; st != nil {
+		if st.ReserveBytes != nil {
+			out.Storage.ReserveBytes = *st.ReserveBytes
+		}
+		setInt(&out.Storage.UploadExpiryHours, st.UploadExpiryHours)
 	}
 	return out, errs.list()
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/server"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
+	"github.com/michaelmadell/pxe-netdeploy/internal/uploads"
 	"github.com/michaelmadell/pxe-netdeploy/web"
 )
 
@@ -127,14 +129,25 @@ func run(o options) error {
 	if err != nil {
 		return err
 	}
+	up := uploads.New(uploads.Options{
+		Store:   st,
+		Content: content,
+		Expiry: func() time.Duration {
+			cfg, _ := svc.Current()
+			return time.Duration(cfg.Storage.UploadExpiryHours) * time.Hour
+		},
+	})
 	runner := jobs.New(jobs.Options{Store: st, Events: bus})
 	// Job kinds are registered here as Phase 3 adds them (imports, then builds).
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner})
-	if handler, err = adminHandler(impl, st); err != nil {
+	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}
 
 	go server.PurgeIdempotency(ctx, st, time.Hour)
+	if err := up.Start(ctx); err != nil {
+		return err
+	}
 	if err := runner.Start(ctx); err != nil {
 		return err
 	}
@@ -148,7 +161,7 @@ func run(o options) error {
 	return nil
 }
 
-func adminHandler(impl *server.Server, st *store.Store) (http.Handler, error) {
+func adminHandler(impl *server.Server, st *store.Store, up *uploads.Manager) (http.Handler, error) {
 	spec, err := api.GetSwagger()
 	if err != nil {
 		return nil, fmt.Errorf("load embedded spec: %w", err)
@@ -172,5 +185,15 @@ func adminHandler(impl *server.Server, st *store.Store) (http.Handler, error) {
 	mux.HandleFunc("/api/", server.NotFound)
 	mux.Handle("/", web.Handler())
 	// Validation runs first, so only valid requests are kept for replay.
-	return server.Recover(server.Logging(validate(server.Idempotency(st)(mux)))), nil
+	validated := validate(server.Idempotency(st)(mux))
+	// tus uploads bypass validation and idempotency: the validator reads
+	// whole bodies, and tus isn't JSON (ADR 0017).
+	routed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == uploads.Prefix || strings.HasPrefix(r.URL.Path, uploads.Prefix+"/") {
+			up.ServeHTTP(w, r)
+			return
+		}
+		validated.ServeHTTP(w, r)
+	})
+	return server.Recover(server.Logging(routed)), nil
 }

@@ -75,21 +75,37 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List uploads (JSON, not part of tus).
+         * @description Newest last. Includes incomplete uploads and imported ones kept until deleted.
+         */
+        get: operations["listUploads"];
         put?: never;
         /**
          * Create a resumable upload (tus 1.0.0 creation extension).
-         * @description Resumable uploads follow the tus protocol, not plain JSON. Clients should use
-         *     a tus client library (e.g. tus-js-client). Once complete, pass the `uploadId`
-         *     to an import endpoint (`POST /images`, `POST /driver-packages`).
-         *     Incomplete uploads expire after a configurable period.
+         * @description Resumable uploads follow the tus 1.0.0 protocol (core plus the creation,
+         *     termination and expiration extensions), not plain JSON (ADR 0017). Use a
+         *     tus client library (e.g. tus-js-client). Once complete, pass the
+         *     `uploadId` (the last path segment of `Location`) to an import endpoint
+         *     (`POST /images`, `POST /driver-packages`).
          *
-         *     `507` (`code: insufficient_storage`) if `Upload-Length` plus
-         *     `storage.reserveBytes` doesn't fit in the content store's free space.
+         *     * Every response carries `Tus-Resumable: 1.0.0`; requests without it get
+         *       `412`.
+         *     * `Upload-Metadata` may carry `filename` and `filetype` (tus format:
+         *       comma-separated `key base64value` pairs).
+         *     * `Upload-Defer-Length` is not supported (`400`, `code: defer_length_unsupported`).
+         *     * At most 64 GiB (`413`, `code: upload_too_large`).
+         *     * `507` (`code: insufficient_storage`) if `Upload-Length`, plus the bytes
+         *       still to come for other incomplete uploads, plus `storage.reserveBytes`
+         *       doesn't fit in the content store's free space.
+         *     * Uploads that were never imported expire `storage.uploadExpiryHours` after
+         *       their last activity (`Upload-Expires`). An upload whose import succeeded
+         *       is kept until deleted.
          */
         post: operations["createUpload"];
         delete?: never;
-        options?: never;
+        /** tus discovery (versions, extensions, maximum size). */
+        options: operations["getUploadCapabilities"];
         head?: never;
         patch?: never;
         trace?: never;
@@ -103,15 +119,29 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /** Get an upload (JSON, not part of tus). */
+        get: operations["getUpload"];
         put?: never;
         post?: never;
-        /** Abandon an upload. */
+        /**
+         * Delete an upload (tus termination extension).
+         * @description Works at any stage, including imported uploads kept until deleted. `409`
+         *     (`code: upload_in_use`) while an import job using it is queued or running.
+         *     Files already imported from it are not affected.
+         */
         delete: operations["deleteUpload"];
         options?: never;
         /** Current offset (for resuming). */
         head: operations["getUploadOffset"];
-        /** Append a chunk. */
+        /**
+         * Append bytes.
+         * @description `Upload-Offset` must equal the server's offset (`409`, `code:
+         *     upload_offset_mismatch`). Bytes received are kept even if the connection
+         *     drops; `HEAD` tells the client where to resume. A new `PATCH` for an
+         *     upload still being written stops the earlier request first. If free
+         *     space runs short the bytes so far are kept and the request ends with
+         *     `507`.
+         */
         patch: operations["appendUpload"];
         trace?: never;
     };
@@ -140,6 +170,12 @@ export interface paths {
          *     Disk space: `507` (`code: insufficient_storage`) if the extracted size
          *     (estimated as the upload's size) plus `storage.reserveBytes` doesn't fit.
          *     A job that runs short of space while writing fails with the same code.
+         *
+         *     The upload must be complete (`409`, `code: upload_incomplete`) and not in
+         *     use by another queued or running import (`409`, `code: upload_in_use`);
+         *     an unknown upload is `404`. After a successful import the upload is kept
+         *     until deleted; after a failed one it is kept for a retry until
+         *     `storage.uploadExpiryHours` later, and the job's error says when.
          */
         post: operations["importImage"];
         delete?: never;
@@ -191,7 +227,8 @@ export interface paths {
          *     Every INF is parsed for class, role, provider, version, architecture,
          *     targeted OS versions and hardware IDs, and its catalog signature is checked.
          *     Identical packages (same SHA-256) are deduplicated as for images, and
-         *     disk space is checked as for images (`507`, `insufficient_storage`).
+         *     disk space and the upload are checked as for images (`507`
+         *     `insufficient_storage`; `404`; `409` `upload_incomplete` / `upload_in_use`).
          */
         post: operations["importDriverPackage"];
         delete?: never;
@@ -1234,6 +1271,11 @@ export interface components {
             contentBytes: number;
             /**
              * Format: int64
+             * @description Bytes held by uploads, including imported ones kept until deleted.
+             */
+            uploadBytes: number;
+            /**
+             * Format: int64
              * @description `storage.reserveBytes`: space imports never use.
              */
             reserveBytes: number;
@@ -1307,6 +1349,8 @@ export interface components {
             /**
              * @description Keep the original ISO alongside the extracted files. Only needed for
              *     features that serve the whole ISO (e.g. future UEFI HTTP Boot of ISOs).
+             *     The ISO is hardlinked from the upload where the volume allows, so it
+             *     costs no extra space while the upload is also kept.
              * @default false
              */
             retainIso: boolean;
@@ -1810,6 +1854,44 @@ export interface components {
             message: string;
             source?: string;
         };
+        /** @description A tus upload (ADR 0017). */
+        Upload: {
+            id: string;
+            /** @description From `Upload-Metadata`. */
+            filename?: string | null;
+            /** @description From `Upload-Metadata`. */
+            filetype?: string | null;
+            /** Format: int64 */
+            length: number;
+            /**
+             * Format: int64
+             * @description Bytes received.
+             */
+            offset: number;
+            /** @enum {string} */
+            status: "receiving" | "complete";
+            /** @description Set once complete. */
+            sha256?: string | null;
+            /** @description An import from this upload succeeded, so it is kept until deleted. */
+            imported: boolean;
+            /** @description A queued or running import job is using it. */
+            inUse: boolean;
+            /** @description The most recent import job that used it. */
+            lastJobId?: string | null;
+            /**
+             * Format: date-time
+             * @description When it will be deleted. Null when kept until deleted (imported).
+             */
+            expiresAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        UploadPage: {
+            items: components["schemas"]["Upload"][];
+            nextCursor?: string | null;
+        };
         /** @enum {string} */
         JobStatus: "queued" | "running" | "succeeded" | "failed" | "cancelled";
         /** @enum {string} */
@@ -1977,6 +2059,13 @@ export interface components {
                  * @default 5368709120
                  */
                 reserveBytes: number;
+                /**
+                 * @description Uploads that were never imported, or whose last import failed, are
+                 *     deleted this long after their last activity. Uploads whose import
+                 *     succeeded are kept until deleted.
+                 * @default 24
+                 */
+                uploadExpiryHours: number;
             };
             /** @description Which client architectures are answered at all. */
             architectures?: {
@@ -2321,6 +2410,31 @@ export interface operations {
             401: components["responses"]["Problem"];
         };
     };
+    listUploads: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadPage"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+        };
+    };
     createUpload: {
         parameters: {
             query?: never;
@@ -2338,20 +2452,74 @@ export interface operations {
             201: {
                 headers: {
                     Location?: string;
+                    "Tus-Resumable"?: string;
+                    /** @description RFC 9110 HTTP date. */
+                    "Upload-Expires"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
             };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            412: components["responses"]["Problem"];
             413: components["responses"]["Problem"];
             507: components["responses"]["Problem"];
+        };
+    };
+    getUploadCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supported tus features. */
+            204: {
+                headers: {
+                    "Tus-Resumable"?: "1.0.0";
+                    "Tus-Version"?: string;
+                    "Tus-Extension"?: string;
+                    /** @description 64 GiB. */
+                    "Tus-Max-Size"?: number;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    getUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: components["parameters"]["UploadId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Upload"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
         };
     };
     deleteUpload: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "Tus-Resumable": "1.0.0";
+            };
             path: {
                 uploadId: components["parameters"]["UploadId"];
             };
@@ -2368,6 +2536,8 @@ export interface operations {
             };
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
+            412: components["responses"]["Problem"];
         };
     };
     getUploadOffset: {
@@ -2381,23 +2551,40 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
+            /** @description OK (no body; `Cache-Control: no-store`). */
             200: {
                 headers: {
+                    "Tus-Resumable"?: string;
                     "Upload-Offset"?: number;
                     "Upload-Length"?: number;
+                    /** @description Absent when the upload is kept until deleted. */
+                    "Upload-Expires"?: string;
+                    "Cache-Control"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            401: components["responses"]["Problem"];
-            404: components["responses"]["Problem"];
+            /** @description Unauthorized (no body). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such upload, or it expired (no body). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     appendUpload: {
         parameters: {
             query?: never;
             header: {
+                "Tus-Resumable": "1.0.0";
                 "Upload-Offset": number;
             };
             path: {
@@ -2411,10 +2598,12 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Chunk accepted. */
+            /** @description Bytes accepted. */
             204: {
                 headers: {
+                    "Tus-Resumable"?: string;
                     "Upload-Offset"?: number;
+                    "Upload-Expires"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -2423,6 +2612,9 @@ export interface operations {
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
             409: components["responses"]["Problem"];
+            412: components["responses"]["Problem"];
+            415: components["responses"]["Problem"];
+            507: components["responses"]["Problem"];
         };
     };
     listImages: {
@@ -2470,6 +2662,7 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
             507: components["responses"]["Problem"];
         };
     };
@@ -2603,6 +2796,8 @@ export interface operations {
             202: components["responses"]["JobAccepted"];
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
             507: components["responses"]["Problem"];
         };
     };

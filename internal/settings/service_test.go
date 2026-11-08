@@ -80,8 +80,8 @@ func TestStartFillsFieldsAddedLater(t *testing.T) {
 	st.Close()
 
 	svc := testService(t, dir)
-	if cfg, _ := svc.Current(); cfg.Storage.ReserveBytes != DefaultReserveBytes {
-		t.Errorf("reserveBytes = %d, want the default", cfg.Storage.ReserveBytes)
+	if cfg, _ := svc.Current(); cfg.Storage.ReserveBytes != DefaultReserveBytes || cfg.Storage.UploadExpiryHours != 24 {
+		t.Errorf("storage = %+v, want the defaults", cfg.Storage)
 	}
 }
 

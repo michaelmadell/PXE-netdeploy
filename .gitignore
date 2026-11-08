@@ -1,5 +1,6 @@
 # Build output
 /dist/
+/internal/agentbin/bin/
 /.tmp/
 /web/dist/
 

@@ -18,13 +18,15 @@ New-Item -ItemType Directory -Force dist | Out-Null
 $ldflags = "-s -w -X main.version=$version"
 $env:CGO_ENABLED = '0'
 
+# Agents first: the server embeds them (internal/agentbin, -tags agent; ADR 0022).
 $targets = @(
-    @{ Pkg = './cmd/netdeployd'; Name = 'netdeployd'; Os = 'windows'; Arch = 'amd64'; Tags = 'ui' }
-    @{ Pkg = './cmd/netdeployd'; Name = 'netdeployd'; Os = 'linux';   Arch = 'amd64'; Tags = 'ui' }
-    @{ Pkg = './cmd/netdeployd'; Name = 'netdeployd'; Os = 'linux';   Arch = 'arm64'; Tags = 'ui' }
     @{ Pkg = './cmd/agent';      Name = 'agent';      Os = 'windows'; Arch = 'amd64'; Tags = '' }
     @{ Pkg = './cmd/agent';      Name = 'agent';      Os = 'windows'; Arch = 'arm64'; Tags = '' }
+    @{ Pkg = './cmd/netdeployd'; Name = 'netdeployd'; Os = 'windows'; Arch = 'amd64'; Tags = 'ui agent' }
+    @{ Pkg = './cmd/netdeployd'; Name = 'netdeployd'; Os = 'linux';   Arch = 'amd64'; Tags = 'ui agent' }
+    @{ Pkg = './cmd/netdeployd'; Name = 'netdeployd'; Os = 'linux';   Arch = 'arm64'; Tags = 'ui agent' }
 )
+New-Item -ItemType Directory -Force internal/agentbin/bin | Out-Null
 
 try {
     foreach ($t in $targets) {
@@ -34,6 +36,7 @@ try {
         Write-Host "  $out"
         go build -trimpath -tags "$($t.Tags)" -ldflags $ldflags -o $out $t.Pkg
         if ($LASTEXITCODE) { throw "build failed: $out" }
+        if ($t.Name -eq 'agent') { Copy-Item $out "internal/agentbin/bin/agent-$($t.Os)-$($t.Arch).exe" }
     }
 }
 finally {

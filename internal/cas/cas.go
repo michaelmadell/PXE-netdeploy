@@ -71,7 +71,13 @@ type Store struct {
 	checkEvery int64
 
 	healthMu sync.Mutex
-	problems []string // from the startup check
+	problems []string // from the startup check, plus damage found later
+
+	// Backups hold the sweep (HoldSweep) while copying blobs; a sweep asked
+	// for meanwhile runs when the last hold is released.
+	sweepMu      sync.Mutex
+	sweepHolds   int
+	sweepPending bool
 }
 
 // Open prepares the content root, empties staging, checks every stored blob

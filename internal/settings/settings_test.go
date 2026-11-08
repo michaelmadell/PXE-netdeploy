@@ -86,7 +86,9 @@ func TestRoundTripKeepsEverything(t *testing.T) {
 		"tftp":{"maxBlockSize":1456,"maxWindowSize":16,"timeoutSeconds":2},
 		"bootPrompt":{"requirePassword":false,"timeoutSeconds":60,"armedCountdownSeconds":0,"defaultProfileId":"p1"},
 		"architectures":{"bios":true,"uefiX64":true,"uefiArm64":false,"httpBoot":false},
-		"storage":{"reserveBytes":1073741824,"uploadExpiryHours":72}}`
+		"storage":{"reserveBytes":1073741824,"uploadExpiryHours":72},
+		"backup":{"schedule":{"frequency":"weekly","time":"03:15","daysOfWeek":["mon","thu"]},"retention":0,
+			"destination":{"type":"smb","path":"//nas01/backups/nd","credentialSecretId":"s1"}}}`
 	cfg, errs := FromAPI(apiSettings(t, doc), Defaults())
 	if len(errs) > 0 {
 		t.Fatal(errs)
@@ -106,6 +108,10 @@ func TestRoundTripKeepsEverything(t *testing.T) {
 	}
 	if cfg.Storage.ReserveBytes != 1<<30 || cfg.Storage.UploadExpiryHours != 72 {
 		t.Errorf("storage: %+v", cfg.Storage)
+	}
+	if b := cfg.Backup; b.Retention != 0 || b.Schedule.Frequency != "weekly" || b.Destination == nil ||
+		b.Destination.Path != `\\nas01\backups\nd` || b.Destination.CredentialSecretID != "s1" || b.Schedule.DayOfMonth != 1 {
+		t.Errorf("backup: %+v %+v", b, b.Destination)
 	}
 	if got := cfg.Interfaces[0].MACPrefixes[0]; got != "00:1b:21" {
 		t.Errorf("mac prefix not normalised: %q", got)
@@ -255,5 +261,25 @@ func TestETagMatching(t *testing.T) {
 		if got := etagMatches(header, 4); got != want {
 			t.Errorf("etagMatches(%q, 4) = %v", header, got)
 		}
+	}
+}
+
+func TestBackupSettingsValidation(t *testing.T) {
+	base := `{"admin":{"bindAddress":"127.0.0.1","port":8443},"interfaces":[],"backup":%s}`
+	for body, field := range map[string]string{
+		`{"schedule":{"frequency":"weekly","daysOfWeek":[]}}`:                      "backup.schedule.daysOfWeek",
+		`{"destination":{"type":"smb","path":"C:\\x","credentialSecretId":"s"}}`:   "backup.destination.path",
+		`{"destination":{"type":"smb","path":"\\\\nas\\b"}}`:                       "backup.destination.credentialSecretId",
+		`{"destination":{"type":"local","path":"D:\\b","credentialSecretId":"s"}}`: "backup.destination.credentialSecretId",
+	} {
+		_, errs := FromAPI(apiSettings(t, fmt.Sprintf(base, body)), Defaults())
+		if len(errs) != 1 || errs[0].Field != field {
+			t.Errorf("%s: %v", body, errs)
+		}
+	}
+	// Defaults: disabled, keep 5, no destination.
+	cfg, errs := FromAPI(apiSettings(t, `{"admin":{"bindAddress":"127.0.0.1","port":8443},"interfaces":[]}`), Defaults())
+	if len(errs) != 0 || cfg.Backup.Schedule.Frequency != "disabled" || cfg.Backup.Retention != 5 || cfg.Backup.Destination != nil {
+		t.Errorf("defaults: %+v %v", cfg.Backup, errs)
 	}
 }

@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
+	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 	"github.com/michaelmadell/pxe-netdeploy/internal/uploads"
@@ -35,6 +37,8 @@ type Server struct {
 	content  *cas.Store
 	jobs     *jobs.Runner
 	uploads  *uploads.Manager
+	vault    *secrets.Vault
+	backup   *backup.Service
 	caps     capsCache
 }
 
@@ -48,12 +52,14 @@ type Deps struct {
 	Content  *cas.Store
 	Jobs     *jobs.Runner
 	Uploads  *uploads.Manager
+	Vault    *secrets.Vault
+	Backup   *backup.Service
 }
 
 // New returns a Server.
 func New(version string, d Deps) *Server {
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
-		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads}
+		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
@@ -110,6 +116,11 @@ func (s *Server) health(ctx context.Context) api.Health {
 	if storage != nil && storage.FreeBytes < 2*storage.ReserveBytes {
 		w = append(w, warning{"storage_low", fmt.Sprintf("The content store has %s free; imports stop at %s.",
 			humanBytes(storage.FreeBytes), humanBytes(storage.ReserveBytes))})
+	}
+	w = append(w, s.secretsWarnings(ctx)...)
+	if bh, bw := s.backupHealth(ctx); bh != nil {
+		out.Backup = bh
+		w = append(w, bw...)
 	}
 	if len(w) > 0 {
 		out.Warnings = &w

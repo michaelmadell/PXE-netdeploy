@@ -18,18 +18,36 @@ import (
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
+	"github.com/michaelmadell/pxe-netdeploy/internal/datalock"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/imports"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
+	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
 	"github.com/michaelmadell/pxe-netdeploy/internal/server"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 	"github.com/michaelmadell/pxe-netdeploy/internal/uploads"
 	"github.com/michaelmadell/pxe-netdeploy/web"
 )
+
+// commands are the offline subcommands.
+var commands = map[string]func(args []string) error{
+	"key":     keyCommand,
+	"backup":  backupCommand,
+	"restore": restoreCommand,
+}
+
+func backupConfig(b settings.Backup) backup.Config {
+	c := backup.Config{Schedule: b.Schedule, Retention: b.Retention}
+	if d := b.Destination; d != nil {
+		c.Destination = &backup.Destination{Type: d.Type, Path: d.Path, CredentialSecretID: d.CredentialSecretID}
+	}
+	return c
+}
 
 // version is set at build time: -ldflags "-X main.version=..."
 var version = "dev"
@@ -42,6 +60,16 @@ type options struct {
 }
 
 func main() {
+	// Offline commands: netdeployd <command> [flags]. Without one, serve.
+	if len(os.Args) > 1 {
+		if cmd, ok := commands[os.Args[1]]; ok {
+			if err := cmd(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	var o options
 	flag.StringVar(&o.dataDir, "data", "./data", "data directory (database, certificates)")
 	flag.StringVar(&o.contentDir, "content", "", "content store directory (imported and built files); default <data>/content")
@@ -85,6 +113,12 @@ func run(o options) error {
 		}
 	}
 
+	lock, err := datalock.Acquire(o.dataDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	st, err := store.Open(ctx, o.dataDir, store.Options{})
 	if err != nil {
 		return err
@@ -100,6 +134,11 @@ func run(o options) error {
 	// serves the handler: build the handler last and forward to it.
 	bus := events.New()
 
+	contentDir := o.contentDir
+	if contentDir == "" {
+		contentDir = filepath.Join(o.dataDir, "content")
+	}
+
 	var handler http.Handler
 	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
@@ -114,11 +153,17 @@ func run(o options) error {
 		// The agent API is the same API handler; the content listener only
 		// forwards /api/v1/agent/ to it.
 		Agent: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }),
+		CheckBackup: func(ctx context.Context, b settings.Backup) []settings.FieldError {
+			if b.Destination == nil {
+				return nil
+			}
+			d := backup.Destination{Type: b.Destination.Type, Path: b.Destination.Path, CredentialSecretID: b.Destination.CredentialSecretID}
+			if f, msg := backup.CheckDestination(ctx, st, o.dataDir, contentDir, d); f != "" {
+				return []settings.FieldError{{Field: "backup.destination." + f, Message: msg}}
+			}
+			return nil
+		},
 	})
-	contentDir := o.contentDir
-	if contentDir == "" {
-		contentDir = filepath.Join(o.dataDir, "content")
-	}
 	content, err := cas.Open(ctx, cas.Options{
 		Root:  contentDir,
 		Store: st,
@@ -141,7 +186,14 @@ func run(o options) error {
 	runner := jobs.New(jobs.Options{Store: st, Events: bus})
 	runner.Register(imports.NewImages(imports.ImagesOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
 	runner.Register(imports.NewDrivers(imports.DriversOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
-	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up})
+	vault := secrets.NewVault(st, secrets.NewKeys(o.dataDir))
+	backups := backup.NewService(backup.ServiceOptions{
+		Store: st, Content: content, Vault: vault, Jobs: runner, DataDir: o.dataDir, ServerVersion: version,
+		Config: func() backup.Config { cfg, _ := svc.Current(); return backupConfig(cfg.Backup) },
+	})
+	runner.Register(backups.Kind())
+	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
+		Vault: vault, Backup: backups})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}
@@ -156,6 +208,7 @@ func run(o options) error {
 	if err := svc.Start(ctx); err != nil {
 		return err
 	}
+	backups.Start(ctx) // after settings are loaded: a missed backup is queued now
 	<-ctx.Done()
 	slog.Info("shutting down")
 	<-network.Done()

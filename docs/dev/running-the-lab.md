@@ -220,6 +220,43 @@ an LZX CAB. `.tmp\drv-e2e\run.ps1` (git-ignored) does both plus an
 installer, against a throwaway server. Measured 2026-11-08: a 4.5 MB Realtek
 Wi-Fi zip and an LZX CAB both import in 0.2 s as `whql`.
 
+### Backups, secrets and restore
+
+Store the share's credential as a secret, point `backup.destination` at the
+share, and back up (ADR 0020, 0021):
+
+```powershell
+$sec = Invoke-RestMethod "$b/secrets" -Method Post -SkipCertificateCheck -ContentType application/json -InFile secret.json
+#   secret.json: { "name": "NAS", "kind": "share-credential", "credential": { "username": "NAS01\\backup", "password": "..." } }
+$s = Invoke-RestMethod "$b/settings" -SkipCertificateCheck
+$s.backup = @{ schedule = @{ frequency = 'daily'; time = '02:00' }; retention = 5
+               destination = @{ type = 'smb'; path = '\\nas01\backups\netdeploy'; credentialSecretId = $sec.id } }
+Invoke-RestMethod "$b/settings" -Method Put -SkipCertificateCheck -Headers @{ 'If-Match' = $s.etag } `
+  -ContentType application/json -Body ($s | ConvertTo-Json -Depth 10)
+$job = Invoke-RestMethod "$b/system/backups" -Method Post -SkipCertificateCheck   # back up now (also tests the share)
+Invoke-RestMethod "$b/system/backups" -SkipCertificateCheck                       # list
+(Invoke-RestMethod "$b/system/health" -SkipCertificateCheck).backup              # last success/failure, next run
+```
+
+Export the secrets key once and keep it off the server; health warns
+`secrets_key_not_exported` until you do:
+
+```powershell
+.\netdeployd.exe key export -data .\data -out D:\safe\netdeploy-key.json
+```
+
+Restore (server stopped; the data directory must be empty unless `-force`):
+
+```powershell
+.\netdeployd.exe restore -data .\data -from \\nas01\backups\netdeploy -user NAS01\backup -key D:\safe\netdeploy-key.json
+```
+
+`-from` may name a snapshot (`...\snapshots\20261108T020000Z`); otherwise the
+newest is used. `netdeployd backup -to <folder|UNC>` makes a backup with the
+server stopped. A throwaway encrypted test share: `.tmp\smbspike\setup-share.ps1`
+(elevated; `cleanup-share.ps1` removes it); `.tmp\backup-e2e\run.ps1` runs the
+whole cycle against it.
+
 **Tests against real media** (not run in CI): set `NETDEPLOY_TEST_ISO` to a
 Windows ISO and run
 

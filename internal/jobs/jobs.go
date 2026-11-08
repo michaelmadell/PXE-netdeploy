@@ -21,10 +21,11 @@ import (
 const (
 	LaneBuild  = "build"  // boot image builds: one at a time (DISM mounts)
 	LaneImport = "import" // ISO and driver imports
+	LaneBackup = "backup" // backups: one at a time, never behind imports (ADR 0020)
 )
 
 // DefaultLanes are the concurrency limits per lane.
-var DefaultLanes = map[string]int{LaneBuild: 1, LaneImport: 2}
+var DefaultLanes = map[string]int{LaneBuild: 1, LaneImport: 2, LaneBackup: 1}
 
 // Retention is how long finished jobs are kept.
 const Retention = 30 * 24 * time.Hour

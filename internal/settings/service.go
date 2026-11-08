@@ -51,7 +51,11 @@ type Options struct {
 	Agent http.Handler
 	// Events receives client sightings and lease changes from DHCP.
 	Events *events.Bus
-	Logger *slog.Logger
+	// CheckBackup validates backup settings against things the settings
+	// package can't see (secrets, the data and content directories). Nil:
+	// no extra checks.
+	CheckBackup func(ctx context.Context, b Backup) []FieldError
+	Logger      *slog.Logger
 }
 
 // Service is the running configuration: it loads settings at startup,
@@ -180,6 +184,9 @@ func (s *Service) Replace(ctx context.Context, in api.Settings, ifMatch string) 
 	}
 	next, ferrs := FromAPI(in, s.cur)
 	ferrs = append(ferrs, Validate(next, s.opts.Host)...)
+	if s.opts.CheckBackup != nil {
+		ferrs = append(ferrs, s.opts.CheckBackup(ctx, next.Backup)...)
+	}
 	if len(ferrs) > 0 {
 		return api.Settings{}, "", &ValidationError{Fields: dedupe(ferrs)}
 	}

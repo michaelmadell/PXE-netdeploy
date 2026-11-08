@@ -5,6 +5,8 @@ package settings
 
 import (
 	"net/netip"
+
+	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
 )
 
 // Config is the stored settings document (ADR 0014) with every default
@@ -20,6 +22,7 @@ type Config struct {
 	BootPrompt    BootPrompt    `json:"bootPrompt"`
 	Architectures Architectures `json:"architectures"`
 	Storage       Storage       `json:"storage"`
+	Backup        Backup        `json:"backup"`
 }
 
 // Admin is the admin API + UI listener.
@@ -119,6 +122,22 @@ type Storage struct {
 	UploadExpiryHours int   `json:"uploadExpiryHours"`
 }
 
+// Backup is backup.* (ADR 0020).
+type Backup struct {
+	Schedule backup.Schedule `json:"schedule"`
+	// Retention is how many snapshots to keep; 0 keeps all.
+	Retention   int                `json:"retention"`
+	Destination *BackupDestination `json:"destination"`
+}
+
+// BackupDestination is where backups go. CredentialSecretID is the
+// share-credential secret for smb.
+type BackupDestination struct {
+	Type               string `json:"type"`
+	Path               string `json:"path"`
+	CredentialSecretID string `json:"credentialSecretId,omitempty"`
+}
+
 // DefaultReserveBytes is storage.reserveBytes' default, 5 GiB (as
 // cas.DefaultReserveBytes).
 const DefaultReserveBytes int64 = 5 << 30
@@ -135,6 +154,10 @@ func Defaults() Config {
 			BIOS: false, UEFIX64: true, UEFIArm64: true, HTTPBoot: true,
 		},
 		Storage: Storage{ReserveBytes: DefaultReserveBytes, UploadExpiryHours: 24},
+		Backup: Backup{
+			Schedule:  backup.Schedule{Frequency: backup.Disabled, Time: "02:00", DaysOfWeek: []string{"sun"}, DayOfMonth: 1},
+			Retention: 5,
+		},
 	}
 }
 

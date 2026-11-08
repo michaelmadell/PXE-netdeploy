@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
 )
 
 // FromAPI turns a PUT /settings body into a Config, filling defaults and
@@ -75,6 +76,50 @@ func FromAPI(in api.Settings, cur Config) (Config, []FieldError) {
 			out.Storage.ReserveBytes = *st.ReserveBytes
 		}
 		setInt(&out.Storage.UploadExpiryHours, st.UploadExpiryHours)
+	}
+	if b := in.Backup; b != nil {
+		if sc := b.Schedule; sc != nil {
+			if sc.Frequency != nil {
+				out.Backup.Schedule.Frequency = string(*sc.Frequency)
+			}
+			setInt(&out.Backup.Schedule.Minute, sc.Minute)
+			if sc.Time != nil {
+				out.Backup.Schedule.Time = *sc.Time
+			}
+			if sc.DaysOfWeek != nil {
+				out.Backup.Schedule.DaysOfWeek = make([]string, len(*sc.DaysOfWeek))
+				for i, d := range *sc.DaysOfWeek {
+					out.Backup.Schedule.DaysOfWeek[i] = string(d)
+				}
+			}
+			setInt(&out.Backup.Schedule.DayOfMonth, sc.DayOfMonth)
+		}
+		if f, msg := out.Backup.Schedule.Validate(); f != "" {
+			errs.add("backup.schedule."+f, "%s", msg)
+		}
+		setInt(&out.Backup.Retention, b.Retention)
+		if d := b.Destination; d != nil {
+			bd := &BackupDestination{Type: string(d.Type), Path: d.Path}
+			if d.CredentialSecretId != nil {
+				bd.CredentialSecretID = *d.CredentialSecretId
+			}
+			switch bd.Type {
+			case backup.TypeLocal:
+				if bd.CredentialSecretID != "" {
+					errs.add("backup.destination.credentialSecretId", "only smb destinations take a credential")
+				}
+			case backup.TypeSMB:
+				if u, err := backup.ParseUNC(bd.Path); err != nil {
+					errs.add("backup.destination.path", "%v", err)
+				} else {
+					bd.Path = u.String()
+				}
+				if bd.CredentialSecretID == "" {
+					errs.add("backup.destination.credentialSecretId", "an smb destination needs a share-credential secret")
+				}
+			}
+			out.Backup.Destination = bd
+		}
 	}
 	return out, errs.list()
 }
@@ -259,6 +304,7 @@ func ToAPI(cfg Config, etag string, guidance map[string][]Guidance) (api.Setting
 		},
 		"architectures": cfg.Architectures,
 		"storage":       cfg.Storage,
+		"backup":        backupToAPI(cfg.Backup),
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {
@@ -272,3 +318,26 @@ func ToAPI(cfg Config, etag string, guidance map[string][]Guidance) (api.Setting
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func backupToAPI(b Backup) map[string]any {
+	days := b.Schedule.DaysOfWeek
+	if len(days) == 0 {
+		days = []string{"sun"}
+	}
+	out := map[string]any{
+		"schedule": map[string]any{
+			"frequency": b.Schedule.Frequency, "minute": b.Schedule.Minute, "time": b.Schedule.Time,
+			"daysOfWeek": days, "dayOfMonth": b.Schedule.DayOfMonth,
+		},
+		"retention":   b.Retention,
+		"destination": nil,
+	}
+	if d := b.Destination; d != nil {
+		dest := map[string]any{"type": d.Type, "path": d.Path, "credentialSecretId": nil}
+		if d.CredentialSecretID != "" {
+			dest["credentialSecretId"] = d.CredentialSecretID
+		}
+		out["destination"] = dest
+	}
+	return out
+}

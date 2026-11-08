@@ -236,3 +236,46 @@ func (m *Manager) acquire(id string, stop func()) (release func()) {
 		close(s.done)
 	}
 }
+
+// ErrTooLarge: the upload is bigger than the caller accepts.
+var ErrTooLarge = errors.New("uploads: upload too large")
+
+// Consume reads a complete upload of at most limit bytes and deletes it
+// (row and file) in the same call: for secrets (ADR 0021), whose plaintext
+// mustn't stay in uploads/. Returns its bytes and file name.
+// store.ErrNotFound, store.ErrUploadIncomplete, store.ErrUploadInUse,
+// ErrTooLarge.
+func (m *Manager) Consume(ctx context.Context, id string, limit int64) ([]byte, string, error) {
+	release := m.acquire(id, func() {})
+	defer release()
+	u, err := m.opts.Store.Upload(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if !u.Complete() {
+		return nil, "", store.ErrUploadIncomplete
+	}
+	if u.InUse {
+		return nil, "", store.ErrUploadInUse
+	}
+	if u.Length > limit {
+		return nil, "", fmt.Errorf("%w: %d bytes, at most %d", ErrTooLarge, u.Length, limit)
+	}
+	p, err := m.Path(id)
+	if err != nil {
+		return nil, "", err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, "", fmt.Errorf("uploads: read %s: %w", id, err)
+	}
+	if err := m.opts.Store.DeleteUpload(ctx, id); err != nil {
+		return nil, "", err
+	}
+	m.removeFile(id)
+	name := ""
+	if u.Filename != nil {
+		name = *u.Filename
+	}
+	return b, name, nil
+}

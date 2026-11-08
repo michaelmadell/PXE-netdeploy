@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -95,6 +96,33 @@ func migrate(ctx context.Context, db *sql.DB, dbPath string, files fs.FS, now fu
 	}
 
 	for _, m := range ms[current:] {
+		// A migration that rebuilds a table (SQLite's 12-step ALTER) starts
+		// with this line: foreign keys are off while it runs (so dropping the
+		// old table doesn't fire ON DELETE actions) and checked before commit.
+		fkOff := strings.HasPrefix(m.sql, fkOffDirective)
+		if fkOff {
+			if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+				return fmt.Errorf("store: migration %s: %w", m.name, err)
+			}
+		}
+		err := applyMigration(ctx, db, m, fkOff)
+		if fkOff {
+			if _, ferr := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); ferr != nil && err == nil {
+				err = fmt.Errorf("store: migration %s: %w", m.name, ferr)
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fkOffDirective, as a migration's first line, runs it with foreign keys off.
+const fkOffDirective = "-- netdeploy: foreign_keys=off"
+
+func applyMigration(ctx context.Context, db *sql.DB, m migration, fkCheck bool) error {
+	{
 		t, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("store: migration %s: begin: %w", m.name, err)
@@ -102,6 +130,20 @@ func migrate(ctx context.Context, db *sql.DB, dbPath string, files fs.FS, now fu
 		if _, err := t.ExecContext(ctx, m.sql); err != nil {
 			_ = t.Rollback()
 			return fmt.Errorf("store: migration %s: %w", m.name, err)
+		}
+		if fkCheck {
+			var table, parent string
+			var rowid sql.NullInt64
+			var fkid int
+			err := t.QueryRowContext(ctx, "PRAGMA foreign_key_check").Scan(&table, &rowid, &parent, &fkid)
+			if err == nil {
+				_ = t.Rollback()
+				return fmt.Errorf("store: migration %s: foreign key violation in %s (row %v) referencing %s", m.name, table, rowid.Int64, parent)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				_ = t.Rollback()
+				return fmt.Errorf("store: migration %s: foreign key check: %w", m.name, err)
+			}
 		}
 		// PRAGMA can't take bound parameters; m.version is an int we parsed.
 		if _, err := t.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {

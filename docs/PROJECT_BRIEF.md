@@ -77,6 +77,8 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0017 | Uploads: own tus 1.0.0 server (creation, termination, expiration) ahead of the validator; hash computed while uploading; 64 GiB limit; imported uploads kept until deleted, others expire after 24 h. |
 | 0018 | Media: own read-only UDF reader and WIM XML reader, `go-wim` for files inside `boot.wim`, `go-uefi` Authenticode with pinned Microsoft CAs for signers; no mounts or external tools for import. |
 | 0019 | Driver packages: zip/7z/CAB (LZX via `expand.exe`/`cabextract`), own INF parser, catalog signature chained to pinned Microsoft roots plus a per-file hash check; `whql`/`vendor`/`unsigned`/`unknown`. |
+| 0020 | Backups: scheduled (hourly/daily/weekly/monthly, local time) job; DB snapshot + certs + referenced blobs, incremental, retention 5; local folder or SMB share (pure-Go client); offline backup/restore commands. |
+| 0021 | Secrets storage: AES-256-GCM under one data key wrapped by DPAPI (Windows) or a 0600 key file (Linux); key never in backups; passphrase export/import; `share-credential` kind. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -127,8 +129,13 @@ uploads, resumes after a server crash, and imports with its editions and its
 2011- and 2023-signed boot managers. Driver packages (ADR 0019) import from
 zip, 7z and CAB (LZX through `expand.exe`/`cabextract`), with every INF parsed
 and its catalog checked against Microsoft's roots; driver groups and
-`/system/capabilities` are in place. Left: the Phase 3 wrap-up (backup
-procedure, findings, Phase 4 handover).
+`/system/capabilities` are in place. Backups (ADR 0020) run on a schedule or
+on request to a folder or an SMB share (pure-Go client, SMB3 encryption),
+incrementally, with retention and offline `backup`/`restore` commands; share
+credentials are the first stored secrets (ADR 0021: AES-256-GCM, DPAPI-
+protected key, passphrase export). A 9 GB store backs up to an encrypted
+share in 31 s and restores in 27 s. Left: the Phase 3 findings and the
+Phase 4 handover.
 
 ## Next step
 

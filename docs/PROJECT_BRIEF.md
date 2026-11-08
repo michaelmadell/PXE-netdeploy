@@ -123,27 +123,23 @@ WinPE on Hyper-V with dnsmasq as the real DHCP server. Results:
 [spikes/phase-2-findings.md](spikes/phase-2-findings.md). Content HTTPS moved
 to Phase 6.
 
-**In progress (Phase 3):** content store (ADR 0015), jobs (ADR 0016), tus
-uploads (ADR 0017) and ISO image import (ADR 0018) are built. A Win11 ISO
-uploads, resumes after a server crash, and imports with its editions and its
-2011- and 2023-signed boot managers. Driver packages (ADR 0019) import from
-zip, 7z and CAB (LZX through `expand.exe`/`cabextract`), with every INF parsed
-and its catalog checked against Microsoft's roots; driver groups and
-`/system/capabilities` are in place. Backups (ADR 0020) run on a schedule or
-on request to a folder or an SMB share (pure-Go client, SMB3 encryption),
-incrementally, with retention and offline `backup`/`restore` commands; share
-credentials are the first stored secrets (ADR 0021: AES-256-GCM, DPAPI-
-protected key, passphrase export). A 9 GB store backs up to an encrypted
-share in 31 s and restores in 27 s. Left: the Phase 3 findings and the
-Phase 4 handover.
+**Done (Phase 3, 2026-11-08):** storage and imports. Content-addressed store
+(ADR 0015), jobs (ADR 0016), tus uploads (ADR 0017), ISO image import with
+editions and the 2011- and 2023-signed boot managers (ADR 0018), driver
+packages from zip/7z/CAB with INF parsing and catalog checks (ADR 0019),
+backups to a folder or an encrypted SMB share with retention, scheduling and
+offline backup/restore (ADR 0020), and secrets storage (ADR 0021, brought
+forward from Phase 5). A 9 GB Win11 ISO uploads in 24 s and imports in 14 s;
+the whole store backs up to an encrypted share in 31 s and restores in 27 s.
+Results: [spikes/phase-3-findings.md](spikes/phase-3-findings.md).
 
 ## Next step
 
-**Phase 3: storage and imports** (content store, jobs, uploads, ISO and driver
-imports). Start from [plan/phase-3-handover.md](plan/phase-3-handover.md): it
-lists what Phase 2 established, the decisions to make first (content store
-layout, reading ISOs and WIMs, jobs, uploads, driver packs), and what carries
-over.
+**Phase 4: boot image builder, agent, profiles, deployments.** Start from
+[plan/phase-4-handover.md](plan/phase-4-handover.md): it lists what Phase 3
+established, the decisions to make first (building a boot image, writing the
+BCD, the real `Booter`, the agent, profiles and deployments), and what
+carries over.
 
 ## Open questions and things to verify
 

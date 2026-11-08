@@ -549,14 +549,23 @@ func (s *Store) ReplaceDriverGroup(ctx context.Context, id string, in DriverGrou
 	return s.DriverGroup(ctx, id)
 }
 
-// DeleteDriverGroup deletes a group. ErrNotFound.
+// DeleteDriverGroup deletes a group. ErrNotFound, ErrDriverGroupInUse.
 func (s *Store) DeleteDriverGroup(ctx context.Context, id string) error {
-	res, err := s.w.ExecContext(ctx, `DELETE FROM driver_groups WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("store: delete driver group: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.tx(ctx, func(t *sql.Tx) error {
+		var used int
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM boot_image_driver_groups WHERE group_id = ?`, id).Scan(&used); err != nil {
+			return fmt.Errorf("store: delete driver group: %w", err)
+		}
+		if used > 0 {
+			return ErrDriverGroupInUse
+		}
+		res, err := t.ExecContext(ctx, `DELETE FROM driver_groups WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("store: delete driver group: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }

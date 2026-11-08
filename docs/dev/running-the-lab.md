@@ -10,6 +10,8 @@ Since Phase 2 step 2, network services come from the stored settings
 | `-admin-addr` | Recovery override for the admin listener (health shows a warning while it's set) |
 | `-log`, `-log-level` | Logging |
 | `-tftp-root`, `-boot-file`, `-http-boot-url` | **Temporary** boot content until boot images exist (Phase 2 step 4) |
+| `-agent-dir` | Where a server built without `-tags agent` finds `agent-windows-<arch>.exe` (default `dist`, after `just build`) |
+| `-wimlib` | Path to `wimlib-imagex` if it isn't on PATH |
 
 A fresh data directory starts with no interfaces, so nothing answers PXE until
 you add one.
@@ -274,3 +276,26 @@ DriverStore (every INF parsed, every catalog verified, one package imported):
 $env:NETDEPLOY_TEST_DRIVERSTORE = '1'
 go test -v -run DriverStore ./internal/drivers/... ./internal/imports
 ```
+
+## Boot images (Phase 4, ADR 0022)
+
+Builds need `wimlib-imagex` (preferred; `-wimlib` if not on PATH) or DISM
+(the server elevated on Windows), and the agent: run `just build` once so
+`dist\agent-windows-amd64.exe` exists for `go run`. `GET
+/system/capabilities` shows the builders, `elevated` and the agent. The BCD
+is written by `internal/bcd` (ADR 0023); `bcdedit` can check one we wrote
+(elevated):
+
+```powershell
+$env:NETDEPLOY_TEST_BCDEDIT = '1'
+go test -count=1 -v -run TestBcdedit ./internal/bcd
+```
+
+The real builder against an ISO's boot.wim (elevated for DISM; set
+`NETDEPLOY_TEST_BUILDER=wimlib` and `NETDEPLOY_TEST_WIMLIB` to try wimlib):
+
+```powershell
+$env:NETDEPLOY_TEST_ISO = 'C:\path\to\Win11.iso'
+go test -count=1 -v -run TestRealTools ./internal/bootimage
+```
+

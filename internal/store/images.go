@@ -224,7 +224,7 @@ func (s *Store) UpdateImage(ctx context.Context, id string, name, notes *string,
 
 // DeleteImage deletes a ready or failed image (its boot manager rows go
 // with it; a content store sweep reclaims the files). ErrNotFound,
-// ErrImageImporting.
+// ErrImageImporting, ErrImageInUse.
 func (s *Store) DeleteImage(ctx context.Context, id string) error {
 	return s.tx(ctx, func(t *sql.Tx) error {
 		var status string
@@ -236,6 +236,13 @@ func (s *Store) DeleteImage(ctx context.Context, id string) error {
 		}
 		if status == ImageImporting {
 			return ErrImageImporting
+		}
+		var used int
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM boot_images WHERE source_image_id = ?`, id).Scan(&used); err != nil {
+			return fmt.Errorf("store: delete image: %w", err)
+		}
+		if used > 0 {
+			return ErrImageInUse
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM images WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("store: delete image: %w", err)

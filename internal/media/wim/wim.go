@@ -251,6 +251,21 @@ func (r *Reader) ReadFile(index int, name string) ([]byte, error) {
 	return fs.ReadFile(fsys, p)
 }
 
+// ReadDir lists the names in a directory of image index (1-based),
+// matching path components case-insensitively; directories are included.
+func (r *Reader) ReadDir(index int, dir string) ([]fs.DirEntry, error) {
+	im, err := r.w.Image(index)
+	if err != nil {
+		return nil, fmt.Errorf("wim: image %d: %w", index, err)
+	}
+	fsys := im.FS()
+	p, err := resolve(fsys, strings.Trim(strings.ReplaceAll(dir, `\`, "/"), "/"))
+	if err != nil {
+		return nil, &fs.PathError{Op: "readdir", Path: dir, Err: err}
+	}
+	return fs.ReadDir(fsys, p)
+}
+
 // resolve finds name's exact-case path.
 func resolve(fsys fs.FS, name string) (string, error) {
 	if _, err := fs.Stat(fsys, name); err == nil {

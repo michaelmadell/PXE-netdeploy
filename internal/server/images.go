@@ -159,6 +159,9 @@ func (s *Server) DeleteImage(ctx context.Context, req api.DeleteImageRequestObje
 	case errors.Is(err, store.ErrImageImporting):
 		return api.DeleteImage409ApplicationProblemPlusJSONResponse(
 			newProblem(http.StatusConflict, "image_importing", "Image is importing", "Cancel its import job first.", nil)), nil
+	case errors.Is(err, store.ErrImageInUse):
+		return api.DeleteImage409ApplicationProblemPlusJSONResponse(
+			newProblem(http.StatusConflict, "image_in_use", "Image in use", "A boot image is built from this image: delete it or point it at another image first.", nil)), nil
 	case err != nil:
 		return nil, err
 	}

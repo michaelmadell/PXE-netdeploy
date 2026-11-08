@@ -184,6 +184,7 @@ func (s *Server) UpdateDriverPackage(ctx context.Context, req api.UpdateDriverPa
 		return nil, err
 	}
 	s.events.Publish(events.Event{Type: events.DriverUpdated, ResourceID: pkg.ID})
+	s.bootImagesChanged(ctx, nil, pkg.ID)
 	return api.UpdateDriverPackage200JSONResponse(packageToAPI(pkg)), nil
 }
 
@@ -365,15 +366,19 @@ func (s *Server) ReplaceDriverGroup(ctx context.Context, req api.ReplaceDriverGr
 	case err != nil:
 		return nil, err
 	}
+	s.bootImagesChanged(ctx, []string{g.ID}, "")
 	return api.ReplaceDriverGroup200JSONResponse(groupToAPI(g)), nil
 }
 
 // DeleteDriverGroup implements DELETE /driver-groups/{driverGroupId}.
-// (409 arrives with profiles in Phase 4.)
 func (s *Server) DeleteDriverGroup(ctx context.Context, req api.DeleteDriverGroupRequestObject) (api.DeleteDriverGroupResponseObject, error) {
 	err := s.store.DeleteDriverGroup(ctx, req.DriverGroupId)
 	if errors.Is(err, store.ErrNotFound) {
 		return api.DeleteDriverGroup404ApplicationProblemPlusJSONResponse(groupNotFound(req.DriverGroupId)), nil
+	}
+	if errors.Is(err, store.ErrDriverGroupInUse) {
+		return api.DeleteDriverGroup409ApplicationProblemPlusJSONResponse(
+			newProblem(http.StatusConflict, "driver_group_in_use", "Driver group in use", "A boot image uses this group: remove it from the boot image first.", nil)), nil
 	}
 	if err != nil {
 		return nil, err

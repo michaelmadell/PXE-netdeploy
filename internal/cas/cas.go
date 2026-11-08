@@ -130,9 +130,12 @@ func (s *Store) prepare() error {
 		return fmt.Errorf("cas: read staging: %w", err)
 	}
 	for _, e := range entries {
-		// Left by jobs that were running when the server stopped.
+		// Left by jobs that were running when the server stopped. A
+		// leftover that can't be removed (e.g. a DISM mount the server
+		// couldn't discard unelevated, ADR 0022) is logged, not fatal.
 		if err := os.RemoveAll(filepath.Join(staging, e.Name())); err != nil {
-			return fmt.Errorf("cas: empty staging: %w", err)
+			s.log.Warn("couldn't remove interrupted staging files", "name", e.Name(), "err", err)
+			continue
 		}
 		s.log.Info("removed interrupted staging files", "name", e.Name())
 	}

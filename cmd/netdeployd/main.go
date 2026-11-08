@@ -17,8 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/michaelmadell/pxe-netdeploy/internal/agentbin"
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
+	"github.com/michaelmadell/pxe-netdeploy/internal/bootimage"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/datalock"
@@ -56,6 +58,8 @@ type options struct {
 	dataDir    string
 	contentDir string // empty: <data>/content
 	adminAddr  string // empty: use Settings.admin
+	agentDir   string // agents when the binary embeds none
+	wimlibPath string // empty: wimlib-imagex from PATH
 	dev        settings.Dev
 }
 
@@ -74,6 +78,8 @@ func main() {
 	flag.StringVar(&o.dataDir, "data", "./data", "data directory (database, certificates)")
 	flag.StringVar(&o.contentDir, "content", "", "content store directory (imported and built files); default <data>/content")
 	flag.StringVar(&o.adminAddr, "admin-addr", "", "recovery override for the admin listener, e.g. 127.0.0.1:8443; normally set in settings")
+	flag.StringVar(&o.agentDir, "agent-dir", "dist", "directory with agent-windows-<arch>.exe, used when this binary embeds no agents (built without -tags agent)")
+	flag.StringVar(&o.wimlibPath, "wimlib", "", "path to wimlib-imagex (default: found on PATH)")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
 
@@ -164,6 +170,9 @@ func run(o options) error {
 			return nil
 		},
 	})
+	// Before cas.Open empties staging: discard DISM mounts left by builds
+	// interrupted by a crash (ADR 0022).
+	bootimage.CleanupMounts(ctx, contentDir, slog.Default())
 	content, err := cas.Open(ctx, cas.Options{
 		Root:  contentDir,
 		Store: st,
@@ -192,8 +201,15 @@ func run(o options) error {
 		Config: func() backup.Config { cfg, _ := svc.Current(); return backupConfig(cfg.Backup) },
 	})
 	runner.Register(backups.Kind())
+	agents, err := agentbin.Load(version, o.agentDir)
+	if err != nil {
+		return err
+	}
+	slog.Info("agents", "version", agents.Version, "source", agents.Source, "architectures", agents.Architectures())
+	boot := bootimage.New(bootimage.Options{Store: st, Content: content, Agents: agents, Events: bus, WimlibPath: o.wimlibPath})
+	runner.Register(boot.Kind())
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
-		Vault: vault, Backup: backups})
+		Vault: vault, Backup: backups, Boot: boot})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}

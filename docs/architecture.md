@@ -58,8 +58,9 @@ machines that have revoked the 2011 chain.
 
 1. Admin schedules a deployment for a client (profile and secret versions are snapshotted).
 2. Client network-boots; DHCP/TFTP serve its boot image and BCD.
-3. WinPE starts the agent via `winpeshl.ini`: `wpeinit`, load staged drivers
-   (wimlib builds), initialise networking, check in.
+3. WinPE starts the agent via `winpeshl.ini` (it launches only the agent): load
+   staged drivers with `drvload` (wimlib builds), `wpeinit`, initialise
+   networking, check in ([ADR 0022](adr/0022-building-boot-images.md)).
 4. Agent fetches its plan, partitions, applies the install image (agent mode) or
    runs `setup.exe` from the SMB share (smb mode), injects OS drivers, places the
    unattend and identity files, reports progress, completes, reboots.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
+	"github.com/michaelmadell/pxe-netdeploy/internal/bootimage"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
@@ -39,6 +40,7 @@ type Server struct {
 	uploads  *uploads.Manager
 	vault    *secrets.Vault
 	backup   *backup.Service
+	boot     *bootimage.Service
 	caps     capsCache
 }
 
@@ -54,12 +56,13 @@ type Deps struct {
 	Uploads  *uploads.Manager
 	Vault    *secrets.Vault
 	Backup   *backup.Service
+	Boot     *bootimage.Service
 }
 
 // New returns a Server.
 func New(version string, d Deps) *Server {
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
-		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup}
+		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot}
 }
 
 // GetHealth reports per-service health from the running listeners, plus

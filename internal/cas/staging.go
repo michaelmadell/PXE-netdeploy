@@ -107,6 +107,38 @@ func (st *Staging) LinkBlob(path, sha256 string, size int64) error {
 	return nil
 }
 
+// AddFile moves the file at src (inside Dir, so on the same volume) into
+// staging as the tree file at path p, hashing it in place instead of
+// copying it, and returns its SHA-256 and size. src is gone afterwards.
+func (st *Staging) AddFile(p, src string) (string, int64, error) {
+	clean, err := CleanPath(p)
+	if err != nil {
+		return "", 0, fmt.Errorf("%w: %q", err, p)
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return "", 0, fmt.Errorf("cas: stage %q: %w", clean, err)
+	}
+	h := sha256.New()
+	n, err := io.CopyBuffer(h, f, make([]byte, 1<<20))
+	f.Close()
+	if err != nil {
+		return "", 0, fmt.Errorf("cas: stage %q: %w", clean, err)
+	}
+	idx, tmp, err := st.reserve(staged{path: clean, fold: Fold(clean)})
+	if err != nil {
+		return "", 0, err
+	}
+	if err := os.Rename(src, tmp); err != nil {
+		return "", 0, fmt.Errorf("cas: stage %q: %w", clean, err)
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	st.mu.Lock()
+	st.files[idx].sha, st.files[idx].size = sum, n
+	st.mu.Unlock()
+	return sum, n, nil
+}
+
 // reserve registers a staged file and returns its index and temp path.
 func (st *Staging) reserve(f staged) (int, string, error) {
 	st.mu.Lock()

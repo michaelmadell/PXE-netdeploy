@@ -79,6 +79,8 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0019 | Driver packages: zip/7z/CAB (LZX via `expand.exe`/`cabextract`), own INF parser, catalog signature chained to pinned Microsoft roots plus a per-file hash check; `whql`/`vendor`/`unsigned`/`unknown`. |
 | 0020 | Backups: scheduled (hourly/daily/weekly/monthly, local time) job; DB snapshot + certs + referenced blobs, incremental, retention 5; local folder or SMB share (pure-Go client); offline backup/restore commands. |
 | 0021 | Secrets storage: AES-256-GCM under one data key wrapped by DPAPI (Windows) or a 0600 key file (Linux); key never in backups; passphrase export/import; `share-credential` kind. |
+| 0022 | Building boot images: export one boot.wim index, add agent/config/`winpeshl.ini` (DISM also injects drivers; wimlib stages them for `drvload`), boot files from the built WIM, a content-store tree; wimlib preferred (1.3 s vs DISM's 43 s; required on Linux), DISM (inbox, elevated) otherwise, no ADK; storage drivers (PERC, RST VMD) load in WinPE with `drvload`; `inputHash` caching and reuse; stale computed on read; last good build keeps serving. |
+| 0023 | Own BCD writer (`internal/bcd`): REGF hive in Go with the Phase 1 RAM-disk elements, fixed GUID and timestamps (reproducible), no bcdedit/hivex; capabilities drop `bcdTool`. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -133,6 +135,11 @@ forward from Phase 5). A 9 GB Win11 ISO uploads in 24 s and imports in 14 s;
 the whole store backs up to an encrypted share in 31 s and restores in 27 s.
 Results: [spikes/phase-3-findings.md](spikes/phase-3-findings.md).
 
+**In progress (Phase 4, from 2026-11-08):** decisions 1 and 2: building a boot
+image (ADR 0022: `/boot-images`, the build job, both builders, the agent
+embedded in the server) and writing its BCD (ADR 0023, `internal/bcd`).
+Results: [spikes/phase-4-findings.md](spikes/phase-4-findings.md).
+
 ## Next step
 
 **Phase 4: boot image builder, agent, profiles, deployments.** Start from
@@ -159,6 +166,7 @@ carries over.
 | iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
 | ~~The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator~~ | Done (Phase 2 step 2): `server.RequestValidator`, 400 with per-field `errors[]` |
 | Raw Go error text appears in problem `detail` fields | |
+| ~~Real DISM and wimlib builds of the Win11 boot.wim; the 2023 boot manager with the `Fonts_EX` set; wimlib-added files without security descriptors in WinPE~~ | Answered 2026-11-08: both build and boot on `nd-win`; the agent starts ([spikes/phase-4-findings.md](spikes/phase-4-findings.md)) |
 
 ## Suggested skills for the next session
 

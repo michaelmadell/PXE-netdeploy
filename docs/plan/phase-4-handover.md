@@ -65,7 +65,7 @@ with boot images this phase), and `boot.Static` as the `Booter`.
 | `tree_refs`/`blob_refs` views decide what the sweep keeps | Migration adding `boot_images` must redefine both views to include them |
 | DISM needs elevation even for `/?`; capabilities reads its version from the PE | Capabilities currently says `dism` is available unelevated: report "needs elevation" (and fall back to wimlib) when the server isn't elevated |
 | Builds run on the `build` lane, one at a time; any restart fails them `interrupted` | A DISM mount left behind by a crash must be cleaned at startup (`dism /Cleanup-Mountpoints` or our own mount directory under staging) |
-| Driver INFs carry `architectures`, `role` (storage = boot-critical) and `signature` | Validation: refuse `unsigned` drivers in boot images (Secure Boot), warn on `vendor`; the wimlib builder can't take storage drivers (ADR 0005) |
+| Driver INFs carry `architectures`, `role` (storage = boot-critical) and `signature` | Validation: refuse `unsigned` drivers in boot images (Secure Boot), warn on `vendor`. Storage drivers are boot-critical for the **installed** OS only: WinPE loads them with `drvload` (ADR 0022); the agent must inject them offline into the applied image (decision 4) |
 | Driver group membership or INF enable changes should mark dependent boot images `stale` (spec) | Needs the boot image → driver group links in SQL, and the 409s now unused: `deleteImage` `image_in_use`, `deleteDriverGroup` 409 |
 | Secrets store only the current value (`value_version` increments) | Deployments snapshot secret *versions* (ADR 0008): keep old sealed values (a `secret_values` table keyed by version) or seal a copy into the deployment |
 | Migrations can run with foreign keys off (`-- netdeploy: foreign_keys=off`) | Use it for the `clients` rebuild that adds the `profiles` foreign key (ADR 0014) |
@@ -79,6 +79,10 @@ Phase 4 is the largest phase. Suggested order: 1 → 2 → 3 (server side
 complete, a boot image boots per client), then 4 → 5 (agent and deployments).
 
 ### 1. Building a boot image
+
+**Decided 2026-11-08: [ADR 0022](../adr/0022-building-boot-images.md);
+implemented** (`internal/bootimage`, `internal/agentbin`, `/boot-images`).
+The notes below were the starting questions.
 
 Inputs: a `windows` image and `sourceIndex` (boot.wim index, default 2),
 driver groups, agent version, server URLs, builder (`auto`/`dism`/`wimlib`),

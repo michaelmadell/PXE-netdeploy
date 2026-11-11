@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
+import { Readiness } from "@/components/Readiness";
 import { StatusBadge } from "@/components/StatusBadge";
 
 export function Overview() {
@@ -51,6 +52,17 @@ export function Overview() {
               ))}
             </tbody>
           </table>
+          <Readiness />
+          {(health.data.warnings?.length ?? 0) > 0 && (
+            <>
+              <h2 className="mt-8 text-base font-semibold tracking-tight">Things to check</h2>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                {health.data.warnings!.map((w) => (
+                  <li key={w.code}>{w.message}</li>
+                ))}
+              </ul>
+            </>
+          )}
         </>
       )}
     </section>

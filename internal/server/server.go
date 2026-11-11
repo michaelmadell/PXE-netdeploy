@@ -41,6 +41,7 @@ type Server struct {
 	vault    *secrets.Vault
 	backup   *backup.Service
 	boot     *bootimage.Service
+	host     settings.HostLister
 	caps     capsCache
 	agent    agentState
 }
@@ -58,12 +59,17 @@ type Deps struct {
 	Vault    *secrets.Vault
 	Backup   *backup.Service
 	Boot     *bootimage.Service
+	Host     settings.HostLister // nil: settings.SystemHost
 }
 
 // New returns a Server.
 func New(version string, d Deps) *Server {
+	if d.Host == nil {
+		d.Host = settings.SystemHost{}
+	}
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
-		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot}
+		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot,
+		host: d.Host}
 }
 
 // GetHealth reports per-service health from the running listeners, plus

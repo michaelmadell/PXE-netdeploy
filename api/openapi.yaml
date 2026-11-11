@@ -118,6 +118,28 @@ paths:
               schema: { $ref: "#/components/schemas/Capabilities" }
         "401": { $ref: "#/components/responses/Problem" }
 
+  /system/interfaces:
+    get:
+      tags: [system]
+      operationId: listHostInterfaces
+      summary: Network interfaces of the machine the server runs on.
+      description: |
+        For choosing deployment interfaces: an entry's `name` is the value
+        `InterfaceSettings.name` takes. Read from the operating system on every
+        call, in its order, including interfaces that are disconnected or have no
+        IPv4 address (a deployment interface needs one to be saved).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/HostInterface" } }
+        "401": { $ref: "#/components/responses/Problem" }
+
   /system/backups:
     get:
       tags: [system]
@@ -2269,6 +2291,35 @@ components:
             available: { type: boolean }
             tool: { type: string, nullable: true }
             reason: { type: string }
+
+    HostInterface:
+      type: object
+      description: A network interface of the server's machine.
+      required: [name, addresses, up, loopback]
+      properties:
+        name:
+          type: string
+          description: |
+            What the operating system calls it: on Windows the friendly name shown
+            in Network Connections (`Ethernet 2`, `vEthernet (Lab)`), on Linux the
+            device name (`enp3s0`).
+        mac:
+          type: string
+          nullable: true
+          description: Lower-case, colon-separated. Null for interfaces without one (loopback, tunnels).
+        addresses:
+          type: array
+          description: IPv4 addresses, the primary one first. Empty when it has none.
+          items: { $ref: "#/components/schemas/HostInterfaceAddress" }
+        up: { type: boolean, description: Enabled and connected. }
+        loopback: { type: boolean }
+
+    HostInterfaceAddress:
+      type: object
+      required: [address, prefixLength]
+      properties:
+        address: { type: string, format: ipv4 }
+        prefixLength: { type: integer, minimum: 0, maximum: 32, description: "Subnet size, e.g. 24 for 255.255.255.0." }
 
     Event:
       type: object

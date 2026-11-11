@@ -43,6 +43,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system/interfaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Network interfaces of the machine the server runs on.
+         * @description For choosing deployment interfaces: an entry's `name` is the value
+         *     `InterfaceSettings.name` takes. Read from the operating system on every
+         *     call, in its order, including interfaces that are disconnected or have no
+         *     IPv4 address (a deployment interface needs one to be saved).
+         */
+        get: operations["listHostInterfaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/system/backups": {
         parameters: {
             query?: never;
@@ -1480,6 +1503,28 @@ export interface components {
                 reason?: string;
             };
         };
+        /** @description A network interface of the server's machine. */
+        HostInterface: {
+            /**
+             * @description What the operating system calls it: on Windows the friendly name shown
+             *     in Network Connections (`Ethernet 2`, `vEthernet (Lab)`), on Linux the
+             *     device name (`enp3s0`).
+             */
+            name: string;
+            /** @description Lower-case, colon-separated. Null for interfaces without one (loopback, tunnels). */
+            mac?: string | null;
+            /** @description IPv4 addresses, the primary one first. Empty when it has none. */
+            addresses: components["schemas"]["HostInterfaceAddress"][];
+            /** @description Enabled and connected. */
+            up: boolean;
+            loopback: boolean;
+        };
+        HostInterfaceAddress: {
+            /** Format: ipv4 */
+            address: string;
+            /** @description Subnet size, e.g. 24 for 255.255.255.0. */
+            prefixLength: number;
+        };
         Event: {
             /** @enum {string} */
             type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated" | "driverPackage.updated" | "profile.updated";
@@ -2703,6 +2748,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Capabilities"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    listHostInterfaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["HostInterface"][];
+                    };
                 };
             };
             401: components["responses"]["Problem"];

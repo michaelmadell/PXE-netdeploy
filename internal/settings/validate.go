@@ -27,8 +27,13 @@ func (f fieldErrors) list() []FieldError { return f }
 
 // HostInterface is an OS network interface and its IPv4 networks.
 type HostInterface struct {
+	// Name is what the OS calls it: on Windows the friendly name shown in
+	// Network Connections ("Ethernet 2"), on Linux the device name ("enp3s0").
 	Name     string
 	Prefixes []netip.Prefix // IPv4 only, primary first (as the OS lists them)
+	MAC      string         // lower-case, colon-separated; empty if it has none (loopback, tunnels)
+	Up       bool           // enabled and connected
+	Loopback bool
 }
 
 // Primary is the interface's first IPv4 network.
@@ -45,6 +50,12 @@ type Host interface {
 	Interface(name string) (HostInterface, error)
 }
 
+// HostLister lists the machine's network interfaces (GET /system/interfaces).
+type HostLister interface {
+	// Interfaces returns every interface the OS reports, in its order.
+	Interfaces() ([]HostInterface, error)
+}
+
 // SystemHost reads the real network interfaces.
 type SystemHost struct{}
 
@@ -57,11 +68,39 @@ func (SystemHost) Interface(name string) (HostInterface, error) {
 	if err != nil {
 		return HostInterface{}, fmt.Errorf("%w %q (have: %s)", ErrNoInterface, name, interfaceNames())
 	}
+	return hostInterface(ifc)
+}
+
+// Interfaces implements HostLister.
+func (SystemHost) Interfaces() ([]HostInterface, error) {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list network interfaces: %w", err)
+	}
+	out := make([]HostInterface, 0, len(ifs))
+	for i := range ifs {
+		h, err := hostInterface(&ifs[i])
+		if err != nil {
+			continue // removed between listing and reading it
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// hostInterface reads ifc's IPv4 networks and state.
+func hostInterface(ifc *net.Interface) (HostInterface, error) {
 	addrs, err := ifc.Addrs()
 	if err != nil {
-		return HostInterface{}, fmt.Errorf("read addresses of %q: %w", name, err)
+		return HostInterface{}, fmt.Errorf("read addresses of %q: %w", ifc.Name, err)
 	}
-	out := HostInterface{Name: name}
+	out := HostInterface{
+		Name: ifc.Name,
+		MAC:  ifc.HardwareAddr.String(),
+		// FlagUp alone means "enabled" on Linux; FlagRunning adds "has a link".
+		Up:       ifc.Flags&net.FlagUp != 0 && ifc.Flags&net.FlagRunning != 0,
+		Loopback: ifc.Flags&net.FlagLoopback != 0,
+	}
 	for _, a := range addrs {
 		ipn, ok := a.(*net.IPNet)
 		if !ok {

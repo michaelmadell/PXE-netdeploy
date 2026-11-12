@@ -16,7 +16,14 @@ func (f fakeVars) Get(n string) ([]byte, error) {
 	}
 	return nil, ErrNotFound
 }
-func (f fakeVars) Set(n string, b []byte) error { f[n] = b; return nil }
+func (f fakeVars) Set(n string, b []byte) error {
+	if len(b) == 0 {
+		delete(f, n) // as SetFirmwareEnvironmentVariableEx with no data
+		return nil
+	}
+	f[n] = b
+	return nil
+}
 
 // option builds an EFI_LOAD_OPTION with the given device path nodes.
 func option(active bool, desc string, nodes ...[]byte) []byte {
@@ -77,10 +84,10 @@ func TestEntries(t *testing.T) {
 		!es[2].Network || es[2].Disk || es[0].Active {
 		t.Fatalf("%+v", es)
 	}
-	if e, ok := LocalDisk(es); !ok || e.Number != 2 {
+	if e, ok := LocalDisk(es, nil); !ok || e.Number != 2 {
 		t.Errorf("local disk: %+v %v", e, ok)
 	}
-	if _, ok := LocalDisk(es[2:3]); ok {
+	if _, ok := LocalDisk(es[2:3], nil); ok {
 		t.Error("network entry taken as local disk")
 	}
 }
@@ -166,5 +173,49 @@ func TestEnsureDiskEntryAndFirst(t *testing.T) {
 	if len(lines) != 3+6 || lines[2] != "BootOrder: 0001,0005,0003,0002,0000" ||
 		lines[len(lines)-1] != `Boot0004 "Unlisted" active=true disk partition=0 guid=00000000-0000-0000-0000-000000000000 (not in BootOrder)` {
 		t.Errorf("dump:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestLocalDiskPresentAndRemoveStale(t *testing.T) {
+	const file = `\EFI\Microsoft\Boot\bootmgfw.efi`
+	old := esp
+	old.GUID[0] ^= 0xFF // a wiped partition
+	other := esp
+	other.GUID[1] ^= 0xFF // another disk's Windows
+	v := fakeVars{
+		"Boot0000": option(true, "EFI Network", mac),
+		"Boot0001": LoadOption("Windows Boot Manager", old, file),
+		"Boot0002": LoadOption("Windows Boot Manager", other, file),
+		"Boot0003": LoadOption("Windows Boot Manager", esp, file),
+		"Boot0004": LoadOption("Windows Boot Manager", old, file), // not in BootOrder
+	}
+	v["BootOrder"] = encodeOrder([]uint16{0, 1, 2, 3})
+
+	es, err := Entries(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := LocalDisk(es, nil); e.Number != 1 {
+		t.Errorf("no presence check: Boot%04X", e.Number)
+	}
+	if e, _ := LocalDisk(es, map[GUID]bool{esp.GUID: true}); e.Number != 3 {
+		t.Errorf("present: Boot%04X", e.Number)
+	}
+	if e, _ := LocalDisk(es, map[GUID]bool{{1}: true}); e.Number != 1 {
+		t.Errorf("nothing present matches: Boot%04X", e.Number)
+	}
+
+	removed, err := RemoveStale(v, map[GUID]bool{old.GUID: true})
+	if err != nil || len(removed) != 2 || removed[0].Number != 1 || removed[1].Number != 4 {
+		t.Fatalf("removed %v %v", removed, err)
+	}
+	if got := fmt.Sprint(must(bootOrder(v))); got != "[0 2 3]" {
+		t.Errorf("order %s", got)
+	}
+	if len(v["Boot0001"]) != 0 || len(v["Boot0004"]) != 0 || len(v["Boot0002"]) == 0 {
+		t.Errorf("variables: %v", v)
+	}
+	if removed, _ := RemoveStale(v, map[GUID]bool{}); removed != nil {
+		t.Errorf("nothing gone: removed %v", removed)
 	}
 }

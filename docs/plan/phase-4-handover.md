@@ -85,9 +85,9 @@ Next session, in order:
 1. ~~**Reboot-to-PXE after a deployment**~~ fixed 2026-11-12 (findings,
    "Boot order after a deployment"): bcdboot writes no firmware entry from
    a network-booted WinPE; the agent writes it and sets `BootOrder`.
-   `/bootex` accepted. Left: delete the stale entries of the partitions the
-   deployment wiped; make the prompt timeout's `BootNext` prefer an entry
-   whose partition exists; check that timeout in the lab.
+   `/bootex` accepted. The entries of the partitions a deployment wiped are
+   deleted (lab-tested 2026-11-12); the prompt timeout's `BootNext` prefers
+   an entry whose partition exists (unit-tested; lab check pending).
 2. **Decision 5: profiles and deployments**: `POST /deployments` (arming),
    cancel, timeouts, secret-version snapshots, the built-in unattend per
    identity mode (`unattendUrl`), `POST /profiles/{id}/validate`.

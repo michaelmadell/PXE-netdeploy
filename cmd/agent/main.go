@@ -308,8 +308,15 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 	report(wire.StageCheckedIn, 0, "Deployment "+plan.DeploymentID)
 	a.logFirmware("before the deployment")
 	target, err := disk.Select(a.disks, explicit)
+	var wiped [][16]byte
 	if err == nil {
 		a.log.Info("target disk", "disk", target.String(), "explicit", explicit != nil)
+		// The partitions diskpart is about to destroy: their boot entries are
+		// removed afterwards.
+		var perr error
+		if wiped, perr = disk.PartitionGUIDs(target.Number); perr != nil {
+			a.log.Warn("read the target disk's partitions; stale boot entries stay", "err", perr)
+		}
 		env := deploy.Env{Client: a.client, Run: deploy.Exec{Log: a.log}, Log: a.log, Report: report, Work: a.dir}
 		err = deploy.Install(ctx, env, plan, target)
 	}
@@ -325,7 +332,7 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 	// Success: the boot order, then report, then reboot (ADR 0025): the
 	// boot order's outcome goes into the deployment's logs.
 	a.log.Info("deployment succeeded", "deployment_id", plan.DeploymentID)
-	a.setBootOrder(plan)
+	a.setBootOrder(plan, wiped)
 	if err := deploy.CopyFile(filepath.Join(a.dir, "agent.log"), `W:\Windows\Temp\netdeploy-agent.log`); err != nil {
 		a.log.Warn("copy the agent log to the OS", "err", err)
 	}
@@ -350,7 +357,7 @@ func (a *agent) bootLocal() error {
 	if err == nil {
 		var entries []firmware.Entry
 		if entries, err = firmware.Entries(v); err == nil {
-			if e, ok := firmware.LocalDisk(entries); ok {
+			if e, ok := firmware.LocalDisk(entries, presentGUIDs(a.disks)); ok {
 				if err = firmware.SetBootNext(v, e.Number); err == nil {
 					a.log.Info("booting the local disk", "entry", e.String())
 					time.Sleep(time.Second)
@@ -378,7 +385,7 @@ const bootManagerFile = `\EFI\Microsoft\Boot\bootmgfw.efi`
 // placed behind the network entries (network-first); bcdboot's entry is used
 // when it made one for the new system partition, else the agent writes one.
 // Failures are logged, not fatal: the prompt timeout still boots the disk.
-func (a *agent) setBootOrder(plan wire.Plan) {
+func (a *agent) setBootOrder(plan wire.Plan, wiped [][16]byte) {
 	a.logFirmware("after bcdboot")
 	v, err := firmware.Open()
 	if err != nil {
@@ -405,7 +412,33 @@ func (a *agent) setBootOrder(plan wire.Plan) {
 			a.log.Warn("boot order: network first", "err", err)
 		}
 	}
+	// Entries for the partitions this deployment destroyed. A GUID still on
+	// some disk (a cloned disk, say) is kept; other disks' entries are never
+	// touched.
+	present := presentGUIDs(disk.List())
+	gone := map[firmware.GUID]bool{}
+	for _, g := range wiped {
+		if !present[g] {
+			gone[g] = true
+		}
+	}
+	removed, err := firmware.RemoveStale(v, gone)
+	for _, e := range removed {
+		a.log.Info("removed a stale boot entry", "entry", e.Detail())
+	}
+	if err != nil {
+		a.log.Warn("boot order: remove stale entries", "err", err)
+	}
 	a.logFirmware("after the boot order")
+}
+
+// presentGUIDs is disk.PresentGUIDs keyed by firmware.GUID.
+func presentGUIDs(disks []disk.Disk) map[firmware.GUID]bool {
+	out := map[firmware.GUID]bool{}
+	for g := range disk.PresentGUIDs(disks) {
+		out[firmware.GUID(g)] = true
+	}
+	return out
 }
 
 // logFirmware logs the UEFI boot variables and entries.

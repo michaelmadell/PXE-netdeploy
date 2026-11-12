@@ -150,10 +150,17 @@ What the deployment log showed:
   the 2023-signed boot manager and boots under the `MicrosoftWindows`
   Secure Boot template.
 
-Still open: stale entries accumulate (0003, 0004 above), and the prompt
-timeout's `BootNext` takes the first "Windows Boot Manager" entry even if
-its partition is gone. Not yet checked: the prompt timeout's `BootNext` to
-the local disk.
+**Stale entries, second run (2026-11-12, 11:05):** the agent now deletes
+the entries of the partitions the deployment wiped. Before: `BootOrder`
+`0000,0005,0002,0003,0001`, with 0005 and 0002 both on the previous system
+partition `B068F846…` (the installed Windows had added 0005 for its own
+partition on first boot), 0003 on the older `FB15A81F…`. After: new 0006 on
+`F6A28140…` first, 0005 and 0002 deleted, `BootOrder` `0006,0000,0003,0001`.
+0003 stays by design: its partition was already gone before the run, so the
+agent can't tell it from a disk WinPE can't see. Hyper-V also has a hidden
+`Boot0004 "FrontPage"` (its firmware UI) outside `BootOrder`.
+
+Not yet checked: the prompt timeout's `BootNext` to the local disk.
 
 To run once elevated, or with wimlib installed:
 

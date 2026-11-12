@@ -164,26 +164,79 @@ func encodeOrder(order []uint16) []byte {
 	return b
 }
 
-// LocalDisk is the entry a prompt timeout boots: the first active entry on
-// a hard drive named "Windows Boot Manager", else the first active one on a
-// hard drive. ok=false: none.
-func LocalDisk(entries []Entry) (Entry, bool) {
-	var first *Entry
-	for i, e := range entries {
-		if !e.Active || !e.Disk {
-			continue
+// LocalDisk is the entry a prompt timeout boots. With present (the GPT
+// partition GUIDs on the disks the agent can see), it first looks for an
+// entry whose partition exists: an active "Windows Boot Manager" one, then
+// any active disk entry. Otherwise, or with present nil, it takes the first
+// active entry on a hard drive named "Windows Boot Manager", else the first
+// active one on a hard drive: an entry for a disk WinPE can't see may still
+// boot. ok=false: none.
+func LocalDisk(entries []Entry, present map[GUID]bool) (Entry, bool) {
+	pick := func(ok func(Entry) bool) (Entry, bool) {
+		var first *Entry
+		for i, e := range entries {
+			if !e.Active || !e.Disk || !ok(e) {
+				continue
+			}
+			if e.Description == "Windows Boot Manager" {
+				return e, true
+			}
+			if first == nil {
+				first = &entries[i]
+			}
 		}
-		if e.Description == "Windows Boot Manager" {
+		if first != nil {
+			return *first, true
+		}
+		return Entry{}, false
+	}
+	if len(present) > 0 {
+		if e, ok := pick(func(e Entry) bool { return present[e.Partition.GUID] }); ok {
 			return e, true
 		}
-		if first == nil {
-			first = &entries[i]
+	}
+	return pick(func(Entry) bool { return true })
+}
+
+// RemoveStale deletes the disk entries whose partition GUID is in gone and
+// takes them out of BootOrder; gone should hold only partitions known to have
+// been destroyed (the target disk's, before partitioning, and on no disk
+// now). It returns what it removed.
+func RemoveStale(v Vars, gone map[GUID]bool) ([]Entry, error) {
+	entries, _, err := All(v)
+	if err != nil {
+		return nil, err
+	}
+	drop := map[uint16]bool{}
+	var removed []Entry
+	for _, e := range entries {
+		if e.Disk && e.Partition.GUID != (GUID{}) && gone[e.Partition.GUID] {
+			drop[e.Number] = true
+			removed = append(removed, e)
 		}
 	}
-	if first != nil {
-		return *first, true
+	if len(drop) == 0 {
+		return nil, nil
 	}
-	return Entry{}, false
+	order, err := bootOrder(v)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	var next []uint16
+	for _, n := range order {
+		if !drop[n] {
+			next = append(next, n)
+		}
+	}
+	if err := v.Set("BootOrder", encodeOrder(next)); err != nil {
+		return nil, err
+	}
+	for _, e := range removed {
+		if err := v.Set(fmt.Sprintf("Boot%04X", e.Number), nil); err != nil { // empty value deletes
+			return removed, err
+		}
+	}
+	return removed, nil
 }
 
 // SetBootNext makes the next boot (only) use entry n.

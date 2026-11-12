@@ -65,14 +65,19 @@ method and per-edition image exports come later in Phase 4.
   partition (matched by its GPT partition GUID) or writes one for
   `\EFI\Microsoft\Boot\bootmgfw.efi` when bcdboot made none, then
   `disk-first` puts that entry first and `network-first` puts the network
-  entries ahead of it; on a prompt timeout `BootNext` = the local disk's
-  Windows Boot Manager, or power off if there is none. The boot order is
+  entries ahead of it. Entries for the partitions the deployment destroyed
+  (the target disk's GPT partition GUIDs read before diskpart, and on no
+  disk afterwards) are deleted; other disks' entries are never touched. On
+  a prompt timeout `BootNext` = the local disk's Windows Boot Manager,
+  preferring an entry whose partition exists on a disk WinPE can see, or
+  power off if there is none. The boot order is
   set before completion is reported, so its outcome is in the deployment's
   logs; the reboot comes after. The boot variables are logged before the
   deployment, after bcdboot, after the boot order and on a prompt timeout.
   (Amended 2026-11-11: originally completion came first and `disk-first`
   relied on bcdboot's order; after a deployment the lab VM went on
-  network-booting.)
+  network-booting. bcdboot from a network-booted WinPE writes no firmware
+  entry: see the Phase 4 findings.)
 - Logs: batched to the server every 5 s and kept in
   `X:\netdeploy\agent.log`, copied to `W:\Windows\Temp` at the end.
   Network calls retry with back-off; a failed progress report never stops

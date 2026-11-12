@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -36,5 +37,25 @@ func TestScript(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}
+	}
+}
+
+func TestParseLayout(t *testing.T) {
+	le := binary.LittleEndian
+	b := make([]byte, 48+3*144)
+	le.PutUint32(b[0:], 1) // GPT
+	le.PutUint32(b[4:], 3)
+	for i, first := range []byte{0xAA, 0, 0xBB} { // the middle entry has a zero GUID
+		e := b[48+i*144:]
+		le.PutUint32(e[0:], 1)
+		e[48] = first
+	}
+	got := parseLayout(b)
+	if len(got) != 2 || got[0][0] != 0xAA || got[1][0] != 0xBB {
+		t.Fatalf("%v", got)
+	}
+	le.PutUint32(b[0:], 0) // MBR
+	if got := parseLayout(b); got != nil {
+		t.Errorf("MBR: %v", got)
 	}
 }

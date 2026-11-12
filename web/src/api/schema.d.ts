@@ -1252,9 +1252,9 @@ export interface paths {
         put?: never;
         /**
          * Complete the current deployment with the final result.
-         * @description Final result. Idempotent; the token is revoked afterwards. The agent reports
-         *     the result *before* it applies the profile's `bootOrderAfterDeploy` and
-         *     reboots.
+         * @description Final result. Idempotent; the token is revoked afterwards. After a successful
+         *     install the agent applies the profile's `bootOrderAfterDeploy` first, so its
+         *     outcome is in the deployment's logs, then reports the result, then reboots.
          */
         post: operations["agentComplete"];
         delete?: never;
@@ -1907,7 +1907,9 @@ export interface components {
             osSettings?: components["schemas"]["OsSettings"];
             /**
              * @description UEFI boot order the agent leaves after a successful deployment.
-             *     `disk-first` (bcdboot's default): Setup's reboots and later boots go
+             *     Either way the installed system has a boot entry (bcdboot's, or one the
+             *     agent writes when bcdboot made none for the new system partition).
+             *     `disk-first`: that entry is first, so Setup's reboots and later boots go
              *     straight to disk; re-test via the firmware's one-time boot menu or by
              *     arming a deployment and network-booting. `network-first`: every boot shows
              *     the boot prompt, then falls back to disk after its timeout.

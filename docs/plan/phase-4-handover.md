@@ -82,10 +82,12 @@ made the default, and `nd-client-01` (the lab's `nd-win`) deployed Windows
 
 Next session, in order:
 
-1. **Reboot-to-PXE after a deployment** (findings): read the firmware boot
-   entries from WinPE before/after `bcdboot`; make `disk-first` set
-   `BootOrder` explicitly. Check `bcdboot /bootex` and the prompt timeout's
-   BootNext on the same run.
+1. ~~**Reboot-to-PXE after a deployment**~~ fixed 2026-11-12 (findings,
+   "Boot order after a deployment"): bcdboot writes no firmware entry from
+   a network-booted WinPE; the agent writes it and sets `BootOrder`.
+   `/bootex` accepted. Left: delete the stale entries of the partitions the
+   deployment wiped; make the prompt timeout's `BootNext` prefer an entry
+   whose partition exists; check that timeout in the lab.
 2. **Decision 5: profiles and deployments**: `POST /deployments` (arming),
    cancel, timeouts, secret-version snapshots, the built-in unattend per
    identity mode (`unattendUrl`), `POST /profiles/{id}/validate`.

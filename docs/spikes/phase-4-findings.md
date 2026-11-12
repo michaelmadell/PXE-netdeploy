@@ -121,6 +121,40 @@ Open from this run:
 - A build was `failed` before this run; most likely `interrupted` by a
   server restart during the build (ADR 0016).
 
+## Boot order after a deployment (2026-11-12)
+
+**Tested on a second lab host** (`AH14195`, `just lab`, data on C:): one
+deployment from the boot prompt with the agent logging the UEFI boot
+variables. **Fixed: the VM restarted into Windows Setup.**
+
+What the deployment log showed:
+
+| When | BootOrder | Entries |
+|---|---|---|
+| Before the deployment | `0000,0004,0003,0001` | 0000 EFI Network; 0004 and 0003 "Windows Boot Manager" on partition `FB15A81F…`; 0001 EFI SCSI Device |
+| After `bcdboot W:\Windows /s S: /f UEFI /bootex` | unchanged | unchanged |
+| After the agent's boot order | `0002,0000,0004,0003,0001` | new 0002 "Windows Boot Manager" on the new system partition `B068F846…` (LBA 2048, 532,480 sectors) |
+
+- **bcdboot run from a network-booted WinPE writes no firmware entries.**
+  It reports "Boot files successfully created" and copies the files, but
+  `BootOrder` and every `Boot####` stay as they were. `disk-first` relying
+  on bcdboot's order could never work here.
+- **Existing entries go stale on every redeploy:** diskpart makes a new
+  system partition with a new GUID, and the old "Windows Boot Manager"
+  entries point at a partition that no longer exists. Firmware skips them
+  and falls through to the network: the reboot-to-PXE seen on 2026-11-08,
+  and on this host after a deployment was interrupted mid-way.
+- The agent now finds or writes the entry for the new partition and puts it
+  first (ADR 0025, amended 2026-11-11).
+- **`bcdboot /bootex` is accepted** in this WinPE: the installed system has
+  the 2023-signed boot manager and boots under the `MicrosoftWindows`
+  Secure Boot template.
+
+Still open: stale entries accumulate (0003, 0004 above), and the prompt
+timeout's `BootNext` takes the first "Windows Boot Manager" entry even if
+its partition is gone. Not yet checked: the prompt timeout's `BootNext` to
+the local disk.
+
 To run once elevated, or with wimlib installed:
 
 ```powershell

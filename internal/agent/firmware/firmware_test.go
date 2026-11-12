@@ -3,6 +3,7 @@ package firmware
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"testing"
 	"unicode/utf16"
 )
@@ -107,4 +108,63 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// esp is the system partition of the lab VM's Hyper-V entry
+// HD(1,GPT,81943C06-9EDF-4CC5-A850-0B013578990D,0x800,0x82000).
+var esp = Partition{Number: 1, StartLBA: 0x800, SizeLBA: 0x82000,
+	GUID: GUID{0x06, 0x3C, 0x94, 0x81, 0xDF, 0x9E, 0xC5, 0x4C, 0xA8, 0x50, 0x0B, 0x01, 0x35, 0x78, 0x99, 0x0D}}
+
+func TestLoadOptionRoundTrip(t *testing.T) {
+	if got := esp.GUID.String(); got != "81943C06-9EDF-4CC5-A850-0B013578990D" {
+		t.Fatalf("GUID %s", got)
+	}
+	e, err := ParseLoadOption(7, LoadOption("Windows Boot Manager", esp, `\EFI\Microsoft\Boot\bootmgfw.efi`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.Active || !e.Disk || e.Network || e.Description != "Windows Boot Manager" ||
+		e.File != `\EFI\Microsoft\Boot\bootmgfw.efi` || e.Partition != esp {
+		t.Fatalf("%+v", e)
+	}
+}
+
+func TestEnsureDiskEntryAndFirst(t *testing.T) {
+	const file = `\EFI\Microsoft\Boot\bootmgfw.efi`
+
+	// bcdboot's entry for this partition exists: it's used, not duplicated.
+	v := vars()
+	v["Boot0002"] = LoadOption("Windows Boot Manager", esp, file)
+	e, created, err := EnsureDiskEntry(v, "Windows Boot Manager", esp, file)
+	if err != nil || created || e.Number != 2 {
+		t.Fatalf("existing: %+v %v %v", e, created, err)
+	}
+
+	// Only a stale entry (another partition) and an unlisted one at 0004:
+	// a new entry at the lowest free number, 0005.
+	v = vars()
+	v["Boot0004"] = option(true, "Unlisted", hd)
+	e, created, err = EnsureDiskEntry(v, "Windows Boot Manager", esp, file)
+	if err != nil || !created || e.Number != 5 || e.Partition != esp {
+		t.Fatalf("created: %+v %v %v", e, created, err)
+	}
+	if err := First(v, e.Number); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(must(bootOrder(v))); got != "[5 3 2 1 0]" {
+		t.Errorf("order %s", got)
+	}
+	// network-first after disk-first: network ahead, the new entry next.
+	if _, err := NetworkFirst(v); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(must(bootOrder(v))); got != "[1 5 3 2 0]" {
+		t.Errorf("network-first order %s", got)
+	}
+
+	lines := Dump(v)
+	if len(lines) != 3+6 || lines[2] != "BootOrder: 0001,0005,0003,0002,0000" ||
+		lines[len(lines)-1] != `Boot0004 "Unlisted" active=true disk partition=0 guid=00000000-0000-0000-0000-000000000000 (not in BootOrder)` {
+		t.Errorf("dump:\n%s", strings.Join(lines, "\n"))
+	}
 }

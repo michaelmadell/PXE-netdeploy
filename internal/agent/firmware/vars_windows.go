@@ -3,6 +3,7 @@
 package firmware
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"syscall"
@@ -75,4 +76,46 @@ func (Windows) Set(name string, value []byte) error {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
 	return nil
+}
+
+const (
+	ioctlDiskGetDriveGeometry    = 0x70000
+	ioctlDiskGetPartitionInfoEx  = 0x70048
+	partitionStyleGPT            = 1
+	partitionInformationExLength = 144
+)
+
+// VolumePartition reads the GPT partition behind a drive letter ("S"), as a
+// hard drive device path names it (LBAs in the disk's sector size).
+func VolumePartition(letter string) (Partition, error) {
+	name, _ := windows.UTF16PtrFromString(`\\.\` + letter + ":")
+	h, err := windows.CreateFile(name, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return Partition{}, fmt.Errorf("open %s: %w", letter, err)
+	}
+	defer windows.CloseHandle(h)
+
+	var info [partitionInformationExLength]byte
+	var n uint32
+	if err := windows.DeviceIoControl(h, ioctlDiskGetPartitionInfoEx, nil, 0, &info[0], uint32(len(info)), &n, nil); err != nil {
+		return Partition{}, fmt.Errorf("partition of %s: %w", letter, err)
+	}
+	le := binary.LittleEndian
+	if le.Uint32(info[0:]) != partitionStyleGPT {
+		return Partition{}, fmt.Errorf("%s: not a GPT partition", letter)
+	}
+	sector := uint64(512)
+	var geo [24]byte // DISK_GEOMETRY
+	if err := windows.DeviceIoControl(h, ioctlDiskGetDriveGeometry, nil, 0, &geo[0], uint32(len(geo)), &n, nil); err == nil {
+		if bps := le.Uint32(geo[20:]); bps != 0 {
+			sector = uint64(bps)
+		}
+	}
+	p := Partition{
+		Number:   le.Uint32(info[24:]),
+		StartLBA: le.Uint64(info[8:]) / sector,
+		SizeLBA:  le.Uint64(info[16:]) / sector,
+	}
+	copy(p.GUID[:], info[48:64]) // PartitionId
+	return p, nil
 }

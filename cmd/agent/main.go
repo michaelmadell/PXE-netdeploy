@@ -306,6 +306,7 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 		}
 	}
 	report(wire.StageCheckedIn, 0, "Deployment "+plan.DeploymentID)
+	a.logFirmware("before the deployment")
 	target, err := disk.Select(a.disks, explicit)
 	if err == nil {
 		a.log.Info("target disk", "disk", target.String(), "explicit", explicit != nil)
@@ -321,8 +322,10 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 		return err
 	}
 
-	// Success: report first, then the boot order, then reboot (ADR 0013).
+	// Success: the boot order, then report, then reboot (ADR 0025): the
+	// boot order's outcome goes into the deployment's logs.
 	a.log.Info("deployment succeeded", "deployment_id", plan.DeploymentID)
+	a.setBootOrder(plan)
 	if err := deploy.CopyFile(filepath.Join(a.dir, "agent.log"), `W:\Windows\Temp\netdeploy-agent.log`); err != nil {
 		a.log.Warn("copy the agent log to the OS", "err", err)
 	}
@@ -331,14 +334,6 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 	if err := a.client.Complete(ctx, true, ""); err != nil {
 		a.log.Warn("report completion", "err", err)
 	}
-	if plan.BootOrderAfterDeploy == "network-first" {
-		if v, err := firmware.Open(); err != nil {
-			a.log.Warn("boot order", "err", err)
-		} else if _, err := firmware.NetworkFirst(v); err != nil {
-			a.log.Warn("network-first boot order", "err", err)
-		}
-	}
-	a.logs.flush()
 	a.con.Screen("Deployment finished")
 	a.con.Line("Restarting into Windows Setup...")
 	time.Sleep(5 * time.Second)
@@ -350,6 +345,7 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 // powers off when the disk has none (no loop back into the prompt).
 func (a *agent) bootLocal() error {
 	a.con.Screen("Booting the local disk")
+	a.logFirmware("prompt timeout")
 	v, err := firmware.Open()
 	if err == nil {
 		var entries []firmware.Entry
@@ -371,6 +367,57 @@ func (a *agent) bootLocal() error {
 	a.con.Countdown("Shutting down in", 60*time.Second)
 	exec.Command("wpeutil.exe", "shutdown").Run()
 	return nil
+}
+
+// bootManagerFile is where bcdboot puts the boot manager on the system
+// partition (either signature).
+const bootManagerFile = `\EFI\Microsoft\Boot\bootmgfw.efi`
+
+// setBootOrder applies the profile's bootOrderAfterDeploy after a successful
+// install. The installed system's boot entry is made first (disk-first), or
+// placed behind the network entries (network-first); bcdboot's entry is used
+// when it made one for the new system partition, else the agent writes one.
+// Failures are logged, not fatal: the prompt timeout still boots the disk.
+func (a *agent) setBootOrder(plan wire.Plan) {
+	a.logFirmware("after bcdboot")
+	v, err := firmware.Open()
+	if err != nil {
+		a.log.Warn("boot order", "err", err)
+		return
+	}
+	p, err := firmware.VolumePartition(disk.SystemLetter)
+	if err != nil {
+		a.log.Warn("boot order: read the system partition", "err", err)
+		return
+	}
+	a.log.Info("system partition", "number", p.Number, "guid", p.GUID.String(), "start_lba", p.StartLBA, "size_lba", p.SizeLBA)
+	e, created, err := firmware.EnsureDiskEntry(v, "Windows Boot Manager", p, bootManagerFile)
+	if err != nil {
+		a.log.Warn("boot order: boot entry for the installed system", "err", err)
+		return
+	}
+	a.log.Info("boot entry for the installed system", "entry", e.Detail(), "created", created)
+	if err := firmware.First(v, e.Number); err != nil {
+		a.log.Warn("boot order: disk first", "err", err)
+	}
+	if plan.BootOrderAfterDeploy == "network-first" {
+		if _, err := firmware.NetworkFirst(v); err != nil {
+			a.log.Warn("boot order: network first", "err", err)
+		}
+	}
+	a.logFirmware("after the boot order")
+}
+
+// logFirmware logs the UEFI boot variables and entries.
+func (a *agent) logFirmware(when string) {
+	v, err := firmware.Open()
+	if err != nil {
+		a.log.Warn("firmware variables", "when", when, "err", err)
+		return
+	}
+	for _, line := range firmware.Dump(v) {
+		a.log.Info("firmware: "+line, "when", when)
+	}
 }
 
 func reboot() { exec.Command("wpeutil.exe", "reboot").Run() }

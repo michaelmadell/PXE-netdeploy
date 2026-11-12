@@ -61,10 +61,18 @@ method and per-edition image exports come later in Phase 4.
 - **Boot order** through UEFI variables from Go
   (`Get/SetFirmwareEnvironmentVariableEx`, `SeSystemEnvironmentPrivilege`),
   not `bcdedit`, which may not see firmware entries from a RAM-disk WinPE:
-  after a deployment `disk-first` (bcdboot's order) or `network-first`
-  (the network entry moved back to the top); on a prompt timeout `BootNext`
-  = the local disk's Windows Boot Manager, or power off if there is none.
-  Completion is reported before the boot order changes.
+  after a deployment the agent finds the boot entry for the new system
+  partition (matched by its GPT partition GUID) or writes one for
+  `\EFI\Microsoft\Boot\bootmgfw.efi` when bcdboot made none, then
+  `disk-first` puts that entry first and `network-first` puts the network
+  entries ahead of it; on a prompt timeout `BootNext` = the local disk's
+  Windows Boot Manager, or power off if there is none. The boot order is
+  set before completion is reported, so its outcome is in the deployment's
+  logs; the reboot comes after. The boot variables are logged before the
+  deployment, after bcdboot, after the boot order and on a prompt timeout.
+  (Amended 2026-11-11: originally completion came first and `disk-first`
+  relied on bcdboot's order; after a deployment the lab VM went on
+  network-booting.)
 - Logs: batched to the server every 5 s and kept in
   `X:\netdeploy\agent.log`, copied to `W:\Windows\Temp` at the end.
   Network calls retry with back-off; a failed progress report never stops

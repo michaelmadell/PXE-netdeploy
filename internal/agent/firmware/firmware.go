@@ -28,10 +28,45 @@ type Entry struct {
 	Disk        bool // the device path has a hard drive media node
 	Network     bool // the device path has a MAC, IPv4 or IPv6 node
 	File        string
+	// Partition is the hard drive node's partition (GPT signature only;
+	// zero GUID otherwise).
+	Partition Partition
 }
 
 func (e Entry) String() string {
 	return fmt.Sprintf("Boot%04X %q", e.Number, e.Description)
+}
+
+// Detail is the entry on one line, for logs.
+func (e Entry) Detail() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Boot%04X %q active=%t", e.Number, e.Description, e.Active)
+	if e.Disk {
+		fmt.Fprintf(&b, " disk partition=%d guid=%s", e.Partition.Number, e.Partition.GUID)
+	}
+	if e.Network {
+		b.WriteString(" network")
+	}
+	if e.File != "" {
+		fmt.Fprintf(&b, " file=%s", e.File)
+	}
+	return b.String()
+}
+
+// GUID is a GUID in its EFI byte order (the first three fields little-endian).
+type GUID [16]byte
+
+func (g GUID) String() string {
+	le := binary.LittleEndian
+	return fmt.Sprintf("%08X-%04X-%04X-%X-%X", le.Uint32(g[0:]), le.Uint16(g[4:]), le.Uint16(g[6:]), g[8:10], g[10:])
+}
+
+// Partition is a GPT partition as a hard drive device path node names it.
+type Partition struct {
+	Number   uint32
+	StartLBA uint64
+	SizeLBA  uint64
+	GUID     GUID
 }
 
 // ParseLoadOption parses an EFI_LOAD_OPTION.
@@ -68,6 +103,12 @@ func ParseLoadOption(n uint16, b []byte) (Entry, error) {
 			continue
 		case typ == 4 && sub == 1: // media: hard drive
 			e.Disk = true
+			if l >= 42 && path[41] == 2 { // GPT signature
+				e.Partition.Number = le.Uint32(path[4:])
+				e.Partition.StartLBA = le.Uint64(path[8:])
+				e.Partition.SizeLBA = le.Uint64(path[16:])
+				copy(e.Partition.GUID[:], path[24:40])
+			}
 		case typ == 4 && sub == 4: // media: file path
 			u := make([]uint16, (l-4)/2)
 			for j := range u {
@@ -188,4 +229,148 @@ func NetworkFirst(v Vars) ([]Entry, error) {
 		}
 	}
 	return reordered, v.Set("BootOrder", encodeOrder(next))
+}
+
+// maxProbe is how many Boot#### numbers All probes beyond BootOrder.
+const maxProbe = 0x100
+
+// All reads every load option: those BootOrder lists, in order, then any
+// other Boot0000–Boot00FF. listed reports which were in BootOrder.
+func All(v Vars) (entries []Entry, listed map[uint16]bool, err error) {
+	order, err := bootOrder(v)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, nil, err
+	}
+	listed = map[uint16]bool{}
+	read := func(n uint16) {
+		b, err := v.Get(fmt.Sprintf("Boot%04X", n))
+		if err != nil {
+			return
+		}
+		if e, err := ParseLoadOption(n, b); err == nil {
+			entries = append(entries, e)
+		}
+	}
+	for _, n := range order {
+		listed[n] = true
+		read(n)
+	}
+	for n := uint16(0); n < maxProbe; n++ {
+		if !listed[n] {
+			read(n)
+		}
+	}
+	return entries, listed, nil
+}
+
+// Dump describes the boot variables, one line each, for logs.
+func Dump(v Vars) []string {
+	var out []string
+	for _, name := range []string{"BootCurrent", "BootNext", "BootOrder"} {
+		b, err := v.Get(name)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			out = append(out, name+": not set")
+		case err != nil:
+			out = append(out, fmt.Sprintf("%s: %v", name, err))
+		default:
+			var nums []string
+			for i := 0; i+1 < len(b); i += 2 {
+				nums = append(nums, fmt.Sprintf("%04X", binary.LittleEndian.Uint16(b[i:])))
+			}
+			out = append(out, name+": "+strings.Join(nums, ","))
+		}
+	}
+	entries, listed, err := All(v)
+	if err != nil {
+		return append(out, "entries: "+err.Error())
+	}
+	for _, e := range entries {
+		line := e.Detail()
+		if !listed[e.Number] {
+			line += " (not in BootOrder)"
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// LoadOption builds an active EFI_LOAD_OPTION that starts file on a GPT
+// partition.
+func LoadOption(desc string, p Partition, file string) []byte {
+	le := binary.LittleEndian
+	hd := make([]byte, 42)
+	hd[0], hd[1] = 4, 1
+	le.PutUint16(hd[2:], 42)
+	le.PutUint32(hd[4:], p.Number)
+	le.PutUint64(hd[8:], p.StartLBA)
+	le.PutUint64(hd[16:], p.SizeLBA)
+	copy(hd[24:40], p.GUID[:])
+	hd[40], hd[41] = 2, 2 // GPT partition table, GUID signature
+	name := utf16.Encode([]rune(file + "\x00"))
+	fp := make([]byte, 4, 4+2*len(name))
+	fp[0], fp[1] = 4, 4
+	le.PutUint16(fp[2:], uint16(4+2*len(name)))
+	for _, c := range name {
+		fp = le.AppendUint16(fp, c)
+	}
+	path := append(append(hd, fp...), 0x7F, 0xFF, 4, 0)
+
+	b := make([]byte, 6)
+	le.PutUint32(b, 1) // LOAD_OPTION_ACTIVE
+	le.PutUint16(b[4:], uint16(len(path)))
+	for _, c := range utf16.Encode([]rune(desc)) {
+		b = le.AppendUint16(b, c)
+	}
+	b = append(b, 0, 0)
+	return append(b, path...)
+}
+
+// EnsureDiskEntry returns the load option that starts file on partition p,
+// creating it (as desc, at the lowest free number) when none exists. bcdboot
+// normally makes it, but not always from a network-booted WinPE.
+func EnsureDiskEntry(v Vars, desc string, p Partition, file string) (e Entry, created bool, err error) {
+	entries, _, err := All(v)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	used := map[uint16]bool{}
+	for _, e := range entries {
+		used[e.Number] = true
+		if e.Disk && e.Partition.GUID == p.GUID && strings.EqualFold(e.File, file) {
+			if !e.Active {
+				continue
+			}
+			return e, false, nil
+		}
+	}
+	n := uint16(0)
+	for used[n] {
+		n++
+	}
+	if n >= maxProbe {
+		return Entry{}, false, errors.New("no free Boot#### number")
+	}
+	b := LoadOption(desc, p, file)
+	if err := v.Set(fmt.Sprintf("Boot%04X", n), b); err != nil {
+		return Entry{}, false, err
+	}
+	e, err = ParseLoadOption(n, b)
+	return e, true, err
+}
+
+// First puts entry n at the front of BootOrder, keeping the rest in order
+// (profile bootOrderAfterDeploy: disk-first).
+func First(v Vars, n uint16) error {
+	order, err := bootOrder(v)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	next := []uint16{n}
+	for _, m := range order {
+		if m != n {
+			next = append(next, m)
+		}
+	}
+	return v.Set("BootOrder", encodeOrder(next))
 }

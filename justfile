@@ -28,9 +28,9 @@ lint:
 test:
     go test ./...
 
-# Run the server and the Vite dev server together (Ctrl+C stops both)
-dev:
-    ./scripts/dev.ps1
+# Run the server and the Vite dev server together (Ctrl+C stops both). Example: just dev -DataDir C:\netdeploy\data
+dev *args:
+    ./scripts/dev.ps1 {{args}}
 
 # Build the WinPE agents into ./dist (a server built without -tags agent reads them from there)
 agent:

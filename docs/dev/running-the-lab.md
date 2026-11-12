@@ -15,6 +15,62 @@ Since Phase 2 step 2, network services come from the stored settings
 A fresh data directory starts with no interfaces, so nothing answers PXE until
 you add one.
 
+## Setting up a lab host from scratch
+
+Written 2026-11-11 for a second Windows PC; the first lab host was set up
+piecemeal during Phases 1–4. Untested as a whole: note anything that differs.
+
+**Prerequisites:** Windows 11 with Hyper-V and its PowerShell module, Go
+1.27.3, `just`, PowerShell 7, Node with pnpm, git. `just setup` checks them,
+installs the web dependencies and generates code. wimlib: unzip the Windows
+release (`wimlib-1.14.x-windows-x86_64-bin.zip`) into `.tmp\wimlib`
+(git-ignored); `just dev` passes it to the server.
+
+**Disk space:** the content store keeps the uploaded ISO and the imported
+image (about 20 GB for one Win11 ISO) plus about 1 GB per boot image. If the
+repo's volume is short of space, put the data directory elsewhere:
+`just dev -DataDir C:\netdeploy\data` (or `-content` on the server).
+
+1. **Lab switch and VM** (elevated PowerShell 7, repo root):
+
+   ```powershell
+   just lab
+   ```
+
+   Creates the internal switch `NetDeployLab` with the host at
+   `10.77.0.1/24`, firewall rules on that adapter only (UDP 67/69/4011, TCP
+   80/443; add one if the content listener uses another port), and
+   `nd-client-01`: Gen 2, Secure Boot (`MicrosoftWindows`), vTPM, 4 GB
+   static memory, an 80 GB disk, network boot first. Check that nothing else
+   holds the ports: `Get-NetUDPEndpoint -LocalPort 67, 69` should be empty
+   (the Default Switch's ICS on its own address is fine).
+
+2. **Run the server and UI** (elevated PowerShell 7, for UDP 67/69):
+
+   ```powershell
+   just dev -DataDir C:\netdeploy\data
+   ```
+
+   Builds the agents and the server, then serves the UI at
+   http://localhost:5173 (admin API on https://127.0.0.1:8443).
+
+3. **Configure in the UI:**
+   - Settings: add `vEthernet (NetDeployLab)`, DHCP `full` with pool
+     `10.77.0.100`–`10.77.0.199` (`255.255.255.0`), TFTP on, HTTP on (port 80);
+     set a boot prompt password. Save.
+   - Images: upload the Win11 ISO; it imports when the upload finishes.
+   - Boot images: create one from that image (x64, server address
+     `http://10.77.0.1`, as suggested) and build it.
+   - Profiles: create one with an edition, the boot image, and make it the
+     default.
+   - Overview: the "Ready to network boot?" checklist should be all green.
+
+   The same steps through the API are in "Boot images end to end" and
+   "Deploying from the boot prompt" below.
+
+4. **Boot:** `Start-VM nd-client-01; vmconnect localhost nd-client-01`, then
+   as in "Deploying from the boot prompt".
+
 ## Hyper-V lab (`NetDeployLab`, host `10.77.0.1/24`)
 
 Status: **untested as written.** The same requests were tested on Linux
@@ -349,7 +405,7 @@ Continues from "Boot images end to end" (a built boot image, a profile made
 the default). Once:
 
 ```powershell
-# nd-client-01 needs a disk of at least 32 GB to install to (elevated).
+# Only for a VM without a disk of at least 32 GB (`just lab` VMs have 80 GB; elevated).
 New-VHD -Path "$env:PUBLIC\Documents\Hyper-V\Virtual hard disks\nd-client-01-os.vhdx" -SizeBytes 64GB -Dynamic
 Add-VMHardDiskDrive -VMName nd-client-01 -Path "$env:PUBLIC\Documents\Hyper-V\Virtual hard disks\nd-client-01-os.vhdx"
 

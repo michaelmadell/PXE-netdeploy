@@ -34,8 +34,8 @@ const KindBuild = "bootImage.build"
 // Defaults (BootImageInput).
 const (
 	DefaultSourceIndex    = 1
-	DefaultTFTPBlockSize  = 16384
-	DefaultTFTPWindowSize = 16
+	DefaultTFTPBlockSize  = 8192 // the server's default caps (spec)
+	DefaultTFTPWindowSize = 8
 )
 
 // BCDOptions are what a boot image's BCD depends on.

@@ -2720,23 +2720,24 @@ components:
           description: |
             Written into the BCD as what Boot Manager *requests* when it downloads
             boot.sdi and boot.wim. The server answers with the lower of this and
-            `Settings.tftp`, so the defaults ask generously and the server caps (which
-            change without a rebuild) decide. Lower these only for hardware that must
-            request less, e.g. 1456 on a network that drops IP fragments. Changing them
-            needs a rebuild. Tested 2026-11-05: a BCD asking 16384/16 capped to 8192/8
-            boots (Phase 1 findings).
+            `Settings.tftp`. The defaults match the server's default caps (8192/8, the
+            fastest setting that never lost a packet in Phase 1), so a new setup has no
+            `tftp_capped_by_server` warning. Raise them, and the caps, only where the
+            network allows; lower them for hardware that must request less, e.g. 1456 on a
+            network that drops IP fragments. Changing them needs a rebuild. (Until
+            2026-11-16 the defaults were 16384/16, always capped to 8192/8.)
           properties:
             blockSize:
               type: integer
               minimum: 512
               maximum: 16384
-              default: 16384
+              default: 8192
               description: "`ramdisktftpblocksize`."
             windowSize:
               type: integer
               minimum: 1
               maximum: 64
-              default: 16
+              default: 8
               description: "`ramdisktftpwindowsize`."
         produceHttpBootIso:
           type: boolean

@@ -23,6 +23,7 @@ type Config struct {
 	Architectures Architectures `json:"architectures"`
 	Storage       Storage       `json:"storage"`
 	Backup        Backup        `json:"backup"`
+	Deployments   Deployments   `json:"deployments"`
 }
 
 // Admin is the admin API + UI listener.
@@ -122,6 +123,12 @@ type Storage struct {
 	UploadExpiryHours int   `json:"uploadExpiryHours"`
 }
 
+// Deployments are the deployment timeouts (ADR 0026).
+type Deployments struct {
+	ArmedExpiryHours  int `json:"armedExpiryHours"`
+	InactivityMinutes int `json:"inactivityMinutes"`
+}
+
 // Backup is backup.* (ADR 0020).
 type Backup struct {
 	Schedule backup.Schedule `json:"schedule"`
@@ -153,7 +160,8 @@ func Defaults() Config {
 		Architectures: Architectures{
 			BIOS: false, UEFIX64: true, UEFIArm64: true, HTTPBoot: true,
 		},
-		Storage: Storage{ReserveBytes: DefaultReserveBytes, UploadExpiryHours: 24},
+		Storage:     Storage{ReserveBytes: DefaultReserveBytes, UploadExpiryHours: 24},
+		Deployments: Deployments{ArmedExpiryHours: 72, InactivityMinutes: 30},
 		Backup: Backup{
 			Schedule:  backup.Schedule{Frequency: backup.Disabled, Time: "02:00", DaysOfWeek: []string{"sun"}, DayOfMonth: 1},
 			Retention: 5,

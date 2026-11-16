@@ -247,6 +247,11 @@ func (s *Store) DeleteImage(ctx context.Context, id string) error {
 		if err := inUse(ctx, t, `SELECT count(*) FROM profiles WHERE install_image_id = ?`, id, ErrImageInUse); err != nil {
 			return err
 		}
+		// An armed deployment's snapshot names it (ADR 0026).
+		if err := inUse(ctx, t, `SELECT count(*) FROM deployments WHERE status = 'pending'
+			AND json_extract(profile_snapshot, '$.installImageId') = ?`, id, ErrImageInUse); err != nil {
+			return err
+		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM images WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("store: delete image: %w", err)
 		}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,6 +24,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
+	"github.com/michaelmadell/pxe-netdeploy/internal/unattend"
 )
 
 // The agent API (ADR 0025). Bearer tokens and the caller's address reach
@@ -229,15 +231,22 @@ func (s *Server) AgentCheckIn(ctx context.Context, req api.AgentCheckInRequestOb
 			break
 		}
 	}
-	if !found {
-		ipStr := ip.String()
-		sg := store.Sighting{MAC: macs[0], SMBIOSUUID: b.SmbiosUuid, Serial: b.Serial}
-		if ip.IsValid() {
-			sg.IP = &ipStr
-		}
-		if c, _, err = s.store.RecordSighting(ctx, sg); err != nil {
-			return nil, err
-		}
+	// Create the client, or fill in hardware details it lacks (a client
+	// first seen by DHCP has no serial): computer name patterns use them.
+	mac := macs[0]
+	if found {
+		mac = c.MAC
+	}
+	ipStr := ip.String()
+	sg := store.Sighting{MAC: mac, SMBIOSUUID: b.SmbiosUuid, Serial: b.Serial}
+	if ip.IsValid() {
+		sg.IP = &ipStr
+	}
+	c, created, err := s.store.RecordSighting(ctx, sg)
+	if err != nil {
+		return nil, err
+	}
+	if created {
 		s.clientEvent(c.ID, c.MAC, "created")
 	}
 	s.agent.recordCheckIn(c.ID, c.MAC, ip)
@@ -429,9 +438,16 @@ func (s *Server) AgentStartDeployment(ctx context.Context, req api.AgentStartDep
 	if err != nil {
 		return nil, err
 	}
-	snap, err := profileSnapshot(p)
+	c, err := s.store.Client(ctx, sess.ClientID)
 	if err != nil {
 		return nil, err
+	}
+	nd, prob, err := s.prepareDeployment(ctx, c, p, store.OriginBootPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if prob != nil {
+		return api.AgentStartDeployment422ApplicationProblemPlusJSONResponse(*prob), nil
 	}
 	// Supersede whatever is active (ADR 0013).
 	if d, err := s.store.ActiveDeployment(ctx, sess.ClientID); err == nil {
@@ -443,8 +459,7 @@ func (s *Server) AgentStartDeployment(ctx context.Context, req api.AgentStartDep
 			s.deploymentEvent(d)
 		}
 	}
-	d, err := s.store.CreateDeployment(ctx, store.NewDeployment{ClientID: sess.ClientID, ProfileID: p.ID, ProfileSnapshot: snap,
-		Origin: "boot-prompt", Running: true})
+	d, err := s.store.CreateDeployment(ctx, nd)
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +591,132 @@ func (s *Server) buildPlan(ctx context.Context, d store.Deployment) (api.AgentDe
 		}
 		plan.OsDrivers = &out
 	}
+
+	// The built-in unattend and identity files (ADR 0026).
+	u := apiBase + "/agent/unattend"
+	dest := api.AgentDeploymentPlanUnattendDestinationPanther
+	plan.UnattendUrl, plan.UnattendDestination = &u, &dest
+	values, err := s.deploymentSecretValues(ctx, d.ID)
+	if err != nil {
+		return api.AgentDeploymentPlan{}, nil, err
+	}
+	for _, v := range values {
+		if v.kind != "odj-blob" {
+			continue
+		}
+		sum := sha256.Sum256(v.value)
+		idFiles := []struct {
+			ContentUrl string                                   `json:"contentUrl"`
+			Kind       api.AgentDeploymentPlanIdentityFilesKind `json:"kind"`
+			Sha256     string                                   `json:"sha256"`
+		}{{ContentUrl: apiBase + "/agent/identity/odj-blob", Kind: api.AgentDeploymentPlanIdentityFilesKindOdjBlob, Sha256: hex.EncodeToString(sum[:])}}
+		plan.IdentityFiles = &idFiles
+	}
 	return plan, files, nil
+}
+
+type secretValue struct {
+	kind  string
+	value []byte
+}
+
+// deploymentSecretValues decrypts a deployment's secret copies, by secret id.
+func (s *Server) deploymentSecretValues(ctx context.Context, id string) (map[string]secretValue, error) {
+	copies, err := s.store.DeploymentSecrets(ctx, id)
+	if err != nil || len(copies) == 0 {
+		return nil, err
+	}
+	if s.vault == nil {
+		return nil, errors.New("secrets are not available")
+	}
+	r, err := s.vault.Keys().Ring(false)
+	if err != nil {
+		return nil, fmt.Errorf("secrets key: %w", err)
+	}
+	out := map[string]secretValue{}
+	for _, c := range copies {
+		if c.KeyFingerprint != r.Fingerprint() {
+			return nil, fmt.Errorf("secret %s was sealed with another key; import the key export", c.SecretID)
+		}
+		p, err := r.Open(c.SecretID, c.Kind, c.ValueVersion, c.Value)
+		if err != nil {
+			return nil, fmt.Errorf("secret %s: %w", c.SecretID, err)
+		}
+		out[c.SecretID] = secretValue{c.Kind, p}
+	}
+	return out, nil
+}
+
+// AgentGetUnattend implements GET /agent/unattend: rendered on each
+// request, never stored (ADR 0026).
+func (s *Server) AgentGetUnattend(ctx context.Context, _ api.AgentGetUnattendRequestObject) (api.AgentGetUnattendResponseObject, error) {
+	t, ok, err := s.deploymentToken(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return api.AgentGetUnattend401ApplicationProblemPlusJSONResponse{ProblemApplicationProblemPlusJSONResponse: api.ProblemApplicationProblemPlusJSONResponse(agentUnauthorized())}, nil
+	}
+	d, err := s.store.Deployment(ctx, *t.DeploymentID)
+	if err != nil {
+		return nil, err
+	}
+	p, err := unattend.Parse(d.ProfileSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	values, err := s.deploymentSecretValues(ctx, d.ID)
+	if err != nil {
+		return nil, err
+	}
+	in := unattend.Input{Arch: s.unattendArch(ctx, d), ComputerName: d.ComputerName, Secrets: map[string][]byte{}}
+	for id, v := range values {
+		in.Secrets[id] = v.value
+	}
+	b, err := unattend.Render(p, in)
+	if err != nil {
+		return nil, err
+	}
+	return api.AgentGetUnattend200ApplicationxmlResponse{Body: bytes.NewReader(b), ContentLength: int64(len(b))}, nil
+}
+
+// unattendArch is the install image's architecture as unattend names it.
+func (s *Server) unattendArch(ctx context.Context, d store.Deployment) string {
+	var snap struct {
+		InstallImageID string `json:"installImageId"`
+	}
+	json.Unmarshal(d.ProfileSnapshot, &snap)
+	if im, err := s.store.Image(ctx, snap.InstallImageID); err == nil {
+		var det struct {
+			Architecture string `json:"architecture"`
+		}
+		if json.Unmarshal(im.Details, &det) == nil && det.Architecture == "arm64" {
+			return "arm64"
+		}
+	}
+	return "amd64"
+}
+
+// AgentGetIdentityFile implements GET /agent/identity/{kind}.
+func (s *Server) AgentGetIdentityFile(ctx context.Context, req api.AgentGetIdentityFileRequestObject) (api.AgentGetIdentityFileResponseObject, error) {
+	t, ok, err := s.deploymentToken(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return api.AgentGetIdentityFile401ApplicationProblemPlusJSONResponse{ProblemApplicationProblemPlusJSONResponse: api.ProblemApplicationProblemPlusJSONResponse(agentUnauthorized())}, nil
+	}
+	values, err := s.deploymentSecretValues(ctx, *t.DeploymentID)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range values {
+		if v.kind == req.Kind {
+			return api.AgentGetIdentityFile200ApplicationoctetStreamResponse{Body: bytes.NewReader(v.value), ContentLength: int64(len(v.value))}, nil
+		}
+	}
+	return api.AgentGetIdentityFile404ApplicationProblemPlusJSONResponse(newProblem(http.StatusNotFound, "not_found", "Not found",
+		"This deployment has no "+req.Kind+".", nil)), nil
 }
 
 func agentFileURL(sha string) string { return apiBase + "/agent/files/" + sha }
@@ -594,17 +734,33 @@ func underDir(p, dir string) (string, bool) {
 
 // ---------------------------------------------------------------- deployment calls
 
-func (s *Server) deploymentToken(ctx context.Context) (store.AgentToken, bool, error) {
-	t, err := s.store.DeploymentToken(ctx, tokenHash(bearer(ctx)))
+// cancelGrace is how long a cancelled deployment's token still works for
+// the agent's logs and acknowledgement (ADR 0026).
+const cancelGrace = 30 * time.Minute
+
+// deploymentToken checks the bearer token and records the agent's request
+// (the inactivity timeout). allowCancelled also accepts a recently
+// cancelled deployment's token.
+func (s *Server) deploymentToken(ctx context.Context, allowCancelled bool) (store.AgentToken, bool, error) {
+	var grace time.Duration
+	if allowCancelled {
+		grace = cancelGrace
+	}
+	t, err := s.store.DeploymentToken(ctx, tokenHash(bearer(ctx)), grace)
 	if errors.Is(err, store.ErrTokenInvalid) {
 		return t, false, nil
+	}
+	if err == nil {
+		if terr := s.store.TouchDeployment(ctx, *t.DeploymentID); terr != nil {
+			slog.Warn("record agent activity", "svc", "agent", "deployment_id", *t.DeploymentID, "err", terr)
+		}
 	}
 	return t, err == nil, err
 }
 
 // AgentGetDeployment implements GET /agent/deployment.
 func (s *Server) AgentGetDeployment(ctx context.Context, _ api.AgentGetDeploymentRequestObject) (api.AgentGetDeploymentResponseObject, error) {
-	t, ok, err := s.deploymentToken(ctx)
+	t, ok, err := s.deploymentToken(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -624,12 +780,16 @@ func (s *Server) AgentGetDeployment(ctx context.Context, _ api.AgentGetDeploymen
 
 // AgentReportProgress implements POST /agent/progress.
 func (s *Server) AgentReportProgress(ctx context.Context, req api.AgentReportProgressRequestObject) (api.AgentReportProgressResponseObject, error) {
-	t, ok, err := s.deploymentToken(ctx)
+	t, ok, err := s.deploymentToken(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return api.AgentReportProgress401ApplicationProblemPlusJSONResponse(agentUnauthorized()), nil
+	}
+	if d, err := s.store.Deployment(ctx, *t.DeploymentID); err == nil && d.Status == store.StatusCancelled {
+		return api.AgentReportProgress409ApplicationProblemPlusJSONResponse(newProblem(http.StatusConflict, "deployment_cancelled",
+			"Deployment cancelled", "Finish the command in progress, stop, upload the logs and call complete.", nil)), nil
 	}
 	if req.Body == nil {
 		return api.AgentReportProgress400ApplicationProblemPlusJSONResponse{ProblemApplicationProblemPlusJSONResponse: agentBadRequest("A JSON body is required.")}, nil
@@ -652,7 +812,7 @@ func (s *Server) AgentReportProgress(ctx context.Context, req api.AgentReportPro
 
 // AgentUploadLogs implements POST /agent/logs.
 func (s *Server) AgentUploadLogs(ctx context.Context, req api.AgentUploadLogsRequestObject) (api.AgentUploadLogsResponseObject, error) {
-	t, ok, err := s.deploymentToken(ctx)
+	t, ok, err := s.deploymentToken(ctx, true)
 	if err != nil {
 		return nil, err
 	}
@@ -685,6 +845,17 @@ func (s *Server) AgentComplete(ctx context.Context, req api.AgentCompleteRequest
 	if err != nil {
 		return nil, err
 	}
+	// A cancelled deployment: this is the agent's acknowledgement (ADR 0026).
+	if cur, err := s.store.Deployment(ctx, *t.DeploymentID); err == nil && cur.Status == store.StatusCancelled {
+		if cur.FinishedAt == nil || time.Since(*cur.FinishedAt) > cancelGrace {
+			return api.AgentComplete401ApplicationProblemPlusJSONResponse(agentUnauthorized()), nil
+		}
+		if err := s.store.RevokeAgentToken(ctx, t.Hash); err != nil {
+			return nil, err
+		}
+		slog.Info("agent stopped the cancelled deployment", "svc", "agent", "deployment_id", cur.ID, "message", ptrOr(req.Body.Message, ""))
+		return api.AgentComplete204Response{}, nil
+	}
 	status := store.StatusFailed
 	if req.Body.Result == api.AgentCompleteJSONBodyResultSucceeded {
 		status = store.StatusSucceeded
@@ -711,7 +882,7 @@ func (s *Server) AgentFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	t, ok, err := s.deploymentToken(ctx)
+	t, ok, err := s.deploymentToken(ctx, false)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "internal_error", "Internal error", "")
 		return

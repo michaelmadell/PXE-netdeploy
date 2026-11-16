@@ -27,6 +27,8 @@ type ClientInput struct {
 	ProfileID  *string
 	Variables  map[string]string
 	ReservedIP *string
+	// ODJBlobSecretID is secretRefs.odjBlob: an odj-blob secret.
+	ODJBlobSecretID *string
 }
 
 // Client is a stored client.
@@ -59,7 +61,7 @@ func NormalizeMAC(mac string) (string, error) {
 }
 
 const clientCols = `id, mac, smbios_uuid, serial, hostname, profile_id, variables, reserved_ip,
-	source, last_seen_at, last_ip, last_arch, version, created_at, updated_at`
+	source, last_seen_at, last_ip, last_arch, version, created_at, updated_at, odj_blob_secret_id`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -67,16 +69,17 @@ func scanClient(r rowScanner) (Client, error) {
 	var (
 		c                                               Client
 		uuid, serial, host, profile, reserved, ip, arch sql.NullString
+		odj                                             sql.NullString
 		vars                                            string
 		seen                                            sql.NullInt64
 		created, updated                                int64
 	)
 	if err := r.Scan(&c.ID, &c.MAC, &uuid, &serial, &host, &profile, &vars, &reserved,
-		&c.Source, &seen, &ip, &arch, &c.Version, &created, &updated); err != nil {
+		&c.Source, &seen, &ip, &arch, &c.Version, &created, &updated, &odj); err != nil {
 		return Client{}, err
 	}
 	c.SMBIOSUUID, c.Serial, c.Hostname = fromNullStr(uuid), fromNullStr(serial), fromNullStr(host)
-	c.ProfileID, c.ReservedIP = fromNullStr(profile), fromNullStr(reserved)
+	c.ProfileID, c.ReservedIP, c.ODJBlobSecretID = fromNullStr(profile), fromNullStr(reserved), fromNullStr(odj)
 	c.LastIP, c.LastArch, c.LastSeenAt = fromNullStr(ip), fromNullStr(arch), fromNullMS(seen)
 	c.CreatedAt, c.UpdatedAt = fromMS(created), fromMS(updated)
 	if err := json.Unmarshal([]byte(vars), &c.Variables); err != nil {
@@ -123,10 +126,10 @@ func (s *Store) CreateClient(ctx context.Context, in ClientInput) (Client, error
 	now := ms(s.now())
 	id := newID()
 	_, err = s.w.ExecContext(ctx, `INSERT INTO clients
-		(id, mac, smbios_uuid, serial, hostname, profile_id, variables, reserved_ip, source, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, mac, smbios_uuid, serial, hostname, profile_id, variables, reserved_ip, source, created_at, updated_at, odj_blob_secret_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, in.MAC, nullStr(in.SMBIOSUUID), nullStr(in.Serial), nullStr(in.Hostname), nullStr(in.ProfileID),
-		vars, nullStr(in.ReservedIP), SourceManual, now, now)
+		vars, nullStr(in.ReservedIP), SourceManual, now, now, nullStr(in.ODJBlobSecretID))
 	if err != nil {
 		return Client{}, clientWriteErr("create", err)
 	}
@@ -246,9 +249,9 @@ func (s *Store) ReplaceClient(ctx context.Context, id string, in ClientInput, if
 			return ErrVersionMismatch
 		}
 		_, err = t.ExecContext(ctx, `UPDATE clients SET mac = ?, smbios_uuid = ?, serial = ?, hostname = ?,
-			profile_id = ?, variables = ?, reserved_ip = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+			profile_id = ?, variables = ?, reserved_ip = ?, odj_blob_secret_id = ?, version = version + 1, updated_at = ? WHERE id = ?`,
 			in.MAC, nullStr(in.SMBIOSUUID), nullStr(in.Serial), nullStr(in.Hostname), nullStr(in.ProfileID),
-			vars, nullStr(in.ReservedIP), ms(s.now()), id)
+			vars, nullStr(in.ReservedIP), nullStr(in.ODJBlobSecretID), ms(s.now()), id)
 		if err != nil {
 			return clientWriteErr("replace", err)
 		}

@@ -187,6 +187,15 @@ func (s *Store) DeleteSecret(ctx context.Context, id string) error {
 		if n > 0 {
 			return fmt.Errorf("%w: the backup destination uses it", ErrSecretInUse)
 		}
+		var name string
+		if err := t.QueryRowContext(ctx, `SELECT mac FROM clients WHERE odj_blob_secret_id = ? LIMIT 1`, id).Scan(&name); err == nil {
+			return fmt.Errorf("%w: client %s uses it", ErrSecretInUse, name)
+		}
+		quoted := `"` + id + `"`
+		if err := t.QueryRowContext(ctx, `SELECT name FROM profiles WHERE instr(identity, ?) > 0 OR instr(coalesce(os_settings, ''), ?) > 0 LIMIT 1`,
+			quoted, quoted).Scan(&name); err == nil {
+			return fmt.Errorf("%w: profile %q uses it", ErrSecretInUse, name)
+		}
 		_, err := t.ExecContext(ctx, `DELETE FROM secrets WHERE id = ?`, id)
 		return err
 	})

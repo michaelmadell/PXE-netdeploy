@@ -59,6 +59,12 @@ func (s *Server) CreateClient(ctx context.Context, req api.CreateClientRequestOb
 			newProblem(http.StatusBadRequest, "invalid_request", "Invalid request", "A JSON body is required.", nil))}, nil
 	}
 	in, fields := clientFromAPI(*req.Body)
+	if len(fields) == 0 {
+		var err error
+		if fields, err = s.checkClientSecrets(ctx, in); err != nil {
+			return nil, err
+		}
+	}
 	if len(fields) > 0 {
 		return api.CreateClient422ApplicationProblemPlusJSONResponse(unprocessable(fields)), nil
 	}
@@ -99,6 +105,12 @@ func (s *Server) ReplaceClient(ctx context.Context, req api.ReplaceClientRequest
 		return api.ReplaceClient412ApplicationProblemPlusJSONResponse(etagMismatch()), nil
 	}
 	in, fields := clientFromAPI(*req.Body)
+	if len(fields) == 0 {
+		var err error
+		if fields, err = s.checkClientSecrets(ctx, in); err != nil {
+			return nil, err
+		}
+	}
 	if len(fields) > 0 {
 		return api.ReplaceClient422ApplicationProblemPlusJSONResponse(unprocessable(fields)), nil
 	}
@@ -168,8 +180,8 @@ func clientFromAPI(in api.ClientInput) (store.ClientInput, []fieldError) {
 			out.ReservedIP = &canon
 		}
 	}
-	if in.SecretRefs != nil && in.SecretRefs.OdjBlob != nil {
-		fields = append(fields, fieldError{"secretRefs.odjBlob", "must be null until secrets exist (Phase 5)"})
+	if in.SecretRefs != nil {
+		out.ODJBlobSecretID = in.SecretRefs.OdjBlob
 	}
 	return out, fields
 }
@@ -181,6 +193,11 @@ func clientToAPI(c store.Client) api.Client {
 		Id: &c.ID, Etag: &etag, CreatedAt: &c.CreatedAt, UpdatedAt: &c.UpdatedAt,
 		Mac: c.MAC, Hostname: c.Hostname, Serial: c.Serial, ProfileId: c.ProfileID, ReservedIp: c.ReservedIP,
 		Source: &source, LastSeenAt: c.LastSeenAt, LastIp: c.LastIP,
+	}
+	if c.ODJBlobSecretID != nil {
+		out.SecretRefs = &struct {
+			OdjBlob *string `json:"odjBlob"`
+		}{OdjBlob: c.ODJBlobSecretID}
 	}
 	vars := api.Variables(c.Variables)
 	if vars == nil {
@@ -237,4 +254,22 @@ func unprocessable(fields []fieldError) api.Problem {
 func (s *Server) clientEvent(id, mac, change string) {
 	s.events.Publish(events.Event{Type: events.ClientUpdated, ResourceID: id,
 		Data: map[string]string{"id": id, "mac": mac, "change": change}})
+}
+
+// checkClientSecrets: secretRefs.odjBlob names an odj-blob secret.
+func (s *Server) checkClientSecrets(ctx context.Context, in store.ClientInput) ([]fieldError, error) {
+	if in.ODJBlobSecretID == nil {
+		return nil, nil
+	}
+	x, err := s.store.Secret(ctx, *in.ODJBlobSecretID)
+	if errors.Is(err, store.ErrNotFound) {
+		return []fieldError{{"secretRefs.odjBlob", "no such secret"}}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if x.Kind != "odj-blob" {
+		return []fieldError{{"secretRefs.odjBlob", "must be a secret of kind odj-blob, not " + x.Kind}}, nil
+	}
+	return nil, nil
 }

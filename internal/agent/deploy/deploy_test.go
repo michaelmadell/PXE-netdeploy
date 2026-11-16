@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -64,6 +65,10 @@ func TestInstall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/unattend" {
 			w.Write([]byte("<unattend/>"))
+			return
+		}
+		if r.URL.Path == "/odj" {
+			w.Write([]byte("ODJBLOB"))
 			return
 		}
 		w.Write([]byte(files[filepath.Base(r.URL.Path)]))
@@ -128,6 +133,46 @@ func TestInstall(t *testing.T) {
 	if len(run.cmds) != 2 || strings.Contains(run.cmds[1], "/bootex") {
 		t.Errorf("fallback: %v", run.cmds)
 	}
+	// Offline domain join: djoin against the applied Windows, blob deleted.
+	odjSum := sha256.Sum256([]byte("ODJBLOB"))
+	odjPlan := plan
+	odjPlan.IdentityFiles = append(odjPlan.IdentityFiles, struct {
+		Kind       string `json:"kind"`
+		ContentURL string `json:"contentUrl"`
+		SHA256     string `json:"sha256"`
+	}{"odj-blob", "/odj", hex.EncodeToString(odjSum[:])})
+	run.cmds, run.fail = nil, map[string]bool{}
+	if err := joinOffline(context.Background(), e, odjPlan, drive("W")); err != nil {
+		t.Fatal(err)
+	}
+	blob := filepath.Join(e.Work, "odj.txt")
+	if len(run.cmds) != 1 || run.cmds[0] != "djoin.exe /requestODJ /loadfile "+blob+" /windowspath "+filepath.Join(drive("W"), "Windows") {
+		t.Errorf("djoin: %v", run.cmds)
+	}
+	if _, err := os.Stat(blob); err == nil {
+		t.Error("ODJ blob left behind")
+	}
+	odjPlan.IdentityFiles[0].SHA256 = strings.Repeat("0", 64)
+	if err := joinOffline(context.Background(), e, odjPlan, drive("W")); err == nil {
+		t.Error("ODJ blob with the wrong hash accepted")
+	}
+
+	// Cancelled while DISM applies the image: the apply finishes, nothing
+	// after it starts.
+	stop, cancel := context.WithCancel(context.Background())
+	e.Stop = stop
+	run.cmds, run.fail = nil, map[string]bool{}
+	apply := run.onApply
+	run.onApply = func() { apply(); cancel() }
+	err := Install(context.Background(), e, plan, disk.Disk{Number: 2})
+	if !errors.Is(err, ErrCancelled) || !strings.Contains(err.Error(), "injecting-drivers") {
+		t.Errorf("cancelled: %v", err)
+	}
+	if len(run.cmds) != 2 || !strings.Contains(run.cmds[1], "/Apply-Image") {
+		t.Errorf("commands after a cancel: %v", run.cmds)
+	}
+	e.Stop, run.onApply = nil, apply
+
 	// A failing step stops the install and names the stage.
 	run.cmds, run.fail = nil, map[string]bool{"diskpart": true}
 	if err := Install(context.Background(), e, plan, disk.Disk{}); err == nil || !strings.HasPrefix(err.Error(), "partitioning:") {

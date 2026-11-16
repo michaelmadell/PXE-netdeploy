@@ -24,10 +24,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/agent/client"
@@ -72,7 +74,7 @@ func main() {
 	a.log = slog.New(a.logs)
 	slog.SetDefault(a.log)
 	a.con.Screen("Starting")
-	a.log.Info("netdeploy agent starting", "version", version)
+	a.log.Info("netdeploy agent starting", "version", version, "console", consoleSize())
 
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {
@@ -299,12 +301,59 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 	if plan.Disk != nil {
 		explicit = plan.Disk.TargetDiskIndex
 	}
-	report := func(stage string, pct int, msg string) {
-		a.con.Progress("Deploying", stage, pct, msg)
-		if err := a.client.Progress(ctx, wire.Progress{Stage: stage, Percent: pct, Message: msg}); err != nil {
+	// A cancel on the server ends stop (ADR 0026): the command in progress
+	// finishes, then the agent stops. The server says so in its answer to a
+	// progress report, which goes out at least once a minute.
+	stopCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	var (
+		mu   sync.Mutex
+		last wire.Progress
+	)
+	send := func(p wire.Progress) {
+		err := a.client.Progress(ctx, p)
+		var ae *client.APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusConflict && ae.Code == "deployment_cancelled" {
+			if stopCtx.Err() == nil {
+				a.log.Warn("the deployment was cancelled on the server: stopping once the current step's command finishes")
+				a.con.Banner("Cancelled on the server: stopping once the current command finishes.")
+			}
+			stop()
+			return
+		}
+		if err != nil {
 			a.log.Warn("progress report failed", "err", err)
 		}
 	}
+	report := func(stage string, pct int, msg string) {
+		a.con.Progress("Deploying", stage, pct, msg)
+		p := wire.Progress{Stage: stage, Percent: pct, Message: msg}
+		mu.Lock()
+		last = p
+		mu.Unlock()
+		send(p)
+	}
+	keepalive := make(chan struct{})
+	defer close(keepalive)
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-keepalive:
+				return
+			case <-t.C:
+				mu.Lock()
+				p := last
+				mu.Unlock()
+				if p.Stage != "" {
+					send(p)
+				}
+			}
+		}
+	}()
+	a.con.SetHeader(header)
+	a.log.Info("deployment starting", "deployment_id", plan.DeploymentID, "console", consoleSize())
 	report(wire.StageCheckedIn, 0, "Deployment "+plan.DeploymentID)
 	a.logFirmware("before the deployment")
 	target, err := disk.Select(a.disks, explicit)
@@ -317,8 +366,11 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 		if wiped, perr = disk.PartitionGUIDs(target.Number); perr != nil {
 			a.log.Warn("read the target disk's partitions; stale boot entries stay", "err", perr)
 		}
-		env := deploy.Env{Client: a.client, Run: deploy.Exec{Log: a.log}, Log: a.log, Report: report, Work: a.dir}
+		env := deploy.Env{Client: a.client, Run: deploy.Exec{Log: a.log}, Log: a.log, Report: report, Work: a.dir, Stop: stopCtx}
 		err = deploy.Install(ctx, env, plan, target)
+	}
+	if stopCtx.Err() != nil || errors.Is(err, deploy.ErrCancelled) {
+		return a.cancelled(ctx, err)
 	}
 	if err != nil {
 		a.log.Error("deployment failed", "err", err)
@@ -346,6 +398,38 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 	time.Sleep(5 * time.Second)
 	reboot()
 	return nil
+}
+
+// cancelled ends a deployment cancelled on the server: no boot order
+// change, logs uploaded, the cancel acknowledged, then a restart.
+func (a *agent) cancelled(ctx context.Context, err error) error {
+	where := "after the last step"
+	if err != nil {
+		where = err.Error()
+	}
+	a.log.Warn("deployment stopped: cancelled on the server", "at", where)
+	a.logs.flush()
+	if cerr := a.client.Complete(ctx, false, "cancelled on the server; stopped: "+where); cerr != nil {
+		a.log.Warn("acknowledge the cancel", "err", cerr)
+	}
+	a.con.Screen("Deployment cancelled")
+	a.con.Banner("The deployment was cancelled on the server.")
+	a.con.Line("The disk may be partitioned or partly written and won't boot until it is deployed again.")
+	if !inWinPE() {
+		return nil
+	}
+	a.con.Line("Press any key to restart (it restarts by itself in 2 minutes).")
+	a.con.WaitKey(2 * time.Minute)
+	reboot()
+	return nil
+}
+
+// consoleSize describes the console window and buffer, for logs.
+func consoleSize() string {
+	if cols, rows, bc, br, ok := ui.Size(); ok {
+		return fmt.Sprintf("%dx%d (buffer %dx%d)", cols, rows, bc, br)
+	}
+	return "not a console"
 }
 
 // bootLocal sets BootNext to the local disk's boot manager and reboots, or

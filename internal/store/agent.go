@@ -60,13 +60,17 @@ func (s *Store) UseSessionToken(ctx context.Context, hash string) (AgentToken, e
 
 // DeploymentToken returns a valid deployment token's row: unexpired, and its
 // deployment running. ErrTokenInvalid.
-func (s *Store) DeploymentToken(ctx context.Context, hash string) (AgentToken, error) {
+func (s *Store) DeploymentToken(ctx context.Context, hash string, cancelledWithin time.Duration) (AgentToken, error) {
 	var t AgentToken
 	var dep string
 	var exp int64
+	// cancelledWithin > 0 also accepts a deployment cancelled that recently,
+	// for the agent's logs and acknowledgement (ADR 0026).
 	err := s.r.QueryRowContext(ctx, `SELECT t.client_id, t.deployment_id, t.expires_at FROM agent_tokens t
 		JOIN deployments d ON d.id = t.deployment_id
-		WHERE t.hash = ? AND t.kind = 'deployment' AND d.status = 'running'`, hash).Scan(&t.ClientID, &dep, &exp)
+		WHERE t.hash = ? AND t.kind = 'deployment' AND (d.status = 'running'
+			OR (? > 0 AND d.status = 'cancelled' AND d.finished_at >= ?))`,
+		hash, cancelledWithin.Milliseconds(), ms(s.now().Add(-cancelledWithin))).Scan(&t.ClientID, &dep, &exp)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && exp <= ms(s.now())) {
 		return AgentToken{}, ErrTokenInvalid
 	}
@@ -262,4 +266,10 @@ func (s *Store) AgentTokenAny(ctx context.Context, hash string) (AgentToken, err
 	}
 	t.Hash, t.DeploymentID, t.ExpiresAt = hash, fromNullStr(dep), fromMS(exp)
 	return t, nil
+}
+
+// RevokeAgentToken makes a token unusable (expired now).
+func (s *Store) RevokeAgentToken(ctx context.Context, hash string) error {
+	_, err := s.w.ExecContext(ctx, `UPDATE agent_tokens SET expires_at = ? WHERE hash = ?`, ms(s.now()), hash)
+	return err
 }

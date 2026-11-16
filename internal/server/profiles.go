@@ -59,6 +59,12 @@ func (s *Server) checkProfile(ctx context.Context, in store.ProfileInput) (*api.
 	if in.InstallMethod == "smb" {
 		return profileProblem(http.StatusUnprocessableEntity, "not_implemented", "Not implemented", "installMethod smb arrives with the agent's SMB install (Phase 4 decision 4)."), nil
 	}
+	var mode struct {
+		Mode string `json:"mode"`
+	}
+	if json.Unmarshal(in.Identity, &mode) == nil && mode.Mode == "entra" {
+		return profileProblem(http.StatusUnprocessableEntity, "not_implemented", "Not implemented", "Identity entra arrives in Phase 5 (ADR 0026)."), nil
+	}
 	if in.UnattendTemplateID != nil {
 		return profileProblem(http.StatusUnprocessableEntity, "not_implemented", "Not implemented", "Unattend templates arrive in Phase 5; use null for the built-in template."), nil
 	}

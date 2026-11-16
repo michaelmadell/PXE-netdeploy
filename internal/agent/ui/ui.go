@@ -15,13 +15,21 @@ import (
 
 // Console is the WinPE console.
 type Console struct {
-	out   io.Writer
-	keys  chan byte
-	vt    bool
-	once  sync.Once
-	mu    sync.Mutex
-	title string
-	lines []string // log tail shown under progress
+	out    io.Writer
+	keys   chan byte
+	vt     bool
+	once   sync.Once
+	mu     sync.Mutex
+	title  string
+	lines  []string // log tail shown under progress
+	header []string // shown above progress
+}
+
+// SetHeader sets lines shown at the top of the progress screen.
+func (c *Console) SetHeader(lines []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.header = append([]string{}, lines...)
 }
 
 // New returns the console on stdin/stdout, in raw mode.
@@ -206,10 +214,16 @@ func (c *Console) WaitKey(d time.Duration) {
 func (c *Console) Progress(heading, stage string, percent int, message string) {
 	c.mu.Lock()
 	lines := append([]string{}, c.lines...)
+	header := append([]string{}, c.header...)
 	c.mu.Unlock()
 	c.Screen(heading)
-	bar := strings.Repeat("#", percent/5) + strings.Repeat(".", 20-percent/5)
-	c.printf("%-18s [%s] %3d%%\n%s\n\n", stage, bar, percent, message)
+	for _, h := range header {
+		c.printf("%s\n", h)
+	}
+	if len(header) > 0 {
+		c.printf("\n")
+	}
+	c.printf("%-18s %s %3d%%\n%s\n\n", stage, Bar(percent, barWidth, c.vt), percent, message)
 	for _, l := range lines {
 		c.printf("%s\n", l)
 	}
@@ -223,4 +237,33 @@ func (c *Console) Log(line string) {
 	if len(c.lines) > 12 {
 		c.lines = c.lines[len(c.lines)-12:]
 	}
+}
+
+// barWidth is the progress bar's width in characters.
+const barWidth = 40
+
+// shades fill a cell in thirds: empty, a third, two thirds. Only the four
+// shade characters, which every console font has (the old DOS character set
+// includes them; WinPE's console font lacks the eighth-blocks ▏…▉).
+var shades = []string{"░", "▒", "▓"}
+
+// Bar draws a progress bar width characters wide: full cells █, the
+// leading cell ▒ or ▓ for a third or two thirds, empty cells ░. Three steps
+// per cell: a 40-character bar moves every 0.83 %. Without a VT console it
+// is [####....].
+func Bar(percent, width int, blocks bool) string {
+	percent = min(max(percent, 0), 100)
+	if !blocks {
+		n := percent * width / 100
+		return "[" + strings.Repeat("#", n) + strings.Repeat(".", width-n) + "]"
+	}
+	steps := percent * width * 3 / 100
+	full, part := steps/3, steps%3
+	var b strings.Builder
+	b.WriteString(strings.Repeat("█", full))
+	if full < width {
+		b.WriteString(shades[part])
+		b.WriteString(strings.Repeat("░", width-full-1))
+	}
+	return b.String()
 }

@@ -5,6 +5,9 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -67,6 +70,44 @@ type Env struct {
 	Work string
 	// Drive maps a letter to its root, e.g. "W" → `W:\` (tests redirect it).
 	Drive func(letter string) string
+	// Stop ends when the server cancels the deployment (ADR 0026): the
+	// command in progress finishes, nothing new starts, and the agent's own
+	// transfers stop at once. Nil: never.
+	Stop context.Context
+}
+
+// ErrCancelled: the deployment was cancelled on the server and stopped.
+var ErrCancelled = errors.New("cancelled on the server")
+
+func (e Env) stopped() bool { return e.Stop != nil && e.Stop.Err() != nil }
+
+// run starts a command unless the deployment was cancelled. A command that
+// has started always runs to the end: killing diskpart or DISM part-way
+// is what a graceful stop avoids.
+func (e Env) run(ctx context.Context, name string, args ...string) (string, error) {
+	if e.stopped() {
+		return "", ErrCancelled
+	}
+	return e.Run.Run(ctx, name, args...)
+}
+
+// transferCtx is ctx, also ended by a cancellation: for the agent's own
+// downloads, which can stop at once.
+func (e Env) transferCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	c, cancel := context.WithCancel(ctx)
+	if e.Stop != nil {
+		stop := context.AfterFunc(e.Stop, cancel)
+		return c, func() { stop(); cancel() }
+	}
+	return c, cancel
+}
+
+// transferErr maps an error from a transfer ended by a cancellation.
+func (e Env) transferErr(err error) error {
+	if err != nil && e.stopped() {
+		return ErrCancelled
+	}
+	return err
 }
 
 func (e Env) drive(l string) string {
@@ -95,6 +136,9 @@ func Install(ctx context.Context, e Env, plan wire.Plan, target disk.Disk) error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if e.stopped() {
+			return fmt.Errorf("before %s: %w", s.stage, ErrCancelled)
+		}
 		if err := s.fn(ctx, e, plan, target); err != nil {
 			return fmt.Errorf("%s: %w", s.stage, err)
 		}
@@ -108,7 +152,7 @@ func partition(ctx context.Context, e Env, _ wire.Plan, target disk.Disk) error 
 	if err := os.WriteFile(script, []byte(disk.Script(target.Number)), 0o644); err != nil {
 		return err
 	}
-	if _, err := e.Run.Run(ctx, "diskpart.exe", "/s", script); err != nil {
+	if _, err := e.run(ctx, "diskpart.exe", "/s", script); err != nil {
 		return err
 	}
 	e.Report(wire.StagePartitioning, 100, "Partitioned")
@@ -134,7 +178,9 @@ func applyImage(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 	img := filepath.Join(stage, fileName(plan.Image.ContentURL, "install.wim"))
 	e.Report(wire.StageApplyingImage, 0, "Downloading the image")
 	last := -1
-	err := e.Client.Download(ctx, plan.Image, img, func(done, total int64) {
+	dctx, done := e.transferCtx(ctx)
+	defer done()
+	err := e.Client.Download(dctx, plan.Image, img, func(done, total int64) {
 		if total > 0 {
 			if pct := int(done * 60 / total); pct != last {
 				last = pct
@@ -142,11 +188,14 @@ func applyImage(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 			}
 		}
 	})
-	if err != nil {
+	if err = e.transferErr(err); err != nil {
+		if errors.Is(err, ErrCancelled) {
+			os.Remove(img)
+		}
 		return fmt.Errorf("download the image: %w", err)
 	}
 	e.Report(wire.StageApplyingImage, 60, fmt.Sprintf("Applying edition %d", plan.EditionIndex))
-	if _, err := e.Run.Run(ctx, "dism.exe", "/English", "/Apply-Image", "/ImageFile:"+img,
+	if _, err := e.run(ctx, "dism.exe", "/English", "/Apply-Image", "/ImageFile:"+img,
 		"/Index:"+strconv.Itoa(plan.EditionIndex), "/ApplyDir:"+w); err != nil {
 		return err
 	}
@@ -171,12 +220,18 @@ func addDrivers(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 			return err
 		}
 		e.Report(wire.StageInjectingDrivers, i*50/len(plan.OSDrivers), "Downloading "+f.Path)
-		if err := e.Client.Download(ctx, f, dest, nil); err != nil {
+		dctx, done := e.transferCtx(ctx)
+		err := e.transferErr(e.Client.Download(dctx, f, dest, nil))
+		done()
+		if err != nil {
+			if errors.Is(err, ErrCancelled) {
+				os.RemoveAll(dir)
+			}
 			return fmt.Errorf("download %s: %w", f.Path, err)
 		}
 	}
 	e.Report(wire.StageInjectingDrivers, 50, fmt.Sprintf("Adding %d driver files", len(plan.OSDrivers)))
-	if _, err := e.Run.Run(ctx, "dism.exe", "/English", "/Image:"+w, "/Add-Driver", "/Driver:"+dir, "/Recurse"); err != nil {
+	if _, err := e.run(ctx, "dism.exe", "/English", "/Image:"+w, "/Add-Driver", "/Driver:"+dir, "/Recurse"); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
@@ -197,8 +252,10 @@ func configure(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return err
 		}
-		b, err := e.Client.Get(ctx, *plan.UnattendURL)
-		if err != nil {
+		gctx, done := e.transferCtx(ctx)
+		b, err := e.Client.Get(gctx, *plan.UnattendURL)
+		done()
+		if err = e.transferErr(err); err != nil {
 			return fmt.Errorf("fetch the unattend file: %w", err)
 		}
 		if err := os.WriteFile(dest, b, 0o600); err != nil {
@@ -214,6 +271,9 @@ func configure(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 			}
 		}
 	}
+	if err := joinOffline(ctx, e, plan, w); err != nil {
+		return err
+	}
 	// WinRE on the recovery partition.
 	e.Report(wire.StageConfiguring, 50, "Setting up Windows RE")
 	src := filepath.Join(w, "Windows", "System32", "Recovery", "Winre.wim")
@@ -228,7 +288,7 @@ func configure(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 			return fmt.Errorf("copy Winre.wim: %w", err)
 		}
 		reagentc := filepath.Join(w, "Windows", "System32", "Reagentc.exe")
-		if _, err := e.Run.Run(ctx, reagentc, "/Setreimage", "/Path", reDir, "/Target", filepath.Join(w, "Windows")); err != nil {
+		if _, err := e.run(ctx, reagentc, "/Setreimage", "/Path", reDir, "/Target", filepath.Join(w, "Windows")); err != nil {
 			e.Log.Warn("register Windows RE (the OS boots without it)", "err", err)
 		}
 	}
@@ -242,14 +302,14 @@ func finalize(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 	args := []string{win, "/s", disk.SystemLetter + ":", "/f", "UEFI"}
 	if plan.BootManager == "windows-uefi-ca-2023" {
 		// The 2023-signed boot manager, as the boot image used (ADR 0025).
-		if _, err := e.Run.Run(ctx, "bcdboot.exe", append(args, "/bootex")...); err == nil {
+		if _, err := e.run(ctx, "bcdboot.exe", append(args, "/bootex")...); err == nil {
 			e.Report(wire.StageFinalizing, 100, "Boot files written (2023-signed boot manager)")
 			return nil
 		} else {
 			e.Log.Warn("bcdboot /bootex failed; using the default boot manager", "err", err)
 		}
 	}
-	if _, err := e.Run.Run(ctx, "bcdboot.exe", args...); err != nil {
+	if _, err := e.run(ctx, "bcdboot.exe", args...); err != nil {
 		return err
 	}
 	e.Report(wire.StageFinalizing, 100, "Boot files written")
@@ -279,4 +339,37 @@ func CopyFile(src, dst string) error {
 		return err
 	}
 	return copyFile(src, dst)
+}
+
+// joinOffline applies an ODJ blob to the applied image (identity ad, odj;
+// ADR 0026) and deletes it.
+func joinOffline(ctx context.Context, e Env, plan wire.Plan, w string) error {
+	for _, f := range plan.IdentityFiles {
+		if f.Kind != "odj-blob" {
+			e.Log.Warn("identity file not supported by this agent", "kind", f.Kind)
+			continue
+		}
+		e.Report(wire.StageConfiguring, 30, "Joining the domain (offline)")
+		gctx, done := e.transferCtx(ctx)
+		b, err := e.Client.Get(gctx, f.ContentURL)
+		done()
+		if err = e.transferErr(err); err != nil {
+			return fmt.Errorf("fetch the ODJ blob: %w", err)
+		}
+		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != f.SHA256 {
+			return errors.New("the ODJ blob doesn't match its SHA-256")
+		}
+		blob := filepath.Join(e.Work, "odj.txt")
+		if err := os.WriteFile(blob, b, 0o600); err != nil {
+			return err
+		}
+		_, err = e.run(ctx, "djoin.exe", "/requestODJ", "/loadfile", blob, "/windowspath", filepath.Join(w, "Windows"))
+		if rerr := os.Remove(blob); rerr != nil {
+			e.Log.Warn("remove the ODJ blob", "err", rerr)
+		}
+		if err != nil {
+			return fmt.Errorf("offline domain join: %w", err)
+		}
+	}
+	return nil
 }

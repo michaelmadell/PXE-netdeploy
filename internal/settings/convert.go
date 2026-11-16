@@ -77,6 +77,10 @@ func FromAPI(in api.Settings, cur Config) (Config, []FieldError) {
 		}
 		setInt(&out.Storage.UploadExpiryHours, st.UploadExpiryHours)
 	}
+	if d := in.Deployments; d != nil {
+		setInt(&out.Deployments.ArmedExpiryHours, d.ArmedExpiryHours)
+		setInt(&out.Deployments.InactivityMinutes, d.InactivityMinutes)
+	}
 	if b := in.Backup; b != nil {
 		if sc := b.Schedule; sc != nil {
 			if sc.Frequency != nil {
@@ -304,6 +308,7 @@ func ToAPI(cfg Config, etag string, guidance map[string][]Guidance) (api.Setting
 		},
 		"architectures": cfg.Architectures,
 		"storage":       cfg.Storage,
+		"deployments":   cfg.Deployments,
 		"backup":        backupToAPI(cfg.Backup),
 	}
 	b, err := json.Marshal(doc)

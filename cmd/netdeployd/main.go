@@ -230,7 +230,8 @@ func run(o options) error {
 	if err := svc.Start(ctx); err != nil {
 		return err
 	}
-	backups.Start(ctx) // after settings are loaded: a missed backup is queued now
+	backups.Start(ctx)                // after settings are loaded: a missed backup is queued now
+	go impl.RunDeploymentSweeper(ctx) // deployment timeouts (ADR 0026)
 	<-ctx.Done()
 	slog.Info("shutting down")
 	<-network.Done()

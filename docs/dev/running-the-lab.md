@@ -436,3 +436,178 @@ $d = (api Get "/deployments").items[0]; $d | Select-Object status, stage, percen
 (api Get "/deployments/$($d.id)/logs").items | Select-Object at, level, message
 ```
 
+
+## Arming deployments, identity, cancelling (Phase 4, ADR 0026)
+
+Continues from "Deploying from the boot prompt". After `just dev` rebuilds
+the agent, build the boot image again (it is out of date: reason `agent`);
+arming refuses a profile whose boot image isn't built and current.
+
+```powershell
+$b = 'https://127.0.0.1:8443/api/v1'
+function api($method, $path, $body, $etag) {
+  $h = @{}; if ($etag) { $h['If-Match'] = $etag }
+  $json = if ($body) { $body | ConvertTo-Json -Depth 8 } else { $null }
+  Invoke-RestMethod "$b$path" -Method $method -SkipCertificateCheck -ContentType application/json -Body $json -Headers $h
+}
+$client = (api Get '/clients').items | ? mac -eq '00:15:5d:xx:xx:xx'   # nd-client-01's MAC (Get-VMNetworkAdapter)
+$p = (api Get '/profiles').items[0]
+```
+
+**Local accounts, computer name, unattended OOBE.** A password secret, the
+profile switched to `local` with a name pattern, then validated:
+
+```powershell
+$pw = api Post /secrets @{ name = 'Lab admin'; kind = 'password'; value = 'Choose-A-Password1' }
+$p.identity = @{ mode = 'local'; accounts = @(@{ name = 'labadmin'; group = 'Administrators'; passwordSecretId = $pw.id })
+                 autoLogon = @{ account = 'labadmin'; count = 1 }; hideOobe = $true }
+$p | Add-Member -Force osSettings @{ computerNamePattern = 'LAB-{{ .Client.Serial | last 4 }}' }
+function save-profile { $id = $p.id; $etag = $p.etag
+  'id','etag','createdAt','updatedAt' | % { $p.PSObject.Properties.Remove($_) }
+  $script:p = api Put "/profiles/$id" $p $etag }
+save-profile
+api Post "/profiles/$($p.id)/validate"          # ok: true; findings explain anything else
+```
+
+Names must be 1–15 letters, digits or hyphens; the serial comes from the
+agent's check-in (Hyper-V's look like `…-1234-56`). Arming shows the
+rendered `computerName`, or refuses with `invalid_computer_name`. Run
+`save-profile` after each change to `$p` below.
+
+**Arming:** the client runs it on its next network boot with no password,
+after a 10 s countdown:
+
+```powershell
+$d = api Post /deployments @{ clientId = $client.id; profileId = $p.id }
+$d | Select-Object status, computerName                      # pending, the rendered name
+Start-VM nd-client-01
+```
+
+Expect: no password prompt; the deployment runs; Windows Setup finishes
+without OOBE questions and signs `labadmin` in once; the computer name is
+the one above. `C:\Windows\Panther\unattend.xml` is gone after Setup.
+Arming a client that already has a pending or running deployment is `409`;
+an armed deployment not picked up within 72 h fails `expired`; a running one
+the agent goes quiet on for 30 min fails `timeout`
+(`Settings.deployments`).
+
+**Cancelling:** arm, boot, and during "applying-image" cancel it:
+
+```powershell
+api Post "/deployments/$($d.id)/cancel"
+```
+
+Expect within a minute: the agent's screen says the deployment was cancelled
+on the server and that it is stopping once the current command finishes;
+DISM finishes applying; nothing after it runs; the logs end with "deployment
+stopped: cancelled on the server"; the VM restarts after 2 minutes (or a
+key). The status stays `cancelled`.
+
+**AD join, start to finish.** Written 2026-11-16 after a first credentials
+join failed: the lab DHCP handed out no DNS server, so Setup couldn't find
+the domain, and every machine was named `LAB-` (the client had no serial on
+record, and a trailing hyphen isn't a valid host name). Both are now caught:
+validation warns `dhcp_no_dns`, and a name pattern that uses an empty field
+or ends in a hyphen is refused.
+
+1. *The domain controller on the lab switch.* Setup's specialize pass must
+   reach a DC and resolve the domain. With the DC as a Hyper-V VM on this
+   host, give it a second adapter on `NetDeployLab` (elevated):
+
+   ```powershell
+   Add-VMNetworkAdapter -VMName '<DC VM>' -SwitchName NetDeployLab -Name lab
+   ```
+
+   In the DC, give that adapter a static `10.77.0.10/24` with no gateway and
+   no DNS change, then `ipconfig /registerdns`. Check from the host:
+
+   ```powershell
+   Test-NetConnection 10.77.0.10 -Port 389
+   Resolve-DnsName michael-ad.test -Server 10.77.0.10
+   ```
+
+2. *DHCP hands out the DC as DNS server* (one change to the lab interface):
+
+   ```powershell
+   $r = Invoke-WebRequest "$b/settings" -SkipCertificateCheck; $s = $r.Content | ConvertFrom-Json
+   $s.interfaces[0].dhcp.pool.dnsServers = @('10.77.0.10')
+   $s.interfaces[0].dhcp.pool.domainName = 'michael-ad.test'
+   api Put /settings $s $r.Headers.ETag[0]
+   ```
+
+3. *A join account and the OU.* The OU in the profile must exist
+   (`OU=Lab,DC=michael-ad,DC=test`), and the account needs rights to create
+   computer objects in it (in a lab, a Domain Admin will do; otherwise
+   delegate "Create Computer objects" on the OU).
+
+4. *The credential secret.* Values can't be read back, so if in doubt make
+   a new one. `GET /secrets/{id}` shows the username as `hint`.
+   The username can be `user@dns.domain` (preferred: it names the domain
+   by its DNS name, as the join does) or `NETBIOS\user`; the profile's
+   `domain` is always the DNS name.
+
+   ```powershell
+   $cred = api Post /secrets @{ name = 'Lab join'; kind = 'domain-credential'
+                               credential = @{ username = 'svc-join@michael-ad.test'; password = '<password>' } }
+   ```
+
+5. *The profile*: AD credentials join, a break-glass local administrator so
+   you can sign in and read the logs if the join fails, and a name pattern
+   (the serial is recorded at the agent's check-in):
+
+   ```powershell
+   $pw = api Post /secrets @{ name = 'Lab breakglass'; kind = 'password'; value = '<password>' }
+   $p = (api Get '/profiles').items[0]
+   $p.identity = @{ mode = 'ad'; joinMethod = 'credentials'; domain = 'michael-ad.test'
+                    organizationalUnit = 'OU=Lab,DC=michael-ad,DC=test'; joinCredentialSecretId = $cred.id
+                    localAdmin = @{ name = 'breakglass'; passwordSecretId = $pw.id } }
+   $p.osSettings.computerNamePattern = 'LAB-{{ .Client.Serial | last 4 }}'
+   save-profile
+   api Post "/profiles/$($p.id)/validate"   # ok: true, and no dhcp_no_dns warning
+   ```
+
+6. *Deploy from the boot prompt* (simplest: the check-in records the serial
+   before the name is rendered). To arm from the API instead, boot the VM to
+   the prompt once first, check `(api Get "/clients/$($client.id)").serial`
+   isn't empty, then `api Post /deployments @{ clientId = $client.id; profileId = $p.id }`.
+   The deployment's `computerName` must not be empty or end in `-`.
+
+7. *Expect*: Setup restarts once more than with `local` (the join happens in
+   specialize), then a sign-in screen that offers "Other user"; sign in as
+   `MICHAEL-DOM\<user>` (the domain's NetBIOS name). The computer object is in `OU=Lab`.
+
+8. *If it didn't join*, sign in as `.\breakglass` and read
+   `C:\Windows\debug\NetSetup.LOG` (the join attempt and its error code) and
+   `C:\Windows\Panther\UnattendGC\setupact.log` (search `UnattendedJoin`).
+   Common codes: `1355` the domain can't be found (DNS), `5` access denied
+   (the account's rights on the OU), `1326` wrong username or password,
+   `2224` the computer account exists and the account can't reuse it.
+   The unattend file itself is deleted after Setup.
+
+**AD, offline join (ODJ).** No DC needed during Setup; signing in with a
+domain account later needs one. On a domain-joined machine with rights to
+create the computer account:
+
+```powershell
+djoin /provision /domain michael-ad.test /machine LAB-01 /machineou "OU=Lab,DC=michael-ad,DC=test" /savefile C:\temp\LAB-01.odj
+```
+
+Upload the file (tus, one request for a small file), store it as an
+`odj-blob` secret and attach it to the client:
+
+```powershell
+$bytes = [IO.File]::ReadAllBytes('C:\temp\LAB-01.odj')
+$r = Invoke-WebRequest "$b/uploads" -Method Post -SkipCertificateCheck -Headers @{ 'Tus-Resumable' = '1.0.0'; 'Upload-Length' = $bytes.Length }
+$up = $r.Headers.Location[0]; if ($up -notmatch '^https') { $up = "https://127.0.0.1:8443$up" }
+Invoke-WebRequest $up -Method Patch -SkipCertificateCheck -Body $bytes -ContentType 'application/offset+octet-stream' `
+  -Headers @{ 'Tus-Resumable' = '1.0.0'; 'Upload-Offset' = '0' } | Out-Null
+$blob = api Post /secrets @{ name = 'LAB-01 ODJ'; kind = 'odj-blob'; uploadId = ($up -split '/')[-1] }
+$c = Invoke-WebRequest "$b/clients/$($client.id)" -SkipCertificateCheck; $cj = $c.Content | ConvertFrom-Json
+$cj | Add-Member -Force secretRefs @{ odjBlob = $blob.id }
+api Put "/clients/$($client.id)" $cj $c.Headers.ETag[0]
+$p.identity = @{ mode = 'ad'; joinMethod = 'odj'; localAdmin = @{ name = 'breakglass'; passwordSecretId = $pw.id } }
+save-profile
+```
+
+The blob names the computer (`LAB-01`); the profile's name pattern is
+ignored.

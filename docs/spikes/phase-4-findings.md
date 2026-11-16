@@ -168,3 +168,32 @@ To run once elevated, or with wimlib installed:
 $env:NETDEPLOY_TEST_ISO = 'C:\Users\monke\Downloads\Windows-11.iso'
 go test -count=1 -run TestRealTools -v ./internal/bootimage
 ```
+
+## Domain join from the built-in unattend (decision 5, ADR 0026)
+
+**Tested 2026-11-16, `nd-client-01`, credentials join to the user's test
+domain `michael-ad.test`** (DC `MICHAEL-AD`, NetBIOS `MICHAEL-DOM`, a second
+adapter on `NetDeployLab` at `10.77.0.10`). **Joined** (`LAB-1-05` in
+`OU=Lab`) after four problems, in the order they showed:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Computer named `LAB-`; not joined | The client was first seen by DHCP (no serial) and check-in never filled it in; `{{ .Client.Serial \| last 4 }}` rendered empty, and a trailing hyphen isn't a valid host name | Check-in fills missing serial/SMBIOS UUID; a pattern that uses an empty field, or a name with a hyphen at either end, is refused (`invalid_computer_name`) |
+| Not joined | The lab DHCP handed out no DNS server: specialize couldn't find the domain | Pool `dnsServers` = the DC, `domainName` set; validate warns `dhcp_no_dns` |
+| Every sign-in "incorrect", break-glass too | Not joined (below); the break-glass account was named `Administrator`, the built-in account Setup won't create (it stays disabled) | Validate refuses built-in names (`reserved_account_name`) |
+| `NetSetup.LOG`: `NetUseAdd … IPC$ returned 1326`, `setupact.log`: `Unattended Join … 0x52e` | The join secret's password was wrong (the DC was found and reached) | Secret re-entered after checking it with `net use \\DC\IPC$ /user:…` |
+
+Notes:
+- The join account `michael@michael-ad.test` reaches the unattend as
+  `Domain michael-ad.test`, `Username michael`; Setup logs
+  `Account: michael-ad.test\michael`. Either the UPN or `NETBIOS\user` works.
+- Setup retries the join every 10 s for about 4.5 minutes, then carries on
+  unjoined (`Unattended Join: Exit, returning 0x0`): a failed join doesn't
+  fail Setup, so it only shows at sign-in.
+- Reading the logs without an account: mount the VM's VHD on the host
+  (read-write, VM off), pick the largest partition (diskpart's volume labels
+  didn't survive), read `Windows\debug\NetSetup.LOG` and
+  `Windows\Panther\UnattendGC\setupact.log`.
+
+Not yet tested: offline join (ODJ), `local` identity end to end, arming from
+the API, cancelling in the lab.

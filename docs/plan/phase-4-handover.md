@@ -88,9 +88,13 @@ Next session, in order:
    `/bootex` accepted. The entries of the partitions a deployment wiped are
    deleted (lab-tested 2026-11-12); the prompt timeout's `BootNext` prefers
    an entry whose partition exists (unit-tested; lab check pending).
-2. **Decision 5: profiles and deployments**: `POST /deployments` (arming),
-   cancel, timeouts, secret-version snapshots, the built-in unattend per
-   identity mode (`unattendUrl`), `POST /profiles/{id}/validate`.
+2. **Decision 5: profiles and deployments**: decided 2026-11-12
+   ([ADR 0026](../adr/0026-deployments.md)) and implemented: `POST
+   /deployments` (arming), graceful cancel, timeouts, secret copies, the
+   built-in unattend (`none`, `local`, `ad` credentials and ODJ),
+   `POST /profiles/{id}/validate`. AD credentials join lab-tested
+   2026-11-16 (findings); still to test in the lab: ODJ, `local`, arming
+   from the API, cancelling. Entra is Phase 5.
 3. Later in Phase 4: SMB/`setup.exe` install method; per-edition image
    export to shrink the 8 GB download.
 

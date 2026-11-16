@@ -83,6 +83,8 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0023 | Own BCD writer (`internal/bcd`): REGF hive in Go with the Phase 1 RAM-disk elements, fixed GUID and timestamps (reproducible), no bcdedit/hivex; capabilities drop `bcdTool`. |
 | 0024 | What a client boots: armed deployment's profile, else the client's, else the default; no fallback past a broken choice; sessions pin their trees against GC; no cache; profile storage brought forward; temporary `-tftp-root` flags removed. |
 | 0025 | The agent and `/agent/*`: check-in (armed/locked; a running deployment whose client checks in again failed `restarted`), unlock (argon2id, rate-limited), hashed tokens, plan, `/agent/files/{sha256}` with Range; in WinPE: prompt, disk auto-select, diskpart, download + `dism /Apply-Image`, OS drivers, WinRE, `bcdboot` (`/bootex` for 2023), UEFI boot order from Go. |
+| 0026 | Deployments: arming from the API with validation, profile and secret snapshots, timeouts (expiry, inactivity), graceful cancel, built-in unattend for none/local/AD (credentials or offline join in the unattend), computer name patterns. |
+| 0027 | Unattend templates: whole-document Go templates over the built-in's data, auto XML-escaping, previews never decrypt (`********`), checks per identity mode on save and when arming, one built-in template in code (`builtin`), copied into each deployment. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and

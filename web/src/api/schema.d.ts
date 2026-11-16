@@ -472,10 +472,22 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List available unattend templates. */
+        /**
+         * List available unattend templates.
+         * @description The built-in template (id `builtin`) comes first, then the stored ones.
+         */
         get: operations["listUnattendTemplates"];
         put?: never;
-        /** Create a new unattend template. */
+        /**
+         * Create a new unattend template.
+         * @description The template is parsed and rendered with sample data for each of its
+         *     `identityModes` (`ad` with both join methods), and the output checked
+         *     (ADR 0027). `422` codes: `template_syntax` (doesn't parse; `detail` names the
+         *     line), `template_render` (fails with the sample data, e.g. an undeclared
+         *     variable or a field that doesn't exist), `template_invalid` (a check failed;
+         *     `errors[]` has one entry per finding, `field` being the finding code).
+         *     Warnings don't refuse; `render` shows them.
+         */
         post: operations["createUnattendTemplate"];
         delete?: never;
         options?: never;
@@ -494,11 +506,43 @@ export interface paths {
         };
         /** Get details of a specific unattend template. */
         get: operations["getUnattendTemplate"];
-        /** Replace a specific unattend template. */
+        /**
+         * Replace a specific unattend template.
+         * @description Same checks as create. `409` codes: `built_in` (the built-in template is
+         *     read-only; create a copy), `template_in_use` (the new `identityModes` drop a
+         *     mode a profile using this template has). Pending and running deployments
+         *     keep the copy they snapshotted.
+         */
         put: operations["replaceUnattendTemplate"];
         post?: never;
-        /** Delete a specific unattend template. */
+        /**
+         * Delete a specific unattend template.
+         * @description `409` codes: `built_in`, `template_in_use` (a profile uses it). Deployments keep their copy.
+         */
         delete: operations["deleteUnattendTemplate"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/unattend-templates/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a template that isn't saved yet.
+         * @description As `POST /unattend-templates/{templateId}/render`, for the template in the
+         *     body (the editor's preview before saving). The save checks run too: a
+         *     template that create would refuse with `template_invalid` renders here with
+         *     error findings.
+         */
+        post: operations["renderUnattendDraft"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -517,11 +561,17 @@ export interface paths {
         put?: never;
         /**
          * Preview a rendered unattend file.
-         * @description Renders with the same data an agent would get, except every secret value is
-         *     replaced by `********`. Pass `profileId` (and optionally `clientId`) to
-         *     preview a real combination; `variables` are applied last, for experiments.
-         *     `installMethod` selects which passes are rendered: `agent` strips the
-         *     `windowsPE` pass, `smb` renders the full autounattend.xml.
+         * @description Renders with the data an agent would get, except that no secret is ever
+         *     decrypted: every secret value is `********` (ADR 0027). With `profileId`
+         *     (and optionally `clientId`) it renders that real combination and runs the
+         *     checks arming runs; without, it renders sample data for `identityMode`.
+         *     `variables` are applied last, for experiments. Agent-mode output has no
+         *     `windowsPE` pass.
+         *
+         *     `200` whenever the template renders, with `findings` (`ok` is false if any
+         *     is an error). `422` codes: `template_syntax`, `template_render` (`detail`
+         *     names the line), `identity_mode_unsupported` (the mode isn't in the
+         *     template's `identityModes`). `404`: the template, profile or client.
          */
         post: operations["renderUnattendTemplate"];
         delete?: never;
@@ -545,9 +595,11 @@ export interface paths {
          * @description Checks references (ADR 0024). `422` codes: `unknown_boot_image`,
          *     `install_image_unavailable` (not a ready `windows` image),
          *     `architecture_mismatch` (install image vs boot image), `unknown_edition`,
-         *     `unknown_driver_group`, `not_implemented` (`installMethod: smb` until the
-         *     agent's SMB install; `unattendTemplateId` and identity `entra` until
-         *     Phase 5). Secret and identity checks are in `validate`, which arming runs.
+         *     `unknown_driver_group`, `unknown_unattend_template`,
+         *     `template_identity_mismatch` (the profile's identity mode isn't in the
+         *     template's `identityModes`), `not_implemented` (`installMethod: smb` until
+         *     the agent's SMB install; identity `entra` until it is built). Secret and
+         *     identity checks are in `validate`, which arming runs.
          */
         post: operations["createProfile"];
         delete?: never;
@@ -604,6 +656,11 @@ export interface paths {
          *     optional components requested without DISM or a matching ADK (error);
          *     identity mode missing a required secret, or a secret of the wrong kind
          *     (error); template whose `identityModes` excludes the profile's mode (error);
+         *     the unattend template's checks against the profile's data (ADR 0027:
+         *     errors such as `unattend_missing_join`, `unattend_architecture`,
+         *     `reserved_account_name`; warnings such as `unattend_ignores_computer_name`),
+         *     and per assigned client a `requiredVariables` entry with no value (warning,
+         *     `missing_variable`; an error when arming);
          *     computer-name pattern that can exceed 15 characters (warning, checked
          *     against each client's data at scheduling time); `ad`/`odj` profile assigned
          *     to clients without an ODJ blob (warning, listed per client); boot image
@@ -1201,9 +1258,10 @@ export interface paths {
         };
         /**
          * The deployment's unattend file, rendered with its secrets.
-         * @description The built-in unattend for the snapshot's identity mode (ADR 0026), rendered on
-         *     each request from the snapshot and its secret copies; never stored. Only while
-         *     the deployment is `running`. The plan's `unattendUrl` points here.
+         * @description The deployment's snapshotted unattend template (the built-in one unless the
+         *     profile names another; ADR 0026, 0027), rendered on each request from the
+         *     snapshot, its variables and its secret copies; never stored. Only while the
+         *     deployment is `running`. The plan's `unattendUrl` points here.
          */
         get: operations["agentGetUnattend"];
         put?: never;
@@ -1398,12 +1456,15 @@ export interface components {
         Architecture: "x64" | "arm64";
         ValidationResult: {
             ok: boolean;
-            findings: {
-                /** @enum {string} */
-                severity: "error" | "warning" | "info";
-                code: string;
-                message: string;
-            }[];
+            findings: components["schemas"]["ValidationFinding"][];
+        };
+        ValidationFinding: {
+            /** @enum {string} */
+            severity: "error" | "warning" | "info";
+            code: string;
+            message: string;
+            /** @description For unattend template findings, the line of the rendered file, when known. */
+            line?: number | null;
         };
         Health: {
             /** @enum {string} */
@@ -1916,20 +1977,77 @@ export interface components {
             name: string;
             description?: string;
             /**
-             * @description Go `text/template` producing autounattend.xml. Available data:
-             *     `.Identity`, `.OsSettings`, `.ComputerName`, `.Client`, `.Deployment`,
-             *     `.Vars`. Every inserted value is XML-escaped automatically; inserting
-             *     raw XML requires the explicit `raw` function.
+             * @description Go `text/template` producing the whole unattend file (ADR 0027). Parsed
+             *     with `missingkey=error`, so a missing field or undeclared variable fails
+             *     when the template is saved. Data:
+             *
+             *     * `.Arch`: `amd64` or `arm64`, from the install image.
+             *     * `.InstallMethod`: `agent` (`smb` later). Agent-mode output has its
+             *       `windowsPE` pass removed.
+             *     * `.ComputerName`: the rendered name pattern; empty when Windows picks
+             *       the name or the ODJ blob names the computer.
+             *     * `.OS`: `UILanguage`, `SystemLocale`, `UserLocale`, `InputLocale`,
+             *       `TimeZone`, `ProductKey`†.
+             *     * `.Identity`: `Mode`, `HideEULA`, `HideOOBE`; `Accounts` (list of
+             *       `Name`, `DisplayName`, `Group`, `Password`†: local accounts, and `ad`'s
+             *       break-glass administrator); `AutoLogon` (`Username`, `Password`†,
+             *       `Count`) or nil; `Join` (`Domain`, `Username`, `Password`†,
+             *       `JoinDomain`, `OU`) or nil, for `ad` credentials; `ODJ`
+             *       (`AccountData`†) or nil, for `ad` offline join.
+             *     * `.Client`: `ID`, `MAC`, `Serial`, `SMBIOSUUID`, `Hostname`.
+             *     * `.Profile`: `ID`, `Name`. `.Deployment`: `ID` (`preview` in previews).
+             *     * `.Variables`: template `variableDefaults` < profile < client.
+             *
+             *     † Secret values, already in the form the unattend file wants (passwords
+             *     encoded as for `PlainText false`; ODJ `AccountData` as Setup reads it).
+             *     Previews show `********` and never decrypt anything.
+             *
+             *     Functions: `first n`, `last n`, `upper`, `lower` (as computer name
+             *     patterns), `default "value" x`, and `raw`. Every value an action writes
+             *     is XML-escaped; only a value passed through `raw` is written unescaped.
              */
             content: string;
-            /** @description Identity modes this template knows how to render. */
+            /**
+             * @description Identity modes this template renders. Each is checked on save with
+             *     sample data: `local` must produce every account and the auto-logon,
+             *     `ad` the `UnattendedJoin` for both join methods (ADR 0027).
+             */
             identityModes: components["schemas"]["IdentityMode"][];
             variableDefaults?: components["schemas"]["Variables"];
+            /**
+             * @description Variables a deployment must have a value for (from the profile or the
+             *     client); arming refuses without them (`missing_variable`). A variable the
+             *     template uses must be here or in `variableDefaults`.
+             */
             requiredVariables?: string[];
         };
         UnattendTemplate: components["schemas"]["Meta"] & components["schemas"]["UnattendTemplateInput"] & {
-            /** @description Shipped default (one per identity mode). Read-only; clone it to customise. */
+            /**
+             * @description The shipped template (id `builtin`, all identity modes the server
+             *     supports). Read-only: create a copy to customise it. A profile with no
+             *     `unattendTemplateId` uses it.
+             */
             readonly builtIn: boolean;
+        };
+        UnattendRenderRequest: {
+            /** @description Render with this profile's data and run the checks arming runs. */
+            profileId?: string | null;
+            /** @description The client whose fields and variables to use. */
+            clientId?: string | null;
+            /**
+             * @description Without a profile: which mode's sample data to render (default: the
+             *     template's first). With a profile it must be the profile's mode, or absent.
+             */
+            identityMode?: components["schemas"]["IdentityMode"];
+            variables?: components["schemas"]["Variables"];
+        };
+        UnattendDraftRenderRequest: components["schemas"]["UnattendRenderRequest"] & {
+            template: components["schemas"]["UnattendTemplateInput"];
+        };
+        UnattendRenderResult: components["schemas"]["ValidationResult"] & {
+            /** @description The rendered unattend file (secrets as `********`). */
+            content: string;
+            identityMode: components["schemas"]["IdentityMode"];
         };
         /** @enum {string} */
         InstallMethod: "agent" | "smb";
@@ -1941,7 +2059,10 @@ export interface components {
             editionIndex: number;
             /** @description Drivers injected into the installed OS (separate from boot image drivers). */
             osDriverGroupIds?: string[];
-            /** @description Null uses the built-in template for the profile's identity mode. */
+            /**
+             * @description Null uses the built-in template. `builtin` means the same and is stored
+             *     as null. The template's `identityModes` must include the profile's mode.
+             */
             unattendTemplateId?: string | null;
             /** @description Precedence: template `variableDefaults` < profile `variables` < client `variables`. */
             variables?: components["schemas"]["Variables"];
@@ -2173,6 +2294,19 @@ export interface components {
             profileSnapshot?: components["schemas"]["ProfileInput"];
             /** @description Rendered from `osSettings.computerNamePattern`; null lets Windows (or an ODJ blob) choose. */
             readonly computerName?: string | null;
+            /**
+             * @description The unattend template copied when the deployment was created (ADR 0027);
+             *     later edits to the template don't change it.
+             */
+            readonly unattendTemplate?: {
+                id: string;
+                name: string;
+                builtIn: boolean;
+                /** @description The template's etag when copied; null for the built-in. */
+                etag?: string | null;
+            };
+            /** @description The merged variables (template defaults < profile < client) at creation. */
+            readonly variables?: components["schemas"]["Variables"];
             status: components["schemas"]["DeploymentStatus"];
             stage?: components["schemas"]["DeploymentStage"];
             percent?: number;
@@ -3740,6 +3874,7 @@ export interface operations {
             };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     getUnattendTemplate: {
@@ -3795,7 +3930,9 @@ export interface operations {
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
+            409: components["responses"]["Problem"];
             412: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
     deleteUnattendTemplate: {
@@ -3821,6 +3958,34 @@ export interface operations {
             409: components["responses"]["Problem"];
         };
     };
+    renderUnattendDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnattendDraftRenderRequest"];
+            };
+        };
+        responses: {
+            /** @description Rendered, with findings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnattendRenderResult"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
     renderUnattendTemplate: {
         parameters: {
             query?: never;
@@ -3832,22 +3997,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    profileId?: string | null;
-                    clientId?: string | null;
-                    installMethod?: components["schemas"]["InstallMethod"];
-                    variables?: components["schemas"]["Variables"];
-                };
+                "application/json": components["schemas"]["UnattendRenderRequest"];
             };
         };
         responses: {
-            /** @description Rendered XML. */
+            /** @description Rendered, with findings. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/xml": string;
+                    "application/json": components["schemas"]["UnattendRenderResult"];
                 };
             };
             400: components["responses"]["Problem"];

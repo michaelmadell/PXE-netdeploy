@@ -208,20 +208,9 @@ func nameData(c store.Client, p unattend.Profile) unattend.NameData {
 }
 
 func findingsToAPI(fs []finding) api.ValidationResult {
-	out := api.ValidationResult{Ok: len(errorsIn(fs)) == 0}
+	out := api.ValidationResult{Ok: len(errorsIn(fs)) == 0, Findings: []api.ValidationFinding{}}
 	for _, f := range fs {
-		out.Findings = append(out.Findings, struct {
-			Code     string                               `json:"code"`
-			Message  string                               `json:"message"`
-			Severity api.ValidationResultFindingsSeverity `json:"severity"`
-		}{f.code, f.message, api.ValidationResultFindingsSeverity(f.severity)})
-	}
-	if out.Findings == nil {
-		out.Findings = []struct {
-			Code     string                               `json:"code"`
-			Message  string                               `json:"message"`
-			Severity api.ValidationResultFindingsSeverity `json:"severity"`
-		}{}
+		out.Findings = append(out.Findings, api.ValidationFinding{Code: f.code, Message: f.message, Severity: api.ValidationFindingSeverity(f.severity)})
 	}
 	return out
 }

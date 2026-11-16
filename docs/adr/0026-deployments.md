@@ -61,7 +61,8 @@ its logs, acknowledges with `complete` (`success: false`), shows
 works for logs and complete for 30 minutes. The disk may be left
 partitioned or with an image and no boot files.
 
-**Built-in unattend** (`GET /agent/unattend`, the plan's `unattendUrl`):
+**Built-in unattend** (`GET /agent/unattend`, the plan's `unattendUrl`;
+now the built-in template of [ADR 0027](0027-unattend-templates.md)):
 rendered on each request from the snapshot and the secret copies, with the
 deployment token, while it runs; never stored. The agent writes it to
 `Windows\Panther\unattend.xml`, deleted after Setup (ADR 0008).
@@ -111,4 +112,4 @@ lacks (an empty serial) is refused too, rather than rendering `LAB-`.
 - `credentials` joins put the join account's password on the machine
   until Setup's cleanup deletes the unattend file; `odj` is preferred
   (ADR 0008).
-- Entra/Autopilot and unattend templates remain Phase 5.
+- Entra/Autopilot remains Phase 5; unattend templates are ADR 0027.

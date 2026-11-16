@@ -31,5 +31,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0024](0024-booter.md) | Deciding what a client boots; profile storage | accepted |
 | [0025](0025-agent.md) | The WinPE agent and its API | accepted |
 | [0026](0026-deployments.md) | Deployments: arming, snapshots, timeouts, cancelling, built-in unattend | accepted |
+| [0027](0027-unattend-templates.md) | Unattend templates | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

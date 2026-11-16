@@ -16,3 +16,4 @@ Profiles choose `installMethod`:
 ## Consequences
 - No SMB dependency for the default path; SMB available where teams already use it.
 - One unattend template renders for both (agent mode strips the `windowsPE` pass).
+  See [ADR 0027](0027-unattend-templates.md): the `windowsPE` pass is removed after rendering.

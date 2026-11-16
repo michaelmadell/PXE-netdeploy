@@ -111,12 +111,15 @@ export function Dialog({
   title,
   children,
   footer,
+  wide,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** For long forms: 48rem instead of 32rem. */
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -134,8 +137,9 @@ export function Dialog({
         if (e.target === ref.current) onClose();
       }}
       className={cn(
-        "m-auto w-[min(32rem,calc(100vw-2rem))] rounded-lg border bg-popover p-0 text-popover-foreground shadow-xl",
+        "m-auto rounded-lg border bg-popover p-0 text-popover-foreground shadow-xl",
         "backdrop:bg-black/40",
+        wide ? "w-[min(48rem,calc(100vw-2rem))]" : "w-[min(32rem,calc(100vw-2rem))]",
       )}
     >
       {open && (

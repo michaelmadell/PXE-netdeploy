@@ -329,3 +329,19 @@ export async function deleteUpload(uploadId: string) {
   const res = await fetch(`${endpoint}/${uploadId}`, { method: "DELETE", headers: tusHeaders });
   if (!res.ok && res.status !== 404) throw await problemFrom(res);
 }
+
+/**
+ * Uploads a small file (a secret's file, at most 16 MiB) in one request and
+ * returns the upload id. Not listed with the resumable uploads: the server
+ * consumes it as soon as the secret is created.
+ */
+export async function uploadSmall(file: File): Promise<string> {
+  const id = await create(file);
+  const res = await fetch(`${endpoint}/${id}`, {
+    method: "PATCH",
+    headers: { ...tusHeaders, "Upload-Offset": "0", "Content-Type": "application/offset+octet-stream" },
+    body: file,
+  });
+  if (res.status !== 204) throw await problemFrom(res);
+  return id;
+}

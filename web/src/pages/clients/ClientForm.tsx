@@ -5,24 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldErrors, Input, Select, Textarea } from "@/components/ui/form";
 import { Alert } from "@/components/ui/misc";
 import { ApiError, unwrap } from "@/lib/problem";
+import { parseVariables } from "@/pages/profiles/IdentityFields";
 import { clientError, clientInput, refreshClients, useProfiles, useSecrets, type Client, type ClientInput } from "./data";
 
 const macPattern = /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i;
 const ipv4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
-
-/** "key=value" per line. */
-function parseVariables(text: string): { vars: Record<string, string>; bad: string[] } {
-  const vars: Record<string, string> = {};
-  const bad: string[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    const i = line.indexOf("=");
-    if (i <= 0) bad.push(line);
-    else vars[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-  }
-  return { vars, bad };
-}
 
 /** Add a client, or edit one. Hardware details the agent reported are kept. */
 export function ClientForm({ client, onDone, onCancel }: { client: Client | null; onDone: (c: Client) => void; onCancel: () => void }) {

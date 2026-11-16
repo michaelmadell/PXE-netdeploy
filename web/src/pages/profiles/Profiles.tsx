@@ -10,6 +10,7 @@ import { ApiError, errorMessage, unwrap } from "@/lib/problem";
 import { useBootImages, useSettings, windowsImages } from "@/pages/boot/data";
 import { useImages } from "@/pages/images/data";
 import { Findings, useValidation } from "@/pages/deployments/parts";
+import { IdentityFields, OsFields, VariablesField, identityProblems, osToInput, parseVariables, type Identity, type OsDraft } from "./IdentityFields";
 
 type Profile = Schemas["Profile"];
 type ProfileInput = Schemas["ProfileInput"];
@@ -182,7 +183,7 @@ export function ProfilesPage() {
         </div>
       )}
 
-      <Dialog open={!!editing} onClose={() => setEditing(null)} title={editing === "new" ? "New profile" : "Edit profile"}>
+      <Dialog wide open={!!editing} onClose={() => setEditing(null)} title={editing === "new" ? "New profile" : "Edit profile"}>
         {editing && (
           <ProfileForm
             key={editing === "new" ? "new" : editing.etag}
@@ -255,25 +256,37 @@ function ProfileForm({
   const [editionIndex, setEditionIndex] = useState<number | null>(profile?.editionIndex ?? null);
   const [bootOrder, setBootOrder] = useState(profile?.bootOrderAfterDeploy ?? "disk-first");
   const [asDefault, setAsDefault] = useState(offerDefault);
+  const [identity, setIdentity] = useState<Identity>(profile?.identity ?? { mode: "none", skipEula: true });
+  const [os, setOs] = useState<OsDraft>(profile?.osSettings ?? {});
+  const [varsText, setVarsText] = useState(
+    Object.entries(profile?.variables ?? {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n"),
+  );
+  const problems = identity.mode === "entra" ? [] : identityProblems(identity);
+  const vars = parseVariables(varsText);
 
   const boot = boots.find((b) => b.id === bootImageId);
   const source = sources.find((s) => s.image.id === installImageId);
   const mismatch = boot && source && boot.architecture !== source.win.architecture;
-  const valid = !!name.trim() && !!bootImageId && !!installImageId && editionIndex !== null && !mismatch;
+  const valid =
+    !!name.trim() && !!bootImageId && !!installImageId && editionIndex !== null && !mismatch && problems.length === 0 && vars.bad.length === 0;
 
   const save = useMutation({
     mutationFn: async () => {
-      // Everything this form doesn't show (identity, variables, OS settings) is kept as it was.
+      // Everything this form doesn't show (install method, driver groups, …) is kept as it was.
       const { id: _id, etag: _etag, createdAt: _c, updatedAt: _u, ...kept } = profile ?? ({} as Partial<Profile>);
       const input: ProfileInput = {
         installMethod: "agent",
-        identity: { mode: "none", skipEula: true },
         ...kept,
         name: name.trim(),
         bootImageId,
         installImageId,
         editionIndex: editionIndex!,
         bootOrderAfterDeploy: bootOrder,
+        identity,
+        osSettings: osToInput(os),
+        variables: vars.vars,
       };
       const saved = profile
         ? unwrap(await api.PUT("/profiles/{profileId}", { params: { path: { profileId: profile.id }, header: { "If-Match": profile.etag } }, body: input }))
@@ -369,13 +382,26 @@ function ProfileForm({
           ]}
         />
 
-        {profile && profile.identity.mode !== "none" ? (
-          <p className="text-sm text-muted-foreground">Accounts: {identityText[profile.identity.mode]} (set through the API; kept as it is).</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Windows is installed without accounts: whoever first starts the machine goes through Windows setup.
-          </p>
-        )}
+        <section className="space-y-4 border-t pt-5">
+          <h3 className="text-sm font-semibold">Accounts and domain</h3>
+          <IdentityFields value={identity} onChange={setIdentity} />
+          {problems.length > 0 && (
+            <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+              {problems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section className="space-y-4 border-t pt-5">
+          <h3 className="text-sm font-semibold">Windows settings</h3>
+          <OsFields value={os} onChange={setOs} />
+          <VariablesField
+            text={varsText}
+            onChange={setVarsText}
+            hint="One name=value per line, for the computer name pattern ({{ .Variables.name }}). A client’s own variables override these."
+          />
+        </section>
 
         {(offerDefault || asDefault) && (
           <Checkbox

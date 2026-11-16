@@ -28,6 +28,7 @@ import { ImagesPage } from "@/pages/images/Images";
 import { Overview } from "@/pages/Overview";
 import { Planned } from "@/pages/Planned";
 import { ProfilesPage } from "@/pages/profiles/Profiles";
+import { SecretsPage } from "@/pages/secrets/Secrets";
 import { SettingsPage } from "@/pages/Settings";
 
 type NavItem = { to: string; label: string; icon: LucideIcon; planned?: string };
@@ -42,7 +43,7 @@ const nav: NavItem[] = [
   { to: "/profiles", label: "Profiles", icon: Boxes },
   { to: "/clients", label: "Clients", icon: UserCog },
   { to: "/deployments", label: "Deployments", icon: ListChecks },
-  { to: "/secrets", label: "Secrets", icon: KeyRound, planned: "Store passwords, join credentials and Autopilot files. Values are never shown again." },
+  { to: "/secrets", label: "Secrets", icon: KeyRound },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -104,6 +105,7 @@ export function App() {
           <Route path="/clients/:clientId" element={<ClientDetailPage />} />
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/deployments/:deploymentId" element={<DeploymentDetailPage />} />
+          <Route path="/secrets" element={<SecretsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {nav
             .filter((n) => n.planned)

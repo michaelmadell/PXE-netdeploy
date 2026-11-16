@@ -74,11 +74,14 @@ deployment token, while it runs; never stored. The agent writes it to
 - `ad`, `joinMethod: credentials`: `UnattendedJoin` in specialize (domain,
   OU, the `domain-credential` secret); needs a DC reachable during Setup.
 - `ad`, `joinMethod: odj`: the client's `secretRefs.odjBlob` (kind
-  `odj-blob`) is served at `GET /agent/identity/odj-blob`; the agent runs
-  `djoin /requestODJ /loadfile … /windowspath W:\Windows` offline and
-  deletes the file. The blob sets the computer name; a profile pattern is
-  ignored (validate warns). Arming a client without a blob: `422
-  missing_odj_blob`.
+  `odj-blob`, a `djoin /provision /savefile` file, checked when the secret
+  is created) goes into the unattend as `UnattendedJoin/Identification/
+  Provisioning/AccountData`; Setup joins offline in specialize, with no DC.
+  The blob sets the computer name, so the unattend has no `ComputerName`; a
+  profile pattern is ignored (validate warns). Arming a client without a
+  blob: `422 missing_odj_blob`. (Amended 2026-11-16: the agent was to run
+  `djoin /requestODJ` against the applied image, but WinPE has no
+  `djoin.exe`; `GET /agent/identity/{kind}` was removed with it.)
 - `ad` may add the optional break-glass local administrator.
 - `entra`: Phase 5 (`422 not_implemented` on profiles).
 

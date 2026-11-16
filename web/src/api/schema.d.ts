@@ -912,7 +912,8 @@ export interface paths {
         /**
          * Create a new secret.
          * @description For file-based kinds (`odj-blob`, `autopilot-json`, `provisioning-package`)
-         *     pass `uploadId` instead of `value`. Values are encrypted at rest (DPAPI on
+         *     pass `uploadId` instead of `value`. An `odj-blob` must be a `djoin /provision
+         *     /savefile` file (base64 text, UTF-16 or UTF-8); anything else is `400`. Values are encrypted at rest (DPAPI on
          *     Windows, a key file on Linux).
          */
         post: operations["createSecret"];
@@ -1205,28 +1206,6 @@ export interface paths {
          *     the deployment is `running`. The plan's `unattendUrl` points here.
          */
         get: operations["agentGetUnattend"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent/identity/{kind}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                kind: "odj-blob";
-            };
-            cookie?: never;
-        };
-        /**
-         * An identity file the plan lists (the client's ODJ blob).
-         * @description Decrypted from the deployment's secret copy; only while the deployment is `running`.
-         */
-        get: operations["agentGetIdentityFile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2029,8 +2008,9 @@ export interface components {
             mode: "ad";
             /**
              * @description `odj` (recommended): offline domain join; each client needs an ODJ blob
-             *     in `secretRefs.odjBlob` (from `djoin /provision`). No credentials reach
-             *     the client. `credentials`: online join during specialize; needs
+             *     in `secretRefs.odjBlob` (from `djoin /provision`), which Setup applies from
+             *     the unattend file (`UnattendedJoin/Identification/Provisioning/AccountData`).
+             *     No credentials reach the client and no DC is needed during Setup. `credentials`: online join during specialize; needs
              *     line-of-sight to a DC and puts the join credential on the machine
              *     until cleanup.
              * @enum {string}
@@ -2692,7 +2672,7 @@ export interface components {
             identityFiles?: {
                 /** @enum {string} */
                 kind: "odj-blob" | "autopilot-json" | "provisioning-package";
-                /** @description `/agent/identity/{kind}`. Phase 4 serves `odj-blob` only. */
+                /** @description Phase 5 (Autopilot, provisioning packages); Phase 4 plans have none. The ODJ blob travels in the unattend file (ADR 0026). */
                 contentUrl: string;
                 /** @description SHA-256 of the decrypted file. */
                 sha256: string;
@@ -5000,30 +4980,6 @@ export interface operations {
                 };
             };
             401: components["responses"]["Problem"];
-        };
-    };
-    agentGetIdentityFile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                kind: "odj-blob";
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The file. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            401: components["responses"]["Problem"];
-            404: components["responses"]["Problem"];
         };
     };
     agentGetFile: {

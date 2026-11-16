@@ -137,20 +137,24 @@ forward from Phase 5). A 9 GB Win11 ISO uploads in 24 s and imports in 14 s;
 the whole store backs up to an encrypted share in 31 s and restores in 27 s.
 Results: [spikes/phase-3-findings.md](spikes/phase-3-findings.md).
 
-**In progress (Phase 4, from 2026-11-08):** decisions 1–3: building a boot image
-(ADR 0022: `/boot-images`, the build job, both builders, the agent embedded
-in the server), writing its BCD (ADR 0023, `internal/bcd`), deciding what
-each client boots (ADR 0024: `boot.Profiles`, `/profiles` storage), and the
-agent (ADR 0025: `/agent/*`, `internal/agent/…`).
-Results: [spikes/phase-4-findings.md](spikes/phase-4-findings.md).
+**Done (Phase 4, 2026-11-08 to 2026-11-16):** boot images built with wimlib
+or DISM (ADR 0022) with our own BCD writer (ADR 0023); each client boots its
+profile's boot image (ADR 0024); the WinPE agent partitions, applies the
+image, adds OS drivers, writes boot files and the firmware boot entry (ADR
+0025); deployments are armed from the API or started at the boot prompt,
+cancelled gracefully, timed out, and get a built-in unattend for no
+accounts, local accounts, or an Active Directory join online or offline
+(ADR 0026). All lab-tested on Hyper-V under Secure Boot with the 2023-signed
+boot manager, including a real test domain. The web UI covers settings,
+images, boot images, profiles (with accounts and domain), clients,
+deployments (live progress and logs) and secrets. Deferred: the SMB install
+method. Results: [spikes/phase-4-findings.md](spikes/phase-4-findings.md).
 
 ## Next step
 
-**Phase 4: boot image builder, agent, profiles, deployments.** Start from
-[plan/phase-4-handover.md](plan/phase-4-handover.md): it lists what Phase 3
-established, the decisions to make first (building a boot image, writing the
-BCD, the real `Booter`, the agent, profiles and deployments), and what
-carries over.
+**Phase 5: unattend templates, Entra, the remaining UI.** Start from
+[plan/phase-5-handover.md](plan/phase-5-handover.md): what Phase 4
+established, the decisions to make, and what carries over.
 
 ## Open questions and things to verify
 

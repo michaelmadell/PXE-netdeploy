@@ -74,6 +74,6 @@ machines that have revoked the 2011 chain.
 | 1 | **Spike:** Win11 WinPE boots under Secure Boot on Hyper-V from our full-mode DHCP + TFTP (proxy mode untested); test HTTP Boot ISO |
 | 2 | Core server: DHCP (proxy/full), TFTP, content HTTP, settings, health (**done 2026-11-06**) |
 | 3 | Storage and imports: ISOs, driver packs, jobs, uploads (tus); backups and secrets storage (**done 2026-11-08**) |
-| 4 | Boot image builder (DISM + wimlib), agent, profiles, clients, deployments |
-| 5 | Identity, unattend templates; UI for all of the above (secrets storage moved to Phase 3) |
+| 4 | Boot image builder (DISM + wimlib), agent, profiles, clients, deployments; built-in unattend for local and AD identities; UI for these (**done 2026-11-16**; SMB install method deferred) |
+| 5 | Unattend templates, Entra/Autopilot identity, SMB install method; remaining UI (drivers, templates, settings gaps) |
 | 6 | Linux and iPXE paths, content HTTPS (generated CA, `/settings/content-ca`) and HTTPS boot, auth hardening, packaging |

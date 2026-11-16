@@ -96,12 +96,20 @@ Next session, in order:
    credentials join, offline join (from the unattend: WinPE has no
    `djoin.exe`), `local` with auto-logon, arming from the API, cancelling.
    Entra is Phase 5.
-3. Later in Phase 4: SMB/`setup.exe` install method. (Per-edition image
-   export was dropped 2026-11-16: one edition is 93 % of the 26H2 WIM;
-   findings.)
+3. SMB/`setup.exe` install method: **deferred past Phase 4** (2026-11-16);
+   it needs a spike first (see `phase-5-handover.md`). Per-edition image
+   export was dropped: one edition is 93 % of the 26H2 WIM (findings).
+4. Boot image TFTP defaults lowered to 8192/8, the server's default caps
+   (2026-11-16), so a new setup has no `tftp_capped_by_server` warning.
 
-Lab state: server data in `./data` (lab interface full DHCP, content
-listener on :8080, boot prompt password set, default profile `Win11 Pro`);
+**Phase 4 closed 2026-11-16.** The web UI for clients, deployments, secrets
+and profile identity was built alongside (`claude/ui-pass-2.md`,
+`claude/ui-pass-3.md` in the Claude project). Continue from
+[phase-5-handover.md](phase-5-handover.md).
+
+Lab state (second host, from 2026-11-11): server data in `C:\netdeploy\data`
+(`just dev -DataDir C:\netdeploy\data`; lab interface full DHCP with the
+test DC as DNS, content listener on :80, boot prompt password set);
 wimlib in `.tmp\wimlib`; run `just agent` after changing `cmd/agent` or
 `internal/agent`, restart the server, rebuild the boot image.
 

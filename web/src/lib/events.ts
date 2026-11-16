@@ -10,6 +10,8 @@ import type { Schemas } from "@/api/client";
 type Event = Schemas["Event"];
 type Job = Schemas["Job"];
 type JobPage = Schemas["JobPage"];
+type Deployment = Schemas["Deployment"];
+type DeploymentPage = Schemas["DeploymentPage"];
 
 const types: Event["type"][] = [
   "client.updated",
@@ -45,6 +47,13 @@ function handle(qc: QueryClient, ev: Event) {
     case "job.updated":
       jobUpdated(qc, ev);
       break;
+    case "client.updated":
+      void qc.invalidateQueries({ queryKey: ["clients"] });
+      void qc.invalidateQueries({ queryKey: ["client"] });
+      break;
+    case "deployment.updated":
+      deploymentUpdated(qc, ev);
+      break;
   }
 }
 
@@ -73,6 +82,43 @@ function jobUpdated(qc: QueryClient, ev: Event) {
     void qc.invalidateQueries({ queryKey: ["boot-images"] });
     void qc.invalidateQueries({ queryKey: ["uploads"] });
     void qc.invalidateQueries({ queryKey: ["health"] });
+  }
+}
+
+/**
+ * A running deployment reports each percent: patch the cached copies in
+ * place. A new deployment or a status change re-reads lists, the deployment,
+ * its client and its log.
+ */
+function deploymentUpdated(qc: QueryClient, ev: Event) {
+  const d = (ev.data ?? {}) as Partial<Pick<Deployment, "status" | "stage" | "percent" | "clientId">>;
+  const id = ev.resourceId;
+  let unchanged = false;
+  if (id && d.status) {
+    const patch = (x: Deployment): Deployment => ({ ...x, stage: d.stage ?? x.stage, percent: d.percent ?? x.percent });
+    const cur = qc.getQueryData<Deployment>(["deployment", id]);
+    if (cur && cur.status === d.status) {
+      qc.setQueryData<Deployment>(["deployment", id], patch(cur));
+      unchanged = true;
+    }
+    let seen = false;
+    qc.setQueriesData<DeploymentPage>({ queryKey: ["deployments"] }, (page) => {
+      if (!page) return page;
+      const i = page.items.findIndex((x) => x.id === id);
+      if (i < 0 || page.items[i]!.status !== d.status) return page;
+      seen = true;
+      const items = page.items.slice();
+      items[i] = patch(items[i]!);
+      return { ...page, items };
+    });
+    unchanged = unchanged || seen;
+  }
+  if (!unchanged) {
+    void qc.invalidateQueries({ queryKey: ["deployments"] });
+    void qc.invalidateQueries({ queryKey: ["deployment"] });
+    void qc.invalidateQueries({ queryKey: ["clients"] });
+    void qc.invalidateQueries({ queryKey: ["client"] });
+    if (id) void qc.invalidateQueries({ queryKey: ["deployment-logs", id] });
   }
 }
 

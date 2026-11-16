@@ -19,6 +19,10 @@ import { useServerEvents } from "@/lib/events";
 import { cn } from "@/lib/utils";
 import { BootImageDetailPage } from "@/pages/boot/BootImageDetail";
 import { BootImagesPage } from "@/pages/boot/BootImages";
+import { ClientDetailPage } from "@/pages/clients/ClientDetail";
+import { ClientsPage } from "@/pages/clients/Clients";
+import { DeploymentDetailPage } from "@/pages/deployments/DeploymentDetail";
+import { DeploymentsPage } from "@/pages/deployments/Deployments";
 import { ImageDetailPage } from "@/pages/images/ImageDetail";
 import { ImagesPage } from "@/pages/images/Images";
 import { Overview } from "@/pages/Overview";
@@ -36,8 +40,8 @@ const nav: NavItem[] = [
   { to: "/boot-images", label: "Boot images", icon: HardDrive },
   { to: "/templates", label: "Unattend templates", icon: FileCode2, planned: "Edit and preview autounattend templates." },
   { to: "/profiles", label: "Profiles", icon: Boxes },
-  { to: "/clients", label: "Clients", icon: UserCog, planned: "Register machines, approve discovered ones and assign profiles." },
-  { to: "/deployments", label: "Deployments", icon: ListChecks, planned: "Schedule deployments and follow their progress and logs." },
+  { to: "/clients", label: "Clients", icon: UserCog },
+  { to: "/deployments", label: "Deployments", icon: ListChecks },
   { to: "/secrets", label: "Secrets", icon: KeyRound, planned: "Store passwords, join credentials and Autopilot files. Values are never shown again." },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
@@ -96,6 +100,10 @@ export function App() {
           <Route path="/boot-images" element={<BootImagesPage />} />
           <Route path="/boot-images/:bootImageId" element={<BootImageDetailPage />} />
           <Route path="/profiles" element={<ProfilesPage />} />
+          <Route path="/clients" element={<ClientsPage />} />
+          <Route path="/clients/:clientId" element={<ClientDetailPage />} />
+          <Route path="/deployments" element={<DeploymentsPage />} />
+          <Route path="/deployments/:deploymentId" element={<DeploymentDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {nav
             .filter((n) => n.planned)

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { ListChecks, Pencil, Plus, Star, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 import { api, type Schemas } from "@/api/client";
@@ -9,6 +9,7 @@ import { Alert, Badge, Dialog, PageHeader, td, th } from "@/components/ui/misc";
 import { ApiError, errorMessage, unwrap } from "@/lib/problem";
 import { useBootImages, useSettings, windowsImages } from "@/pages/boot/data";
 import { useImages } from "@/pages/images/data";
+import { Findings, useValidation } from "@/pages/deployments/parts";
 
 type Profile = Schemas["Profile"];
 type ProfileInput = Schemas["ProfileInput"];
@@ -51,6 +52,7 @@ export function ProfilesPage() {
   const images = useImages();
   const [editing, setEditing] = useState<Profile | "new" | null>(null);
   const [deleting, setDeleting] = useState<Profile | null>(null);
+  const [checking, setChecking] = useState<Profile | null>(null);
 
   const refresh = () => {
     for (const key of ["profiles", "settings", "health"]) void qc.invalidateQueries({ queryKey: [key] });
@@ -161,6 +163,9 @@ export function ProfilesPage() {
                             <Star aria-hidden /> Make default
                           </Button>
                         )}
+                        <Button size="sm" variant="ghost" aria-label={`Check ${p.name}`} onClick={() => setChecking(p)}>
+                          <ListChecks aria-hidden /> Check
+                        </Button>
                         <Button size="sm" variant="ghost" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
                           <Pencil aria-hidden /> Edit
                         </Button>
@@ -190,6 +195,15 @@ export function ProfilesPage() {
             onCancel={() => setEditing(null)}
           />
         )}
+      </Dialog>
+
+      <Dialog
+        open={!!checking}
+        onClose={() => setChecking(null)}
+        title={checking ? `Can “${checking.name}” be deployed?` : "Check profile"}
+        footer={<Button onClick={() => setChecking(null)}>Close</Button>}
+      >
+        {checking && <ProfileCheck id={checking.id} />}
       </Dialog>
 
       <Dialog
@@ -381,5 +395,27 @@ function ProfileForm({
         </div>
       </form>
     </FieldErrors>
+  );
+}
+
+/** POST /profiles/{id}/validate, as arming runs it. */
+function ProfileCheck({ id }: { id: string }) {
+  const v = useValidation(id);
+  if (v.isPending) return <p className="text-sm text-muted-foreground">Checking…</p>;
+  if (v.isError)
+    return (
+      <Alert tone="error" title="The profile couldn’t be checked">
+        {errorMessage(v.error)}
+      </Alert>
+    );
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        {v.data.ok
+          ? "Clients can be deployed with this profile."
+          : "Arming a client with this profile is refused until the errors are fixed."}
+      </p>
+      <Findings findings={v.data.findings} />
+    </div>
   );
 }

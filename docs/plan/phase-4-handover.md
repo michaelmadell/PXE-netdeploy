@@ -92,8 +92,9 @@ Next session, in order:
    ([ADR 0026](../adr/0026-deployments.md)) and implemented: `POST
    /deployments` (arming), graceful cancel, timeouts, secret copies, the
    built-in unattend (`none`, `local`, `ad` credentials and ODJ),
-   `POST /profiles/{id}/validate`. AD credentials join lab-tested
-   2026-11-16 (findings); still to test in the lab: ODJ, `local`, arming
+   `POST /profiles/{id}/validate`. Lab-tested 2026-11-16 (findings): AD
+   credentials join, offline join (from the unattend: WinPE has no
+   `djoin.exe`), `local` with auto-logon. Still to test in the lab: arming
    from the API, cancelling. Entra is Phase 5.
 3. Later in Phase 4: SMB/`setup.exe` install method; per-edition image
    export to shrink the 8 GB download.

@@ -602,12 +602,22 @@ $up = $r.Headers.Location[0]; if ($up -notmatch '^https') { $up = "https://127.0
 Invoke-WebRequest $up -Method Patch -SkipCertificateCheck -Body $bytes -ContentType 'application/offset+octet-stream' `
   -Headers @{ 'Tus-Resumable' = '1.0.0'; 'Upload-Offset' = '0' } | Out-Null
 $blob = api Post /secrets @{ name = 'LAB-01 ODJ'; kind = 'odj-blob'; uploadId = ($up -split '/')[-1] }
-$c = Invoke-WebRequest "$b/clients/$($client.id)" -SkipCertificateCheck; $cj = $c.Content | ConvertFrom-Json
+$cj = api Get "/clients/$($client.id)"; $etag = $cj.etag   # the ETag is in the body, not a header
+'id','etag','createdAt','updatedAt','lastSeenAt','lastIp','lastArch','source' | % { $cj.PSObject.Properties.Remove($_) }
 $cj | Add-Member -Force secretRefs @{ odjBlob = $blob.id }
-api Put "/clients/$($client.id)" $cj $c.Headers.ETag[0]
+api Put "/clients/$($client.id)" $cj $etag
 $p.identity = @{ mode = 'ad'; joinMethod = 'odj'; localAdmin = @{ name = 'breakglass'; passwordSecretId = $pw.id } }
 save-profile
 ```
 
-The blob names the computer (`LAB-01`); the profile's name pattern is
-ignored.
+`POST /secrets` refuses a file that isn't a `djoin /provision` blob. The
+blob goes into the unattend file and Setup joins offline in specialize
+(WinPE has no `djoin.exe`). It names the computer (`LAB-01`): the unattend
+has no `ComputerName` and the profile's name pattern is ignored. Then
+deploy as before (boot prompt, or arm the client) and expect, as with the
+credentials join, a sign-in screen that takes `MICHAEL-DOM\<user>`; the
+computer object already exists from `/provision`. If it didn't join,
+`Windows\debug\NetSetup.LOG` and `Windows\Panther\UnattendGC\setupact.log`
+(search `Provisioning`, `ODJ`) have the reason. Safest is one blob per
+install: provision a new one (`/reuse` keeps the name and account) for each
+redeploy.

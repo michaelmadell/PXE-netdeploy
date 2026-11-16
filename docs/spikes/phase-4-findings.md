@@ -195,5 +195,18 @@ Notes:
   didn't survive), read `Windows\debug\NetSetup.LOG` and
   `Windows\Panther\UnattendGC\setupact.log`.
 
-Not yet tested: offline join (ODJ), `local` identity end to end, arming from
-the API, cancelling in the lab.
+Also tested 2026-11-16:
+
+- **`local` identity:** accounts, auto-logon and the hidden OOBE screens
+  worked.
+- **Offline join (ODJ): joined.** WinPE has no `djoin.exe` (neither
+  `boot.wim` index of the 26H2 media; `netjoin.dll` is there), so the agent
+  can't run `djoin /requestODJ` against the applied image as first designed.
+  Instead the blob goes into the unattend as `UnattendedJoin/Identification/
+  Provisioning/AccountData` and Setup joins offline in specialize (ADR 0026,
+  amended). The unattend has no `ComputerName`: the blob names the computer.
+  The `djoin /provision /savefile` file is UTF-16LE base64 with a trailing
+  NUL; the server accepts that, with or without a BOM, or UTF-8.
+
+Not yet tested in the lab: arming from the API (`POST /deployments`, no
+password prompt), cancelling a running deployment.

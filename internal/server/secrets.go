@@ -11,6 +11,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
+	"github.com/michaelmadell/pxe-netdeploy/internal/unattend"
 	"github.com/michaelmadell/pxe-netdeploy/internal/uploads"
 )
 
@@ -96,6 +97,11 @@ func (s *Server) secretValue(ctx context.Context, kind api.SecretKind, credentia
 		}
 		if kind == api.SecretKindAutopilotJson && !json.Valid(b) {
 			return bad("The Autopilot file isn't valid JSON.")
+		}
+		if kind == api.SecretKindOdjBlob {
+			if _, err := unattend.ODJAccountData(b); err != nil {
+				return bad("The file is " + err.Error() + ".")
+			}
 		}
 		var hint *string
 		if name != "" {

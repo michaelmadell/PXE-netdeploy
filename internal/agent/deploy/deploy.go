@@ -5,8 +5,6 @@ package deploy
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -271,9 +269,6 @@ func configure(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 			}
 		}
 	}
-	if err := joinOffline(ctx, e, plan, w); err != nil {
-		return err
-	}
 	// WinRE on the recovery partition.
 	e.Report(wire.StageConfiguring, 50, "Setting up Windows RE")
 	src := filepath.Join(w, "Windows", "System32", "Recovery", "Winre.wim")
@@ -339,37 +334,4 @@ func CopyFile(src, dst string) error {
 		return err
 	}
 	return copyFile(src, dst)
-}
-
-// joinOffline applies an ODJ blob to the applied image (identity ad, odj;
-// ADR 0026) and deletes it.
-func joinOffline(ctx context.Context, e Env, plan wire.Plan, w string) error {
-	for _, f := range plan.IdentityFiles {
-		if f.Kind != "odj-blob" {
-			e.Log.Warn("identity file not supported by this agent", "kind", f.Kind)
-			continue
-		}
-		e.Report(wire.StageConfiguring, 30, "Joining the domain (offline)")
-		gctx, done := e.transferCtx(ctx)
-		b, err := e.Client.Get(gctx, f.ContentURL)
-		done()
-		if err = e.transferErr(err); err != nil {
-			return fmt.Errorf("fetch the ODJ blob: %w", err)
-		}
-		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != f.SHA256 {
-			return errors.New("the ODJ blob doesn't match its SHA-256")
-		}
-		blob := filepath.Join(e.Work, "odj.txt")
-		if err := os.WriteFile(blob, b, 0o600); err != nil {
-			return err
-		}
-		_, err = e.run(ctx, "djoin.exe", "/requestODJ", "/loadfile", blob, "/windowspath", filepath.Join(w, "Windows"))
-		if rerr := os.Remove(blob); rerr != nil {
-			e.Log.Warn("remove the ODJ blob", "err", rerr)
-		}
-		if err != nil {
-			return fmt.Errorf("offline domain join: %w", err)
-		}
-	}
-	return nil
 }

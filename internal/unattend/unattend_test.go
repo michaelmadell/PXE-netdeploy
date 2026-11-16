@@ -117,8 +117,18 @@ func TestRenderADAndNone(t *testing.T) {
 	if refs := p.Secrets(&odj); len(refs) != 1 || refs[0].Kind != KindODJBlob {
 		t.Errorf("odj secrets %+v", refs)
 	}
-	if b, err = Render(p, Input{}); err != nil || strings.Contains(string(b), "UnattendedJoin") {
-		t.Errorf("odj: %v\n%s", err, b)
+	if _, err = Render(p, Input{}); err == nil {
+		t.Error("odj without a blob: no error")
+	}
+	blob := odjFile(true)
+	b, err = Render(p, Input{ODJBlob: blob})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parseXML(t, b)
+	if s := string(b); !strings.Contains(s, "<AccountData>"+odjText+"</AccountData>") || strings.Contains(s, "<ComputerName>") ||
+		strings.Contains(s, "<Credentials>") {
+		t.Errorf("odj:\n%s", s)
 	}
 
 	p, _ = Parse([]byte(`{"identity":{"mode":"none","skipEula":false}}`))
@@ -132,5 +142,35 @@ func TestRenderADAndNone(t *testing.T) {
 	p, _ = Parse([]byte(`{"identity":{"mode":"entra","method":"autopilot-registered"}}`))
 	if _, err := Render(p, Input{}); err == nil {
 		t.Error("entra: no error")
+	}
+}
+
+// odjText is base64 standing in for a djoin blob.
+var odjText = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("ODJ PROVISION DATA ", 8)))
+
+// odjFile is odjText as djoin /savefile writes it: UTF-16LE with a
+// trailing NUL (or UTF-8 with a line break).
+func odjFile(utf16le bool) []byte {
+	if !utf16le {
+		return []byte(odjText + "\r\n")
+	}
+	var b []byte
+	for _, c := range utf16.Encode([]rune(odjText + "\x00")) {
+		b = append(b, byte(c), byte(c>>8))
+	}
+	return b
+}
+
+func TestODJAccountData(t *testing.T) {
+	bom := append([]byte{0xFF, 0xFE}, odjFile(true)...)
+	for name, in := range map[string][]byte{"utf-16": odjFile(true), "utf-16 bom": bom, "utf-8": odjFile(false)} {
+		if got, err := ODJAccountData(in); err != nil || got != odjText {
+			t.Errorf("%s: %q %v", name, got, err)
+		}
+	}
+	for name, in := range map[string][]byte{"empty": nil, "short": []byte("abcd"), "not base64": []byte(strings.Repeat("not base64! ", 10))} {
+		if _, err := ODJAccountData(in); !errors.Is(err, ErrNotODJBlob) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

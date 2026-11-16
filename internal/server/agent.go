@@ -596,22 +596,6 @@ func (s *Server) buildPlan(ctx context.Context, d store.Deployment) (api.AgentDe
 	u := apiBase + "/agent/unattend"
 	dest := api.AgentDeploymentPlanUnattendDestinationPanther
 	plan.UnattendUrl, plan.UnattendDestination = &u, &dest
-	values, err := s.deploymentSecretValues(ctx, d.ID)
-	if err != nil {
-		return api.AgentDeploymentPlan{}, nil, err
-	}
-	for _, v := range values {
-		if v.kind != "odj-blob" {
-			continue
-		}
-		sum := sha256.Sum256(v.value)
-		idFiles := []struct {
-			ContentUrl string                                   `json:"contentUrl"`
-			Kind       api.AgentDeploymentPlanIdentityFilesKind `json:"kind"`
-			Sha256     string                                   `json:"sha256"`
-		}{{ContentUrl: apiBase + "/agent/identity/odj-blob", Kind: api.AgentDeploymentPlanIdentityFilesKindOdjBlob, Sha256: hex.EncodeToString(sum[:])}}
-		plan.IdentityFiles = &idFiles
-	}
 	return plan, files, nil
 }
 
@@ -672,6 +656,9 @@ func (s *Server) AgentGetUnattend(ctx context.Context, _ api.AgentGetUnattendReq
 	in := unattend.Input{Arch: s.unattendArch(ctx, d), ComputerName: d.ComputerName, Secrets: map[string][]byte{}}
 	for id, v := range values {
 		in.Secrets[id] = v.value
+		if v.kind == "odj-blob" {
+			in.ODJBlob = v.value
+		}
 	}
 	b, err := unattend.Render(p, in)
 	if err != nil {
@@ -695,28 +682,6 @@ func (s *Server) unattendArch(ctx context.Context, d store.Deployment) string {
 		}
 	}
 	return "amd64"
-}
-
-// AgentGetIdentityFile implements GET /agent/identity/{kind}.
-func (s *Server) AgentGetIdentityFile(ctx context.Context, req api.AgentGetIdentityFileRequestObject) (api.AgentGetIdentityFileResponseObject, error) {
-	t, ok, err := s.deploymentToken(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return api.AgentGetIdentityFile401ApplicationProblemPlusJSONResponse{ProblemApplicationProblemPlusJSONResponse: api.ProblemApplicationProblemPlusJSONResponse(agentUnauthorized())}, nil
-	}
-	values, err := s.deploymentSecretValues(ctx, *t.DeploymentID)
-	if err != nil {
-		return nil, err
-	}
-	for _, v := range values {
-		if v.kind == req.Kind {
-			return api.AgentGetIdentityFile200ApplicationoctetStreamResponse{Body: bytes.NewReader(v.value), ContentLength: int64(len(v.value))}, nil
-		}
-	}
-	return api.AgentGetIdentityFile404ApplicationProblemPlusJSONResponse(newProblem(http.StatusNotFound, "not_found", "Not found",
-		"This deployment has no "+req.Kind+".", nil)), nil
 }
 
 func agentFileURL(sha string) string { return apiBase + "/agent/files/" + sha }

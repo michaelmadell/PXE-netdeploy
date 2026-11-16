@@ -20,6 +20,8 @@ type Input struct {
 	ComputerName *string
 	// Secrets are the decrypted values by secret id.
 	Secrets map[string][]byte
+	// ODJBlob is the client's djoin /provision file (identity ad, odj).
+	ODJBlob []byte
 }
 
 // Credential is a domain-credential secret's value.
@@ -34,6 +36,7 @@ type account struct {
 
 type view struct {
 	Arch, ComputerName, TimeZone, ProductKey string
+	AccountData                              string // ODJ: Setup joins offline
 	UILanguage, SystemLocale, UserLocale     string
 	InputLocale                              string
 	HideEULA, HideOOBE                       bool
@@ -112,6 +115,17 @@ func Render(p Profile, in Input) ([]byte, error) {
 			}
 			v.Accounts = append(v.Accounts, account{Name: la.Name, Group: "Administrators", Password: encodePassword(s)})
 		}
+		if id.JoinMethod == JoinODJ {
+			if len(in.ODJBlob) == 0 {
+				return nil, fmt.Errorf("unattend: offline domain join without the client's ODJ blob")
+			}
+			data, err := ODJAccountData(in.ODJBlob)
+			if err != nil {
+				return nil, fmt.Errorf("unattend: %w", err)
+			}
+			v.AccountData = data
+			v.ComputerName = "" // the blob names the computer
+		}
 		if id.JoinMethod == JoinCredentials {
 			if id.JoinCredentialSecretID == nil {
 				return nil, fmt.Errorf("unattend: ad credentials join without joinCredentialSecretId")
@@ -177,7 +191,9 @@ var tmpl = template.Must(template.New("unattend").Funcs(template.FuncMap{"x": xm
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="specialize">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="{{.Arch}}" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+{{- if .ComputerName}}
       <ComputerName>{{x .ComputerName}}</ComputerName>
+{{- end}}
       <TimeZone>{{x .TimeZone}}</TimeZone>
 {{- if .ProductKey}}
       <ProductKey>{{x .ProductKey}}</ProductKey>
@@ -195,6 +211,15 @@ var tmpl = template.Must(template.New("unattend").Funcs(template.FuncMap{"x": xm
 {{- if .OU}}
         <MachineObjectOU>{{x .OU}}</MachineObjectOU>
 {{- end}}
+      </Identification>
+    </component>
+{{- end}}
+{{- if .AccountData}}
+    <component name="Microsoft-Windows-UnattendedJoin" processorArchitecture="{{.Arch}}" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <Identification>
+        <Provisioning>
+          <AccountData>{{.AccountData}}</AccountData>
+        </Provisioning>
       </Identification>
     </component>
 {{- end}}

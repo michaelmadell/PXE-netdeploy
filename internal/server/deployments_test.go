@@ -162,3 +162,46 @@ func TestScheduleCancelAndTimeouts(t *testing.T) {
 		t.Errorf("arm with a missing secret: %d %s", w.Code, w.Body)
 	}
 }
+
+func TestOfflineDomainJoinUnattend(t *testing.T) {
+	f := newAgentFixture(t)
+	vault := secrets.NewVault(f.st, secrets.NewKeys(t.TempDir()))
+	f.srv.vault = vault
+	text := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("ODJ PROVISION DATA ", 8)))
+	var file []byte // as djoin /savefile writes it: UTF-16LE, trailing NUL
+	for _, c := range utf16.Encode([]rune(text + "\x00")) {
+		file = append(file, byte(c), byte(c>>8))
+	}
+	blob, err := vault.Create(f.ctx, "LAB-ODJ01", "", "odj-blob", file, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := f.st.Profile(f.ctx, f.profile)
+	in := p.ProfileInput
+	in.Identity = json.RawMessage(`{"mode":"ad","joinMethod":"odj"}`)
+	if _, err := f.st.ReplaceProfile(f.ctx, p.ID, in, p.Version); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := f.st.CreateClient(f.ctx, store.ClientInput{MAC: "00:15:5d:00:85:09"})
+	if w := f.call("POST", "/deployments", "", `{"clientId":"`+c.ID+`","profileId":"`+f.profile+`"}`); w.Code != 422 ||
+		!strings.Contains(w.Body.String(), "missing_odj_blob") {
+		t.Fatalf("no blob: %d %s", w.Code, w.Body)
+	}
+	c.ODJBlobSecretID = &blob.ID
+	if _, err := f.st.ReplaceClient(f.ctx, c.ID, c.ClientInput, c.Version); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.call("POST", "/deployments", "", `{"clientId":"`+c.ID+`","profileId":"`+f.profile+`"}`); w.Code != 201 {
+		t.Fatalf("arm: %d %s", w.Code, w.Body)
+	}
+	ci := decode[api.AgentCheckInResult](t, f.call("POST", "/agent/check-in", "", identity))
+	plan := decode[api.AgentDeploymentPlan](t, f.call("GET", "/agent/deployment", ci.Armed.Token, ""))
+	if plan.IdentityFiles != nil {
+		t.Errorf("identity files: %+v", *plan.IdentityFiles)
+	}
+	w := f.call("GET", "/agent/unattend", ci.Armed.Token, "")
+	body := w.Body.String()
+	if w.Code != 200 || !strings.Contains(body, "<AccountData>"+text+"</AccountData>") || strings.Contains(body, "<ComputerName>") {
+		t.Errorf("unattend: %d\n%s", w.Code, body)
+	}
+}

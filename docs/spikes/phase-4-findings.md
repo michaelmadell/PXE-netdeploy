@@ -208,5 +208,25 @@ Also tested 2026-11-16:
   The `djoin /provision /savefile` file is UTF-16LE base64 with a trailing
   NUL; the server accepts that, with or without a BOM, or UTF-8.
 
-Not yet tested in the lab: arming from the API (`POST /deployments`, no
-password prompt), cancelling a running deployment.
+- **Arming from the API:** an armed client network-booted, showed the
+  countdown, deployed with no password prompt.
+- **Cancelling** a running deployment: the agent stopped as designed.
+
+Decision 5 is lab-tested end to end.
+
+## Single-edition export: not worth it (2026-11-16)
+
+Measured on the second lab host (Core Ultra 7 255U, 14 threads) with
+wimlib 1.14.5 against the 26H2 media (`install.wim`, 7.6 GB, 11 editions):
+
+| Export of edition 6 (Pro) | Time | Size |
+|---|---|---|
+| `wimlib-imagex export … 6 pro.wim` (LZX, as the source) | 30 s | 7.08 GB (−7 %) |
+| `… --solid` (LZMS, ESD-like) | abandoned: 0.46 GB written after ~12 min, ~1,450 s CPU | (est. well over an hour) |
+
+The editions share almost all their files, so one edition is nearly the
+whole WIM. The "roughly halve the 8 GB download" estimate in ADR 0025 was
+wrong. In the lab the whole download plus `dism /Apply-Image` took about
+3 minutes; 7 % less is seconds. Dropped from Phase 4. Real savings would
+come from not staging the image on the target disk at all (DISM applying
+from an SMB path, or streaming), which belongs with the SMB install method.

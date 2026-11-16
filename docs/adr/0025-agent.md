@@ -88,7 +88,8 @@ method and per-edition image exports come later in Phase 4.
 
 ## Consequences
 - A deployment can run end to end from the boot prompt before decision 5.
-- Each deployment downloads the whole `install.wim` (8 GB for ten
-  editions); a per-edition export would roughly halve it.
+- Each deployment downloads the whole `install.wim` (7.6 GB for the 26H2
+  media). A per-edition export saves only about 7 %: the editions share
+  almost all their files (Phase 4 findings, 2026-11-16).
 - To verify in the lab: `bcdboot /bootex` in WinPE; UEFI variables from
   WinPE; the disk auto-selection on real machines.

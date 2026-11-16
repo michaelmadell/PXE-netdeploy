@@ -955,8 +955,8 @@ paths:
         `install_image_unavailable` (not a ready `windows` image),
         `architecture_mismatch` (install image vs boot image), `unknown_edition`,
         `unknown_driver_group`, `not_implemented` (`installMethod: smb` until the
-        agent's SMB install; `unattendTemplateId` until Phase 5). Identity and
-        secret checks come with deployments; see `validate`.
+        agent's SMB install; `unattendTemplateId` and identity `entra` until
+        Phase 5). Secret and identity checks are in `validate`, which arming runs.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1044,6 +1044,8 @@ paths:
         to clients without an ODJ blob (warning, listed per client); boot image
         `tftp` values above the `Settings.tftp` caps (warning,
         `tftp_capped_by_server`: the server will negotiate the caps instead).
+        `POST /deployments` runs the same checks and refuses on any error. Implemented
+        findings are listed in ADR 0026.
       responses:
         "200":
           description: Validation result (always 200; check `ok`).
@@ -1190,11 +1192,15 @@ paths:
         (`pending` → `running`), so later boots fall back to the prompt and then
         the local disk. This is how a known client is re-tested remotely.
 
-        Snapshots the profile (and the current versions of its secrets) at scheduling
-        time so later edits or rotations do not change an in-flight deployment. The
-        computer name is rendered and validated here; an invalid name returns `422`
-        (`code: invalid_computer_name`). `409` (`code: deployment_active`) if the client already
-        has a pending or running deployment.
+        Snapshots the profile, the rendered computer name and copies of its secrets
+        (ADR 0026) so later edits or rotations do not change an in-flight deployment.
+        The client boots the boot image the snapshot names. `422` codes:
+        `no_profile` (no `profileId` and the client has none), `profile_invalid`
+        (`validateProfile` found errors; they are in `errors[]`),
+        `invalid_computer_name`, `missing_odj_blob` (`ad`/`odj` profile, client
+        without `secretRefs.odjBlob`). `409` (`code: deployment_active`) if the client
+        already has a pending or running deployment. An armed deployment not picked up
+        within `Settings.deployments.armedExpiryHours` fails (`expired`).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1243,7 +1249,13 @@ paths:
       tags: [deployments]
       operationId: cancelDeployment
       summary: Cancel a specific deployment.
-      description: Idempotent; cancelling a finished deployment returns it unchanged.
+      description: |
+        Idempotent; cancelling a finished deployment returns it unchanged. A `pending`
+        deployment is simply cancelled. A `running` one is marked `cancelled` at once
+        and stopped gracefully (ADR 0026): the agent learns at its next request (within
+        a minute), lets the command in progress finish (diskpart, DISM, bcdboot), stops
+        before the next step, uploads its logs and reboots. The disk may be left
+        partitioned or with an image but no boot files.
       responses:
         "200":
           description: Cancelled (or already finished).
@@ -1790,7 +1802,8 @@ paths:
         boot image. A `running` deployment for the same client (an agent that
         crashed or was rebooted) is marked `failed` (`code: superseded`) first; a
         `pending` one is cancelled. The session token is single-use.
-        `404` (`code: profile_not_found`); `422` (`code: invalid_computer_name`).
+        `404` (`code: profile_not_found`); `422` (`code: invalid_computer_name`,
+        `missing_odj_blob`, `profile_invalid`), shown by the agent before it wipes anything.
       requestBody:
         required: true
         content:
@@ -1825,6 +1838,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AgentDeploymentPlan" }
         "401": { $ref: "#/components/responses/Problem" }
+
+  /agent/unattend:
+    get:
+      tags: [agent]
+      operationId: agentGetUnattend
+      security:
+        - agentAuth: []
+      summary: The deployment's unattend file, rendered with its secrets.
+      description: |
+        The built-in unattend for the snapshot's identity mode (ADR 0026), rendered on
+        each request from the snapshot and its secret copies; never stored. Only while
+        the deployment is `running`. The plan's `unattendUrl` points here.
+      responses:
+        "200":
+          description: The unattend file.
+          content:
+            application/xml:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /agent/identity/{kind}:
+    parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: { type: string, enum: [odj-blob] }
+    get:
+      tags: [agent]
+      operationId: agentGetIdentityFile
+      security:
+        - agentAuth: []
+      summary: An identity file the plan lists (the client's ODJ blob).
+      description: Decrypted from the deployment's secret copy; only while the deployment is `running`.
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
 
   /agent/files/{sha256}:
     parameters:
@@ -1861,7 +1915,11 @@ paths:
         - agentAuth: []
       description: |
         Stages move forward only; a report for an earlier stage than the current one
-        is ignored (safe under retries).
+        is ignored (safe under retries). The agent reports at least once a minute
+        (repeating the current stage) so a running deployment doesn't time out.
+        `409` (`code: deployment_cancelled`): the deployment was cancelled; the agent
+        finishes the command in progress, stops, uploads its logs and calls `complete`
+        (ADR 0026).
       requestBody:
         required: true
         content:
@@ -1871,6 +1929,7 @@ paths:
         "204": { description: Recorded. }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
 
   /agent/logs:
     post:
@@ -1879,6 +1938,7 @@ paths:
       summary: Upload logs for the current deployment stage.
       security:
         - agentAuth: []
+      description: Also accepted for 30 minutes after the deployment was cancelled.
       requestBody:
         required: true
         content:
@@ -1901,7 +1961,9 @@ paths:
       security:
         - agentAuth: []
       description: |
-        Final result. Idempotent; the token is revoked afterwards. After a successful
+        Final result. Idempotent; the token is revoked afterwards. For a deployment
+        cancelled meanwhile it is the agent's acknowledgement (accepted for 30 minutes;
+        the status stays `cancelled`). After a successful
         install the agent applies the profile's `bootOrderAfterDeploy` first, so its
         outcome is in the deployment's logs, then reports the result, then reboots.
       requestBody:
@@ -2968,10 +3030,13 @@ components:
           type: string
           nullable: true
           description: |
-            Template for the computer name, e.g. `LAB-{{ .Client.Serial | last 6 }}`.
-            Rendered names must be 1-15 characters, letters/digits/hyphens, not all
-            digits; violations fail the deployment at scheduling time. Null lets
-            Windows generate a name.
+            Go template for the computer name, e.g. `LAB-{{ .Client.Serial | last 6 }}`.
+            Fields: `.Client.Serial`, `.Client.MAC`, `.Client.SMBIOSUUID`,
+            `.Client.Hostname`, `.Variables` (profile, then client, values). Functions:
+            `first n`, `last n`, `upper`, `lower`. Rendered names must be 1-15
+            characters, letters/digits/hyphens, not all digits, no hyphen at either end; violations refuse the
+            deployment when it is armed or started. Null lets Windows generate a name.
+            Ignored with `ad`/`odj` (the blob names the computer).
         uiLanguage: { type: string, default: en-GB }
         systemLocale: { type: string, default: en-GB }
         userLocale: { type: string, default: en-GB }
@@ -3047,7 +3112,7 @@ components:
         profileId:
           type: string
           nullable: true
-          description: Must be null until profiles exist (Phase 4).
+          description: The profile armed deployments use when `POST /deployments` names none, and the boot prompt preselects.
         variables: { $ref: "#/components/schemas/Variables" }
         reservedIp:
           type: string
@@ -3060,7 +3125,7 @@ components:
             Per-machine secrets, keyed by purpose. Currently `odjBlob` (used when the
             profile's identity is `ad` with `joinMethod: odj`).
           properties:
-            odjBlob: { type: string, nullable: true, description: "Secret id of kind `odj-blob`. Must be null until secrets exist (Phase 5)." }
+            odjBlob: { type: string, nullable: true, description: "Secret id of kind `odj-blob` (from `djoin /provision`)." }
 
     Client:
       allOf:
@@ -3090,6 +3155,10 @@ components:
         `running`: the agent checked in (armed) or started it from the boot prompt.
         Only `pending` deployments are armed, so a machine that reboots mid-deployment
         or after it gets the boot prompt, not a re-image.
+        `failed` messages start with a reason: `restarted` (the client checked in
+        again), `timeout` (no agent request for `Settings.deployments.inactivityMinutes`),
+        `expired` (armed but not picked up within `armedExpiryHours`), `superseded`,
+        `plan`, or the agent's own error.
 
     DeploymentStage:
       type: string
@@ -3109,6 +3178,11 @@ components:
               readOnly: true
               description: "`scheduled`: armed through `POST /deployments`. `boot-prompt`: started at the machine."
             profileSnapshot: { $ref: "#/components/schemas/ProfileInput" }
+            computerName:
+              type: string
+              nullable: true
+              readOnly: true
+              description: Rendered from `osSettings.computerNamePattern`; null lets Windows (or an ODJ blob) choose.
             status: { $ref: "#/components/schemas/DeploymentStatus" }
             stage: { $ref: "#/components/schemas/DeploymentStage" }
             percent: { type: integer, minimum: 0, maximum: 100 }
@@ -3347,6 +3421,22 @@ components:
                 Preselected in the menu for clients without a profile, and the boot
                 image source for them (ADR 0024). Must name an existing profile.
                 Null: such clients are not answered.
+        deployments:
+          type: object
+          description: Deployment timeouts (ADR 0026).
+          properties:
+            armedExpiryHours:
+              type: integer
+              minimum: 1
+              maximum: 720
+              default: 72
+              description: An armed (`pending`) deployment not picked up within this fails (`expired`).
+            inactivityMinutes:
+              type: integer
+              minimum: 5
+              maximum: 1440
+              default: 30
+              description: A `running` deployment with no agent request for this long fails (`timeout`).
         storage:
           type: object
           description: |
@@ -3647,8 +3737,8 @@ components:
             required: [kind, contentUrl, sha256]
             properties:
               kind: { type: string, enum: [odj-blob, autopilot-json, provisioning-package] }
-              contentUrl: { type: string }
-              sha256: { type: string }
+              contentUrl: { type: string, description: "`/agent/identity/{kind}`. Phase 4 serves `odj-blob` only." }
+              sha256: { type: string, description: SHA-256 of the decrypted file. }
         cleanup:
           type: object
           description: Agent installs a SetupComplete step that removes these after setup.

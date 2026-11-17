@@ -10,6 +10,7 @@ import { ApiError, errorMessage, unwrap } from "@/lib/problem";
 import { useBootImages, useSettings, windowsImages } from "@/pages/boot/data";
 import { useImages } from "@/pages/images/data";
 import { Findings, useValidation } from "@/pages/deployments/parts";
+import { BUILTIN, modeText, profileTemplateId, useTemplates } from "@/pages/templates/data";
 import { IdentityFields, OsFields, VariablesField, identityProblems, osToInput, parseVariables, type Identity, type OsDraft } from "./IdentityFields";
 
 type Profile = Schemas["Profile"];
@@ -28,6 +29,8 @@ const codes: Record<string, string> = {
   architecture_mismatch: "The boot image and the Windows image are for different architectures.",
   unknown_edition: "The Windows image has no such edition.",
   profile_in_use: "This profile is the default, or a client is assigned to it. Change those first.",
+  unknown_unattend_template: "That unattend template no longer exists.",
+  template_identity_mismatch: "The unattend template doesn’t handle these accounts. Choose another template, or change what it handles.",
 };
 const message = (e: unknown) => (e instanceof ApiError && codes[e.code]) || errorMessage(e);
 
@@ -51,6 +54,7 @@ export function ProfilesPage() {
   const settings = useSettings();
   const bootImages = useBootImages();
   const images = useImages();
+  const templates = useTemplates();
   const [editing, setEditing] = useState<Profile | "new" | null>(null);
   const [deleting, setDeleting] = useState<Profile | null>(null);
   const [checking, setChecking] = useState<Profile | null>(null);
@@ -156,7 +160,17 @@ export function ProfilesPage() {
                       {e.edition}
                       <div className="text-xs text-muted-foreground">{e.image}</div>
                     </td>
-                    <td className={td}>{identityText[p.identity.mode]}</td>
+                    <td className={td}>
+                      {identityText[p.identity.mode]}
+                      {p.unattendTemplateId && (
+                        <div className="text-xs text-muted-foreground">
+                          Template:{" "}
+                          <Link to={`/templates/${p.unattendTemplateId}`} className="text-primary underline-offset-4 hover:underline">
+                            {templates.data?.find((t) => t.id === p.unattendTemplateId)?.name ?? "…"}
+                          </Link>
+                        </div>
+                      )}
+                    </td>
                     <td className={`${td} pr-0`}>
                       <div className="flex justify-end gap-1">
                         {p.id !== defaultId && (
@@ -247,6 +261,7 @@ function ProfileForm({
 }) {
   const bootImages = useBootImages();
   const images = useImages();
+  const templates = useTemplates();
   const sources = windowsImages(images.data?.items);
   const boots = bootImages.data?.items ?? [];
 
@@ -258,6 +273,7 @@ function ProfileForm({
   const [asDefault, setAsDefault] = useState(offerDefault);
   const [identity, setIdentity] = useState<Identity>(profile?.identity ?? { mode: "none", skipEula: true });
   const [os, setOs] = useState<OsDraft>(profile?.osSettings ?? {});
+  const [templateId, setTemplateId] = useState(profile ? profileTemplateId(profile) : BUILTIN);
   const [varsText, setVarsText] = useState(
     Object.entries(profile?.variables ?? {})
       .map(([k, v]) => `${k}=${v}`)
@@ -269,8 +285,18 @@ function ProfileForm({
   const boot = boots.find((b) => b.id === bootImageId);
   const source = sources.find((s) => s.image.id === installImageId);
   const mismatch = boot && source && boot.architecture !== source.win.architecture;
+  const template = templates.data?.find((t) => t.id === templateId);
+  const templateMismatch = !!template && identity.mode !== "entra" && !template.identityModes.includes(identity.mode);
+  const missingVars = (template?.requiredVariables ?? []).filter((k) => !(vars.vars[k] ?? "").trim() && !(template?.variableDefaults?.[k] ?? "").trim());
   const valid =
-    !!name.trim() && !!bootImageId && !!installImageId && editionIndex !== null && !mismatch && problems.length === 0 && vars.bad.length === 0;
+    !!name.trim() &&
+    !!bootImageId &&
+    !!installImageId &&
+    editionIndex !== null &&
+    !mismatch &&
+    !templateMismatch &&
+    problems.length === 0 &&
+    vars.bad.length === 0;
 
   const save = useMutation({
     mutationFn: async () => {
@@ -287,6 +313,7 @@ function ProfileForm({
         identity,
         osSettings: osToInput(os),
         variables: vars.vars,
+        unattendTemplateId: templateId === BUILTIN ? null : templateId,
       };
       const saved = profile
         ? unwrap(await api.PUT("/profiles/{profileId}", { params: { path: { profileId: profile.id }, header: { "If-Match": profile.etag } }, body: input }))
@@ -396,10 +423,46 @@ function ProfileForm({
         <section className="space-y-4 border-t pt-5">
           <h3 className="text-sm font-semibold">Windows settings</h3>
           <OsFields value={os} onChange={setOs} />
+          <Field
+            label="Unattend template"
+            path="unattendTemplateId"
+            hint={
+              templateMismatch ? undefined : (
+                <>
+                  The answer file Setup reads. <Link to="/templates" className="text-primary underline-offset-4 hover:underline">Manage templates</Link>
+                </>
+              )
+            }
+          >
+            {(p) => (
+              <Select {...p} value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                {!templates.data && <option value={BUILTIN}>Built-in</option>}
+                {(templates.data ?? []).map((t) => {
+                  const handles = identity.mode === "entra" || t.identityModes.includes(identity.mode);
+                  return (
+                    <option key={t.id} value={t.id} disabled={!handles && t.id !== templateId}>
+                      {t.name}
+                      {handles ? "" : ` · doesn’t handle ${modeText[identity.mode].toLowerCase()}`}
+                    </option>
+                  );
+                })}
+              </Select>
+            )}
+          </Field>
+          {templateMismatch && (
+            <Alert tone="error">
+              “{template.name}” handles {template.identityModes.map((m) => modeText[m].toLowerCase()).join(", ")}, not{" "}
+              {modeText[identity.mode].toLowerCase()}. Choose another template.
+            </Alert>
+          )}
           <VariablesField
             text={varsText}
             onChange={setVarsText}
-            hint="One name=value per line, for the computer name pattern ({{ .Variables.name }}). A client’s own variables override these."
+            hint={
+              missingVars.length > 0
+                ? `The template needs ${missingVars.join(", ")}: set ${missingVars.length === 1 ? "it" : "them"} here, or on each client. Arming refuses a machine without ${missingVars.length === 1 ? "it" : "them"}.`
+                : "One name=value per line, for the computer name pattern and the unattend template ({{ .Variables.name }}). A client’s own variables override these."
+            }
           />
         </section>
 

@@ -55,6 +55,29 @@ export function DeploymentDetailPage() {
     ["Profile", snap?.name ?? "–"],
     ["Installs", snap ? `${edition ?? `Edition ${snap.editionIndex}`}${image ? ` from ${image.name}` : ""}` : "–"],
     ["Accounts", snap ? identityText[snap.identity.mode] : "–"],
+    [
+      "Unattend template",
+      d.unattendTemplate ? (
+        <>
+          {d.unattendTemplate.name}
+          <span className="text-muted-foreground"> · {d.unattendTemplate.builtIn ? "built-in" : "the copy taken when it was armed"}</span>
+        </>
+      ) : (
+        "Built-in"
+      ),
+    ],
+    [
+      "Variables",
+      d.variables && Object.keys(d.variables).length ? (
+        <span className="font-mono text-xs">
+          {Object.entries(d.variables)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ")}
+        </span>
+      ) : (
+        "None"
+      ),
+    ],
     ["Computer name", d.computerName ?? (snap?.identity.mode === "ad" ? "From the offline join blob, or chosen by Windows" : "Chosen by Windows")],
     ["Armed", formatDateTime(d.createdAt)],
     ["Ran", d.startedAt ? `${formatDateTime(d.startedAt)}${d.finishedAt ? ` to ${formatDateTime(d.finishedAt)}` : ""}` : "Not yet"],

@@ -11,6 +11,7 @@ import {
   UserCog,
   type LucideIcon,
 } from "lucide-react";
+import { lazy, Suspense } from "react";
 import { NavLink, Route, Routes } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -31,6 +32,11 @@ import { ProfilesPage } from "@/pages/profiles/Profiles";
 import { SecretsPage } from "@/pages/secrets/Secrets";
 import { SettingsPage } from "@/pages/Settings";
 
+// Loaded when first opened: the editor brings CodeMirror.
+const TemplatesPage = lazy(() => import("@/pages/templates/Templates").then((m) => ({ default: m.TemplatesPage })));
+const TemplateEditorPage = lazy(() => import("@/pages/templates/TemplateEditor").then((m) => ({ default: m.TemplateEditorPage })));
+const loading = <p className="text-muted-foreground">Loading…</p>;
+
 type NavItem = { to: string; label: string; icon: LucideIcon; planned?: string };
 
 // Order follows the setup flow: content first, then what uses it.
@@ -39,7 +45,7 @@ const nav: NavItem[] = [
   { to: "/images", label: "Images", icon: Disc3 },
   { to: "/drivers", label: "Drivers", icon: Cpu, planned: "Import driver packs, enable or disable individual INFs, and group them by hardware." },
   { to: "/boot-images", label: "Boot images", icon: HardDrive },
-  { to: "/templates", label: "Unattend templates", icon: FileCode2, planned: "Edit and preview autounattend templates." },
+  { to: "/templates", label: "Unattend templates", icon: FileCode2 },
   { to: "/profiles", label: "Profiles", icon: Boxes },
   { to: "/clients", label: "Clients", icon: UserCog },
   { to: "/deployments", label: "Deployments", icon: ListChecks },
@@ -100,6 +106,9 @@ export function App() {
           <Route path="/images/:imageId" element={<ImageDetailPage />} />
           <Route path="/boot-images" element={<BootImagesPage />} />
           <Route path="/boot-images/:bootImageId" element={<BootImageDetailPage />} />
+          <Route path="/templates" element={<Suspense fallback={loading}><TemplatesPage /></Suspense>} />
+          <Route path="/templates/new" element={<Suspense fallback={loading}><TemplateEditorPage /></Suspense>} />
+          <Route path="/templates/:templateId" element={<Suspense fallback={loading}><TemplateEditorPage /></Suspense>} />
           <Route path="/profiles" element={<ProfilesPage />} />
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/clients/:clientId" element={<ClientDetailPage />} />

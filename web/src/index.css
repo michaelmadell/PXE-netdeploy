@@ -36,6 +36,12 @@
   --sidebar-foreground: var(--foreground);
   --sidebar-accent: oklch(0.92 0.01 220);
   --sidebar-border: var(--border);
+  /* Code editor (components/CodeEditor.tsx). */
+  --cm-tag: oklch(0.45 0.12 250);
+  --cm-attr: oklch(0.5 0.12 300);
+  --cm-value: oklch(0.48 0.11 150);
+  --cm-comment: oklch(0.55 0.01 240);
+  --cm-action: oklch(0.52 0.15 45);
 }
 
 .dark {
@@ -63,6 +69,11 @@
   --sidebar-foreground: var(--foreground);
   --sidebar-accent: oklch(0.29 0.015 225);
   --sidebar-border: var(--border);
+  --cm-tag: oklch(0.75 0.1 245);
+  --cm-attr: oklch(0.76 0.1 305);
+  --cm-value: oklch(0.78 0.12 150);
+  --cm-comment: oklch(0.65 0.01 240);
+  --cm-action: oklch(0.8 0.13 60);
 }
 
 @theme inline {

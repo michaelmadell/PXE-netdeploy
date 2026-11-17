@@ -132,7 +132,11 @@ func (w wimlibTool) Customize(ctx context.Context, c Customization) error {
 	if len(c.Drivers) > 0 {
 		return errors.New("wimlib can't inject drivers offline; they are staged for drvload")
 	}
-	args := []string{"update", c.WIM, "1", fmt.Sprintf(`--command=add "%s" /`, c.Files), "--rebuild"}
+	// In place, then exported to a new file: --rebuild would rename its
+	// temporary file over the WIM the export just wrote, and on Windows a
+	// scanner still reading that file makes the rename fail ("Resource
+	// busy"). Nothing here replaces a file.
+	args := []string{"update", c.WIM, "1", fmt.Sprintf(`--command=add "%s" /`, c.Files)}
 	if runtime.GOOS == "windows" {
 		// Unelevated wimlib can't read every security descriptor; the added
 		// files take the image's defaults (to verify in WinPE, ADR 0022).
@@ -141,16 +145,18 @@ func (w wimlibTool) Customize(ctx context.Context, c Customization) error {
 	if err := w.run(ctx, args...); err != nil {
 		return err
 	}
-	return os.Rename(c.WIM, c.Out)
+	return w.Export(ctx, c.WIM, 1, c.Out)
 }
 
 // ---------------------------------------------------------------- helpers
 
-// tail returns the last n non-empty lines of out.
+// tail returns the last n non-empty lines of out, leaving out progress
+// lines (wimlib redraws them with carriage returns).
 func tail(out []byte, n int) string {
 	var lines []string
-	for _, l := range strings.Split(strings.ReplaceAll(string(out), "\r", ""), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
+	for _, l := range strings.FieldsFunc(string(out), func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if l = strings.TrimSpace(l); l != "" && !strings.Contains(l, "% done") && !strings.HasSuffix(l, "scanned") &&
+			!strings.Contains(l, " scanned (") {
 			lines = append(lines, l)
 		}
 	}

@@ -378,7 +378,7 @@ func (s *Server) DeleteDriverGroup(ctx context.Context, req api.DeleteDriverGrou
 	}
 	if errors.Is(err, store.ErrDriverGroupInUse) {
 		return api.DeleteDriverGroup409ApplicationProblemPlusJSONResponse(
-			newProblem(http.StatusConflict, "driver_group_in_use", "Driver group in use", "A boot image uses this group: remove it from the boot image first.", nil)), nil
+			newProblem(http.StatusConflict, "driver_group_in_use", "Driver group in use", "A boot image or a profile uses this group: remove it from them first.", nil)), nil
 	}
 	if err != nil {
 		return nil, err

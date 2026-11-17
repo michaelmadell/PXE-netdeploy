@@ -28,6 +28,9 @@ export function useUploadList() {
   });
 }
 
+/** Driver archives (the Driver packages page lists these uploads); everything else is listed here. */
+export const isDriverArchive = (filename?: string | null) => /\.(zip|cab|7z)$/i.test(filename ?? "");
+
 export function refreshImages() {
   for (const key of ["images", "jobs", "uploads", "health"]) void queryClient.invalidateQueries({ queryKey: [key] });
 }

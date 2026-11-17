@@ -5,6 +5,7 @@ import {
   FileCode2,
   HardDrive,
   KeyRound,
+  Layers,
   LayoutDashboard,
   ListChecks,
   Settings,
@@ -35,6 +36,9 @@ import { SettingsPage } from "@/pages/Settings";
 // Loaded when first opened: the editor brings CodeMirror.
 const TemplatesPage = lazy(() => import("@/pages/templates/Templates").then((m) => ({ default: m.TemplatesPage })));
 const TemplateEditorPage = lazy(() => import("@/pages/templates/TemplateEditor").then((m) => ({ default: m.TemplateEditorPage })));
+const DriverPackagesPage = lazy(() => import("@/pages/drivers/Packages").then((m) => ({ default: m.DriverPackagesPage })));
+const DriverPackageDetailPage = lazy(() => import("@/pages/drivers/PackageDetail").then((m) => ({ default: m.DriverPackageDetailPage })));
+const DriverGroupsPage = lazy(() => import("@/pages/drivers/Groups").then((m) => ({ default: m.DriverGroupsPage })));
 const loading = <p className="text-muted-foreground">Loading…</p>;
 
 type NavItem = { to: string; label: string; icon: LucideIcon; planned?: string };
@@ -43,7 +47,8 @@ type NavItem = { to: string; label: string; icon: LucideIcon; planned?: string }
 const nav: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/images", label: "Images", icon: Disc3 },
-  { to: "/drivers", label: "Drivers", icon: Cpu, planned: "Import driver packs, enable or disable individual INFs, and group them by hardware." },
+  { to: "/drivers", label: "Driver packages", icon: Cpu },
+  { to: "/driver-groups", label: "Driver groups", icon: Layers },
   { to: "/boot-images", label: "Boot images", icon: HardDrive },
   { to: "/templates", label: "Unattend templates", icon: FileCode2 },
   { to: "/profiles", label: "Profiles", icon: Boxes },
@@ -104,6 +109,9 @@ export function App() {
           <Route path="/" element={<Overview />} />
           <Route path="/images" element={<ImagesPage />} />
           <Route path="/images/:imageId" element={<ImageDetailPage />} />
+          <Route path="/drivers" element={<Suspense fallback={loading}><DriverPackagesPage /></Suspense>} />
+          <Route path="/drivers/:driverPackageId" element={<Suspense fallback={loading}><DriverPackageDetailPage /></Suspense>} />
+          <Route path="/driver-groups" element={<Suspense fallback={loading}><DriverGroupsPage /></Suspense>} />
           <Route path="/boot-images" element={<BootImagesPage />} />
           <Route path="/boot-images/:bootImageId" element={<BootImageDetailPage />} />
           <Route path="/templates" element={<Suspense fallback={loading}><TemplatesPage /></Suspense>} />

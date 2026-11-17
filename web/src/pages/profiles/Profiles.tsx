@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox, Field, FieldErrors, Input, RadioCards, Select } from "@/components/ui/form";
 import { Alert, Badge, Dialog, PageHeader, td, th } from "@/components/ui/misc";
 import { ApiError, errorMessage, unwrap } from "@/lib/problem";
-import { useBootImages, useSettings, windowsImages } from "@/pages/boot/data";
+import { useBootImages, useDriverGroups, useSettings, windowsImages } from "@/pages/boot/data";
 import { useImages } from "@/pages/images/data";
 import { Findings, useValidation } from "@/pages/deployments/parts";
 import { BUILTIN, modeText, profileTemplateId, useTemplates } from "@/pages/templates/data";
@@ -28,6 +28,7 @@ const codes: Record<string, string> = {
   install_image_unavailable: "That Windows image is missing or not ready.",
   architecture_mismatch: "The boot image and the Windows image are for different architectures.",
   unknown_edition: "The Windows image has no such edition.",
+  unknown_driver_group: "One of the driver groups no longer exists.",
   profile_in_use: "This profile is the default, or a client is assigned to it. Change those first.",
   unknown_unattend_template: "That unattend template no longer exists.",
   template_identity_mismatch: "The unattend template doesn’t handle these accounts. Choose another template, or change what it handles.",
@@ -262,6 +263,7 @@ function ProfileForm({
   const bootImages = useBootImages();
   const images = useImages();
   const templates = useTemplates();
+  const driverGroups = useDriverGroups();
   const sources = windowsImages(images.data?.items);
   const boots = bootImages.data?.items ?? [];
 
@@ -274,6 +276,7 @@ function ProfileForm({
   const [identity, setIdentity] = useState<Identity>(profile?.identity ?? { mode: "none", skipEula: true });
   const [os, setOs] = useState<OsDraft>(profile?.osSettings ?? {});
   const [templateId, setTemplateId] = useState(profile ? profileTemplateId(profile) : BUILTIN);
+  const [osGroups, setOsGroups] = useState<string[]>(profile?.osDriverGroupIds ?? []);
   const [varsText, setVarsText] = useState(
     Object.entries(profile?.variables ?? {})
       .map(([k, v]) => `${k}=${v}`)
@@ -314,6 +317,7 @@ function ProfileForm({
         osSettings: osToInput(os),
         variables: vars.vars,
         unattendTemplateId: templateId === BUILTIN ? null : templateId,
+        osDriverGroupIds: osGroups,
       };
       const saved = profile
         ? unwrap(await api.PUT("/profiles/{profileId}", { params: { path: { profileId: profile.id }, header: { "If-Match": profile.etag } }, body: input }))
@@ -408,6 +412,33 @@ function ProfileForm({
             { value: "network-first", label: "The network", description: "Every start shows the boot prompt first, then continues to the disk." },
           ]}
         />
+
+        <section className="space-y-3 border-t pt-5">
+          <h3 className="text-sm font-semibold">Drivers installed into Windows</h3>
+          {(driverGroups.data?.items.length ?? 0) === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No driver groups yet. Windows installs with its own drivers; add groups on the{" "}
+              <Link to="/driver-groups" className="text-primary underline-offset-4 hover:underline">Driver groups</Link> page if it needs more.
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Added to the installed Windows after the image is applied. Storage drivers the boot image needed usually belong here too.
+              </p>
+              <div className="space-y-2.5">
+                {driverGroups.data!.items.map((g) => (
+                  <Checkbox
+                    key={g.id}
+                    label={g.name}
+                    hint={g.description}
+                    checked={osGroups.includes(g.id!)}
+                    onChange={(on) => setOsGroups(on ? [...osGroups, g.id!] : osGroups.filter((x) => x !== g.id))}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </section>
 
         <section className="space-y-4 border-t pt-5">
           <h3 className="text-sm font-semibold">Accounts and domain</h3>

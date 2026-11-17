@@ -21,10 +21,14 @@ const retryDelaysMs = [1_000, 3_000, 5_000, 10_000];
 
 export type UploadStatus = "starting" | "uploading" | "paused" | "failed" | "complete";
 
+/** What an upload is for; each page lists only its own. */
+export type UploadPurpose = "image" | "driver";
+
 export type UploadTask = {
   /** Local key, stable for the life of the page. */
   key: string;
   file: File;
+  purpose: UploadPurpose;
   /** Server upload id, once created or found. */
   uploadId: string | null;
   status: UploadStatus;
@@ -259,11 +263,12 @@ async function run(t: Internal) {
 }
 
 /** Starts (or resumes) uploading a file. `onComplete` gets the server's upload id. */
-export function startUpload(file: File, onComplete?: (uploadId: string, key: string) => void): string {
+export function startUpload(file: File, onComplete?: (uploadId: string, key: string) => void, purpose: UploadPurpose = "image"): string {
   const key = String(nextKey++);
   const t: Internal = {
     key,
     file,
+    purpose,
     uploadId: null,
     status: "starting",
     sentBytes: 0,

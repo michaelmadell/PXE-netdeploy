@@ -25,8 +25,8 @@ var (
 	ErrUnknownDriverGroup = errors.New("store: unknown driver group")
 	// ErrImageInUse: a boot image is built from the image.
 	ErrImageInUse = errors.New("store: image is used by a boot image")
-	// ErrDriverGroupInUse: a boot image uses the driver group.
-	ErrDriverGroupInUse = errors.New("store: driver group is used by a boot image")
+	// ErrDriverGroupInUse: a boot image or a profile uses the driver group.
+	ErrDriverGroupInUse = errors.New("store: driver group is used by a boot image or a profile")
 )
 
 // BootImageInput is a boot image's editable fields (BootImageInput with

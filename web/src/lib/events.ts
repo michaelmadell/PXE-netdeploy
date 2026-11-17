@@ -44,6 +44,10 @@ function handle(qc: QueryClient, ev: Event) {
     case "profile.updated":
       void qc.invalidateQueries({ queryKey: ["profiles"] });
       break;
+    case "driverPackage.updated":
+      void qc.invalidateQueries({ queryKey: ["driver-packages"] });
+      void qc.invalidateQueries({ queryKey: ["driver-package"] });
+      break;
     case "job.updated":
       jobUpdated(qc, ev);
       break;
@@ -80,6 +84,8 @@ function jobUpdated(qc: QueryClient, ev: Event) {
     void qc.invalidateQueries({ queryKey: ["jobs"] });
     void qc.invalidateQueries({ queryKey: ["images"] });
     void qc.invalidateQueries({ queryKey: ["boot-images"] });
+    void qc.invalidateQueries({ queryKey: ["driver-packages"] });
+    void qc.invalidateQueries({ queryKey: ["driver-package"] });
     void qc.invalidateQueries({ queryKey: ["uploads"] });
     void qc.invalidateQueries({ queryKey: ["health"] });
   }

@@ -214,7 +214,8 @@ export function BootImageForm({
           <fieldset>
             <legend className="mb-1.5 text-sm font-medium">Drivers to include</legend>
             <p className="mb-3 text-sm text-muted-foreground">
-              Network and storage drivers WinPE doesn’t have for your hardware. Most machines need none.
+              Network and storage drivers WinPE doesn’t have for your hardware. Most machines need none. Storage drivers also belong in the
+              profile’s drivers, so Windows can start from the disk.
             </p>
             <div className="space-y-2.5">
               {groups.data!.items.map((g) => (

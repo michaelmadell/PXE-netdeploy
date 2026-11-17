@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
@@ -30,6 +32,24 @@ func deploymentToAPI(d store.Deployment) api.Deployment {
 	var snap api.ProfileInput
 	if json.Unmarshal(d.ProfileSnapshot, &snap) == nil && snap.Name != "" {
 		out.ProfileSnapshot = &snap
+	}
+	spec := unattend.Builtin()
+	if len(d.UnattendTemplate) > 0 {
+		json.Unmarshal(d.UnattendTemplate, &spec)
+	}
+	tmpl := struct {
+		BuiltIn bool    `json:"builtIn"`
+		Etag    *string `json:"etag"`
+		Id      string  `json:"id"`
+		Name    string  `json:"name"`
+	}{BuiltIn: spec.BuiltIn, Id: spec.ID, Name: spec.Name}
+	if spec.ETag != "" && !spec.BuiltIn {
+		tmpl.Etag = &spec.ETag
+	}
+	out.UnattendTemplate = &tmpl
+	if d.Variables != nil {
+		v := api.Variables(d.Variables)
+		out.Variables = &v
 	}
 	return out
 }
@@ -158,6 +178,31 @@ func (s *Server) prepareDeployment(ctx context.Context, c store.Client, p store.
 	for _, ref := range up.Secrets(c.ODJBlobSecretID) {
 		nd.Secrets = append(nd.Secrets, ref.ID)
 	}
+
+	// The unattend template and variables are copied into the deployment,
+	// after checking what this client would get (ADR 0027).
+	spec, err := s.templateFor(ctx, p.UnattendTemplateID)
+	if err != nil {
+		return store.NewDeployment{}, nil, err
+	}
+	vars := unattend.MergeVariables(spec.VariableDefaults, up.Variables, c.Variables)
+	if missing := unattend.MissingVariables(spec, vars); len(missing) > 0 {
+		pr := newProblem(http.StatusUnprocessableEntity, "missing_variable", "Missing variable",
+			fmt.Sprintf("Unattend template %q requires %s; set it on the profile or client %s.", spec.Name, strings.Join(missing, ", "), c.MAC), nil)
+		return store.NewDeployment{}, &pr, nil
+	}
+	var tfs []finding
+	for _, f := range s.checkUnattend(ctx, spec, p, up, &c) {
+		tfs = append(tfs, finding{f.Severity, f.Code, "Unattend template " + strconv.Quote(spec.Name) + ": " + findingMessage(f)})
+	}
+	if len(errorsIn(tfs)) > 0 {
+		pr := findingsProblem(p.Name, tfs)
+		return store.NewDeployment{}, &pr, nil
+	}
+	if nd.UnattendTemplate, err = json.Marshal(spec); err != nil {
+		return store.NewDeployment{}, nil, err
+	}
+	nd.Variables = vars
 	return nd, nil, nil
 }
 

@@ -70,7 +70,7 @@ func TestProfilesAPI(t *testing.T) {
 		"install_image_unavailable": strings.Replace(profile(""), im.ID, "nope", 1),
 		"unknown_edition":           strings.Replace(profile(""), `"editionIndex":6`, `"editionIndex":2`, 1),
 		"unknown_driver_group":      profile(`,"osDriverGroupIds":["nope"]`),
-		"not_implemented":           profile(`,"unattendTemplateId":"t1"`),
+		"unknown_unattend_template": profile(`,"unattendTemplateId":"t1"`),
 	} {
 		if code, b := do("POST", "/profiles", body); code != 422 || b["code"] != want {
 			t.Errorf("%s: %d %v", want, code, b)

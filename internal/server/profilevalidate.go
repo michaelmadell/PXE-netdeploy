@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
@@ -158,6 +159,24 @@ func (s *Server) validateProfile(ctx context.Context, p store.Profile) ([]findin
 		}
 	}
 
+	// The unattend template, rendered for the profile with a sample client
+	// and secrets masked (ADR 0027).
+	spec, terr := s.templateFor(ctx, p.UnattendTemplateID)
+	switch {
+	case errors.Is(terr, store.ErrNotFound):
+		spec = unattend.TemplateSpec{} // checkProfile reported it
+	case terr != nil:
+		return nil, terr
+	case !spec.Supports(id.Mode):
+		if id.Mode != unattend.ModeEntra {
+			add("error", "template_identity_mismatch", "Unattend template %q doesn't render identity mode %s.", spec.Name, id.Mode)
+		}
+	default:
+		for _, f := range s.checkUnattend(ctx, spec, p, up, nil) {
+			fs = append(fs, finding{f.Severity, f.Code, "Unattend template " + strconv.Quote(spec.Name) + ": " + findingMessage(f)})
+		}
+	}
+
 	// Per assigned client.
 	clients, err := s.clientsWithProfile(ctx, p.ID)
 	if err != nil {
@@ -171,6 +190,11 @@ func (s *Server) validateProfile(ctx context.Context, p store.Profile) ([]findin
 		if pattern != "" && !odj {
 			if _, err := unattend.RenderName(pattern, nameData(c, up)); err != nil {
 				add("warning", "invalid_computer_name", "Client %s: %v", c.MAC, err)
+			}
+		}
+		if spec.Content != "" {
+			for _, k := range unattend.MissingVariables(spec, unattend.MergeVariables(spec.VariableDefaults, up.Variables, c.Variables)) {
+				add("warning", "missing_variable", "Client %s: variable %q has no value; unattend template %q requires it, so arming will be refused.", c.MAC, k, spec.Name)
 			}
 		}
 	}
@@ -191,6 +215,48 @@ func (s *Server) clientsWithProfile(ctx context.Context, profileID string) ([]st
 		}
 		after = next
 	}
+}
+
+// checkUnattend renders the profile's template with secrets masked and
+// checks the output (ADR 0027): for client c, or with the sample client
+// when c is nil (required variables the client would give get sample
+// values). Rendering problems become error findings.
+func (s *Server) checkUnattend(ctx context.Context, spec unattend.TemplateSpec, p store.Profile, up unattend.Profile, c *store.Client) []unattend.Finding {
+	errf := func(code, format string, a ...any) []unattend.Finding {
+		return []unattend.Finding{{Severity: unattend.SevError, Code: code, Message: fmt.Sprintf(format, a...)}}
+	}
+	tpl, err := unattend.ParseTemplate(spec)
+	if err != nil {
+		return errf("template_syntax", "%v", err)
+	}
+	client, cvars := unattend.SampleClient, map[string]string(nil)
+	if c != nil {
+		client, cvars = clientData(*c), c.Variables
+	}
+	vars := unattend.MergeVariables(spec.VariableDefaults, up.Variables, cvars)
+	if c == nil {
+		for _, k := range unattend.MissingVariables(spec, vars) {
+			vars[k] = "sample-" + k
+		}
+	}
+	in := unattend.Input{Arch: s.imageArch(ctx, p.InstallImageID), InstallMethod: p.InstallMethod, Masked: true, Client: client,
+		ProfileID: p.ID, DeploymentID: "preview", Variables: vars, Template: tpl}
+	if pat := up.OS.ComputerNamePattern; pat != nil && *pat != "" {
+		nd := unattend.NameData{Client: unattend.NameClient{Serial: client.Serial, MAC: client.MAC, SMBIOSUUID: client.SMBIOSUUID,
+			Hostname: client.Hostname}, Variables: unattend.MergeVariables(up.Variables, cvars)}
+		if name, err := unattend.RenderName(*pat, nd); err == nil {
+			in.ComputerName = &name
+		}
+	}
+	d, err := unattend.Prepare(up, in)
+	if err != nil {
+		return nil // the identity checks above report what's wrong with the profile
+	}
+	out, err := tpl.Execute(d)
+	if err != nil {
+		return errf("template_render", "%v", err)
+	}
+	return unattend.Check(out, d)
 }
 
 // nameData is what a computer name pattern sees for a client.

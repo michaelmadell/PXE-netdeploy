@@ -653,7 +653,16 @@ func (s *Server) AgentGetUnattend(ctx context.Context, _ api.AgentGetUnattendReq
 	if err != nil {
 		return nil, err
 	}
-	in := unattend.Input{Arch: s.unattendArch(ctx, d), ComputerName: d.ComputerName, Secrets: map[string][]byte{}}
+	tpl, err := deploymentTemplate(d)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.store.Client(ctx, d.ClientID)
+	if err != nil {
+		return nil, err
+	}
+	in := unattend.Input{Arch: s.unattendArch(ctx, d), InstallMethod: snapshotInstallMethod(d.ProfileSnapshot), ComputerName: d.ComputerName,
+		Secrets: map[string][]byte{}, Client: clientData(c), ProfileID: d.ProfileID, DeploymentID: d.ID, Variables: d.Variables, Template: tpl}
 	for id, v := range values {
 		in.Secrets[id] = v.value
 		if v.kind == "odj-blob" {
@@ -667,13 +676,20 @@ func (s *Server) AgentGetUnattend(ctx context.Context, _ api.AgentGetUnattendReq
 	return api.AgentGetUnattend200ApplicationxmlResponse{Body: bytes.NewReader(b), ContentLength: int64(len(b))}, nil
 }
 
-// unattendArch is the install image's architecture as unattend names it.
+// unattendArch is the deployment's install image architecture as unattend
+// names it.
 func (s *Server) unattendArch(ctx context.Context, d store.Deployment) string {
 	var snap struct {
 		InstallImageID string `json:"installImageId"`
 	}
 	json.Unmarshal(d.ProfileSnapshot, &snap)
-	if im, err := s.store.Image(ctx, snap.InstallImageID); err == nil {
+	return s.imageArch(ctx, snap.InstallImageID)
+}
+
+// imageArch is an install image's architecture as unattend names it:
+// amd64 or arm64.
+func (s *Server) imageArch(ctx context.Context, imageID string) string {
+	if im, err := s.store.Image(ctx, imageID); err == nil {
 		var det struct {
 			Architecture string `json:"architecture"`
 		}

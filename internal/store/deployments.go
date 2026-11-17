@@ -37,9 +37,14 @@ type Deployment struct {
 	FinishedAt      *time.Time
 	ComputerName    *string
 	LastActivityAt  *time.Time // the last agent request (ADR 0026)
-	Version         int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// UnattendTemplate is the unattend.TemplateSpec copied at creation (ADR
+	// 0027); nil on deployments from before templates (the built-in one).
+	UnattendTemplate json.RawMessage
+	// Variables are the merged variables copied at creation; nil before.
+	Variables map[string]string
+	Version   int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // NewDeployment is what CreateDeployment needs.
@@ -54,10 +59,15 @@ type NewDeployment struct {
 	ComputerName *string
 	// Secrets are copied into the deployment (ADR 0026).
 	Secrets []string
+	// UnattendTemplate (an unattend.TemplateSpec) and Variables are copied
+	// too (ADR 0027).
+	UnattendTemplate json.RawMessage
+	Variables        map[string]string
 }
 
 const deploymentCols = `id, client_id, profile_id, profile_snapshot, origin, status, stage, percent,
-	message, started_at, finished_at, version, created_at, updated_at, computer_name, last_activity_at`
+	message, started_at, finished_at, version, created_at, updated_at, computer_name, last_activity_at,
+	unattend_template, variables`
 
 func scanDeployment(r rowScanner) (Deployment, error) {
 	var (
@@ -66,10 +76,11 @@ func scanDeployment(r rowScanner) (Deployment, error) {
 		stage, name      sql.NullString
 		started, done    sql.NullInt64
 		activity         sql.NullInt64
+		tmpl, vars       sql.NullString
 		created, updated int64
 	)
 	if err := r.Scan(&d.ID, &d.ClientID, &d.ProfileID, &snapshot, &d.Origin, &d.Status, &stage, &d.Percent,
-		&d.Message, &started, &done, &d.Version, &created, &updated, &name, &activity); err != nil {
+		&d.Message, &started, &done, &d.Version, &created, &updated, &name, &activity, &tmpl, &vars); err != nil {
 		return Deployment{}, err
 	}
 	d.ProfileSnapshot = json.RawMessage(snapshot)
@@ -77,6 +88,14 @@ func scanDeployment(r rowScanner) (Deployment, error) {
 	d.StartedAt, d.FinishedAt = fromNullMS(started), fromNullMS(done)
 	d.ComputerName, d.LastActivityAt = fromNullStr(name), fromNullMS(activity)
 	d.CreatedAt, d.UpdatedAt = fromMS(created), fromMS(updated)
+	if tmpl.Valid {
+		d.UnattendTemplate = json.RawMessage(tmpl.String)
+	}
+	if vars.Valid {
+		if err := json.Unmarshal([]byte(vars.String), &d.Variables); err != nil {
+			return Deployment{}, err
+		}
+	}
 	return d, nil
 }
 
@@ -90,6 +109,17 @@ func (s *Store) CreateDeployment(ctx context.Context, in NewDeployment) (Deploym
 		status, started = StatusRunning, sql.NullInt64{Int64: now, Valid: true}
 	}
 	id := newID()
+	var tmplArg, varsArg sql.NullString
+	if len(in.UnattendTemplate) > 0 {
+		tmplArg = sql.NullString{String: string(in.UnattendTemplate), Valid: true}
+	}
+	if in.Variables != nil {
+		v, err := jsonText(in.Variables)
+		if err != nil {
+			return Deployment{}, err
+		}
+		varsArg = sql.NullString{String: v, Valid: true}
+	}
 	err := s.tx(ctx, func(t *sql.Tx) error {
 		var exists int
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM clients WHERE id = ?`, in.ClientID).Scan(&exists); err != nil {
@@ -100,10 +130,10 @@ func (s *Store) CreateDeployment(ctx context.Context, in NewDeployment) (Deploym
 		}
 		_, err := t.ExecContext(ctx, `INSERT INTO deployments
 			(id, client_id, profile_id, profile_snapshot, origin, status, started_at, created_at, updated_at,
-			 computer_name, last_activity_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 computer_name, last_activity_at, unattend_template, variables)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, in.ClientID, in.ProfileID, string(in.ProfileSnapshot), in.Origin, status, started, now, now,
-			nullStr(in.ComputerName), started)
+			nullStr(in.ComputerName), started, tmplArg, varsArg)
 		if uniqueViolation(err, "deployments.client_id") {
 			return ErrDeploymentActive
 		}

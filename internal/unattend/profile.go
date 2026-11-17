@@ -1,6 +1,7 @@
 // Package unattend reads what a deployment needs from its profile snapshot,
-// renders the computer name and the built-in unattend file per identity mode
-// (ADR 0026).
+// renders the computer name (ADR 0026) and the unattend file from a
+// template, the built-in one or an admin's, and checks the result (ADR
+// 0027).
 package unattend
 
 import (

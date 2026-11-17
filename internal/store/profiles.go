@@ -114,7 +114,7 @@ func (s *Store) setProfileGroups(ctx context.Context, t *sql.Tx, id string, grou
 }
 
 // profileRefs checks the boot and install images exist (the caller checks
-// what they contain).
+// what they contain) and the unattend template renders the identity mode.
 func profileRefs(ctx context.Context, t *sql.Tx, in ProfileInput) error {
 	var one int
 	if err := t.QueryRowContext(ctx, `SELECT 1 FROM boot_images WHERE id = ?`, in.BootImageID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
@@ -127,11 +127,12 @@ func profileRefs(ctx context.Context, t *sql.Tx, in ProfileInput) error {
 	} else if err != nil {
 		return err
 	}
-	return nil
+	return profileTemplateRef(ctx, t, in)
 }
 
 // CreateProfile creates a profile. ErrNotFound (wrapped, naming the boot
-// or install image), ErrUnknownDriverGroup, ErrDuplicate.
+// or install image or the unattend template), ErrTemplateIdentityMismatch,
+// ErrUnknownDriverGroup, ErrDuplicate.
 func (s *Store) CreateProfile(ctx context.Context, in ProfileInput) (Profile, error) {
 	cols, err := in.columns()
 	if err != nil {

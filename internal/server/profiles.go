@@ -29,6 +29,9 @@ func profileInput(b *api.ProfileInput) (store.ProfileInput, error) {
 	if b.Description != nil {
 		in.Description = *b.Description
 	}
+	if id := in.UnattendTemplateID; id != nil && (*id == "" || isBuiltinID(*id)) {
+		in.UnattendTemplateID = nil // the built-in template (ADR 0027)
+	}
 	if b.OsDriverGroupIds != nil {
 		in.OSDriverGroupIDs = *b.OsDriverGroupIds
 	}
@@ -65,8 +68,18 @@ func (s *Server) checkProfile(ctx context.Context, in store.ProfileInput) (*api.
 	if json.Unmarshal(in.Identity, &mode) == nil && mode.Mode == "entra" {
 		return profileProblem(http.StatusUnprocessableEntity, "not_implemented", "Not implemented", "Identity entra arrives in Phase 5 (ADR 0026)."), nil
 	}
-	if in.UnattendTemplateID != nil {
-		return profileProblem(http.StatusUnprocessableEntity, "not_implemented", "Not implemented", "Unattend templates arrive in Phase 5; use null for the built-in template."), nil
+	if id := in.UnattendTemplateID; id != nil {
+		t, err := s.store.UnattendTemplate(ctx, *id)
+		if errors.Is(err, store.ErrNotFound) {
+			return profileProblem(http.StatusUnprocessableEntity, "unknown_unattend_template", "Unknown unattend template", "No unattend template "+*id+"."), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !templateSpec(t).Supports(mode.Mode) {
+			return profileProblem(http.StatusUnprocessableEntity, "template_identity_mismatch", "Template doesn't render the identity mode",
+				fmt.Sprintf("Template %q renders %s, not %s.", t.Name, strings.Join(t.IdentityModes, ", "), mode.Mode)), nil
+		}
 	}
 	bi, err := s.store.BootImage(ctx, in.BootImageID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -124,6 +137,10 @@ func profileStoreError(err error) *api.Problem {
 		return profileProblem(http.StatusUnprocessableEntity, "unknown_boot_image", "Unknown boot image", msg+".")
 	case errors.Is(err, store.ErrNotFound) && strings.Contains(msg, "install image"):
 		return profileProblem(http.StatusUnprocessableEntity, "install_image_unavailable", "Install image unavailable", msg+".")
+	case errors.Is(err, store.ErrNotFound) && strings.Contains(msg, "unattend template"):
+		return profileProblem(http.StatusUnprocessableEntity, "unknown_unattend_template", "Unknown unattend template", msg+".")
+	case errors.Is(err, store.ErrTemplateIdentityMismatch):
+		return profileProblem(http.StatusUnprocessableEntity, "template_identity_mismatch", "Template doesn't render the identity mode", msg+".")
 	}
 	return nil
 }

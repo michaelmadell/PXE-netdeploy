@@ -229,11 +229,48 @@ func addDrivers(ctx context.Context, e Env, plan wire.Plan, _ disk.Disk) error {
 		}
 	}
 	e.Report(wire.StageInjectingDrivers, 50, fmt.Sprintf("Adding %d driver files", len(plan.OSDrivers)))
-	if _, err := e.run(ctx, "dism.exe", "/English", "/Image:"+w, "/Add-Driver", "/Driver:"+dir, "/Recurse"); err != nil {
+	// In WinPE, DISM's scratch space is on the RAM disk (32 MB by default):
+	// Microsoft's guidance is a scratch directory on the target. Its logs go
+	// to the applied Windows, so they survive the restart after a failure.
+	scratch := filepath.Join(w, "netdeploy", "scratch")
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		e.Log.Warn("remove the driver files", "err", err)
+	// DISM services an image with that image's own servicing binaries, which
+	// WinPE's older DISM can't start (0x80004002 "No such interface", Phase 5
+	// findings: 26H2 media's WinPE has DISM 26100.8972, its install image
+	// 26100.9278). So the applied image's own DISM goes first; WinPE's is the
+	// fallback.
+	type dismTry struct{ exe, log, what string }
+	var tries []dismTry
+	if own := filepath.Join(w, "Windows", "System32", "Dism.exe"); fileExists(own) {
+		tries = append(tries, dismTry{own, filepath.Join(w, "Windows", "Temp", "netdeploy-dism.log"), "the image's DISM"})
+	}
+	tries = append(tries, dismTry{"dism.exe", filepath.Join(w, "Windows", "Temp", "netdeploy-dism-winpe.log"), "WinPE's DISM"})
+	var err error
+	for i, t := range tries {
+		_, err = e.run(ctx, t.exe, "/English", "/Image:"+w, "/Add-Driver", "/Driver:"+dir, "/Recurse", "/ScratchDir:"+scratch, "/LogPath:"+t.log)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, ErrCancelled) {
+			return err
+		}
+		for _, l := range DismErrors(t.log, 20) {
+			e.Log.Error("dism.log", "dism", t.what, "line", l)
+		}
+		e.Log.Info("DISM's full log is on the target disk", "dism", t.what, "path", t.log)
+		if i < len(tries)-1 {
+			e.Log.Warn("adding drivers failed; trying again", "with", tries[i+1].what)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	for _, d := range []string{dir, scratch} {
+		if err := os.RemoveAll(d); err != nil {
+			e.Log.Warn("remove the driver files", "dir", d, "err", err)
+		}
 	}
 	e.Report(wire.StageInjectingDrivers, 100, "Drivers added")
 	return nil
@@ -329,6 +366,39 @@ func copyFile(src, dst string) error {
 }
 
 // CopyFile copies a file (the agent log at the end).
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
+// DismErrors returns the last n error lines of a DISM log (", Error "
+// entries), read from its last 1 MiB. Nothing if it can't be read.
+func DismErrors(logPath string, n int) []string {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	const window = 1 << 20
+	if fi, err := f.Stat(); err == nil && fi.Size() > window {
+		f.Seek(fi.Size()-window, io.SeekStart)
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, l := range strings.Split(strings.ReplaceAll(string(b), "\r", ""), "\n") {
+		if strings.Contains(l, ", Error ") {
+			out = append(out, strings.TrimSpace(l))
+		}
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
+}
+
 func CopyFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err

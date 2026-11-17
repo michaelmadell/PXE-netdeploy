@@ -374,10 +374,20 @@ func (a *agent) deploy(ctx context.Context, token string, confirmed bool) error 
 	}
 	if err != nil {
 		a.log.Error("deployment failed", "err", err)
+		// Keep the agent's log with the applied image, if there is one, to
+		// read after the restart.
+		if _, serr := os.Stat(`W:\Windows\Temp`); serr == nil {
+			if cerr := deploy.CopyFile(filepath.Join(a.dir, "agent.log"), `W:\Windows\Temp\netdeploy-agent.log`); cerr != nil {
+				a.log.Warn("copy the agent log to the target disk", "err", cerr)
+			} else {
+				a.log.Info("the agent's log is on the target disk", "path", `W:\Windows\Temp\netdeploy-agent.log`)
+			}
+		}
+		// Logs first: a finished deployment's token no longer takes them.
+		a.logs.flush()
 		if cerr := a.client.Complete(ctx, false, err.Error()); cerr != nil {
 			a.log.Warn("report the failure", "err", cerr)
 		}
-		a.logs.flush()
 		return err
 	}
 

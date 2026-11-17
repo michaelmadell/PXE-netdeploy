@@ -78,6 +78,7 @@ func TestInstall(t *testing.T) {
 		re := filepath.Join(drive("W"), "Windows", "System32", "Recovery")
 		os.MkdirAll(re, 0o755)
 		os.WriteFile(filepath.Join(re, "Winre.wim"), []byte("re"), 0o644)
+		os.WriteFile(filepath.Join(drive("W"), "Windows", "System32", "Dism.exe"), []byte("MZ"), 0o644)
 	}}
 	var stages []string
 	unattend := "/unattend"
@@ -95,7 +96,8 @@ func TestInstall(t *testing.T) {
 	want := []string{
 		"diskpart.exe /s " + filepath.Join(e.Work, "diskpart.txt"),
 		"dism.exe /English /Apply-Image /ImageFile:" + filepath.Join(drive("W"), "netdeploy", "install.esd") + " /Index:6 /ApplyDir:" + drive("W"),
-		"dism.exe /English /Image:" + drive("W") + " /Add-Driver /Driver:" + filepath.Join(drive("W"), "netdeploy", "drivers") + " /Recurse",
+		"Dism.exe /English /Image:" + drive("W") + " /Add-Driver /Driver:" + filepath.Join(drive("W"), "netdeploy", "drivers") + " /Recurse" +
+			" /ScratchDir:" + filepath.Join(drive("W"), "netdeploy", "scratch") + " /LogPath:" + filepath.Join(drive("W"), "Windows", "Temp", "netdeploy-dism.log"),
 		"Reagentc.exe /Setreimage /Path " + filepath.Join(drive("R"), "Recovery", "WindowsRE") + " /Target " + filepath.Join(drive("W"), "Windows"),
 		"bcdboot.exe " + filepath.Join(drive("W"), "Windows") + " /s S: /f UEFI /bootex",
 	}
@@ -119,6 +121,21 @@ func TestInstall(t *testing.T) {
 	}
 	if strings.Join(stages, ",") != "partitioning,applying-image,injecting-drivers,configuring,finalizing" {
 		t.Errorf("stages %v", stages)
+	}
+
+	// The image's DISM fails to add the drivers: WinPE's DISM tries again.
+	run.cmds, run.fail = nil, map[string]bool{"Dism.exe /English /Image": true}
+	if err := addDrivers(context.Background(), e, plan, disk.Disk{}); err != nil {
+		t.Fatalf("fallback to WinPE's DISM: %v", err)
+	}
+	if len(run.cmds) != 2 || !strings.HasPrefix(run.cmds[0], "Dism.exe ") || !strings.HasPrefix(run.cmds[1], "dism.exe ") ||
+		!strings.Contains(run.cmds[1], "netdeploy-dism-winpe.log") {
+		t.Errorf("DISM fallback: %v", run.cmds)
+	}
+	// Both fail: the error is returned.
+	run.cmds, run.fail = nil, map[string]bool{"/Add-Driver": true}
+	if err := addDrivers(context.Background(), e, plan, disk.Disk{}); err == nil || len(run.cmds) != 2 {
+		t.Errorf("both DISMs failing: %v %v", err, run.cmds)
 	}
 
 	// bcdboot /bootex unsupported: falls back to the default boot manager.

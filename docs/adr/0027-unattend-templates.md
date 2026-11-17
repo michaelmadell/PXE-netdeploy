@@ -1,6 +1,7 @@
 # 27. Unattend templates
 
-Status: accepted (2026-11-16). Amends [0007](0007-agent-and-smb-install-methods.md)
+Status: accepted (2026-11-16); lab-tested 2026-11-17 ([Phase 5
+findings](../spikes/phase-5-findings.md)). Amends [0007](0007-agent-and-smb-install-methods.md)
 and the built-in unattend in [0026](0026-deployments.md); builds on
 [0008](0008-secrets-model.md).
 

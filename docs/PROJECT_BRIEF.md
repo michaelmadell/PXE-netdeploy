@@ -158,6 +158,12 @@ method. Results: [spikes/phase-4-findings.md](spikes/phase-4-findings.md).
 [plan/phase-5-handover.md](plan/phase-5-handover.md): what Phase 4
 established, the decisions to make, and what carries over.
 
+Decision 1, unattend templates (ADR 0027), is built and lab-tested
+(2026-11-17): a custom template and the built-in one both deployed
+`nd-client-01`. Results: [spikes/phase-5-findings.md](spikes/phase-5-findings.md).
+Next: decision 2 (Entra/Autopilot, needs an Intune tenant) or decision 4
+(remaining UI, including the template editor).
+
 ## Open questions and things to verify
 
 | Item | How it gets answered |

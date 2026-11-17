@@ -621,3 +621,55 @@ computer object already exists from `/provision`. If it didn't join,
 (search `Provisioning`, `ODJ`) have the reason. Safest is one blob per
 install: provision a new one (`/reuse` keeps the name and account) for each
 redeploy.
+
+## Unattend templates (Phase 5, ADR 0027)
+
+Continues with `api`, `$p`, `$client` and `save-profile` from "Arming
+deployments". A copy of the built-in template with a first-logon command
+that writes a variable to a file, so it shows the template took effect.
+Use the `local` profile with auto-logon from above (the command needs a
+sign-in).
+
+```powershell
+$bi = api Get /unattend-templates/builtin
+$fl = @'
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <CommandLine>cmd /c echo site {{ .Variables.site }} deployment {{ .Deployment.ID }} &gt; C:\netdeploy-template.txt</CommandLine>
+          <Description>netdeploy template test</Description>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+
+'@ -replace "`r`n", "`n"
+$end = "    </component>`n  </settings>`n</unattend>"
+$t = api Post /unattend-templates @{ name = 'Lab: first logon'; content = $bi.content.Replace($end, $fl + $end)
+                                     identityModes = @('none', 'local', 'ad'); requiredVariables = @('site') }
+(api Post "/unattend-templates/$($t.id)/render" @{ identityMode = 'local' }).content   # sample data, secrets ********
+$p.unattendTemplateId = $t.id; save-profile
+api Post "/profiles/$($p.id)/validate"          # warns missing_variable for clients without `site`
+```
+
+Literal `>` in the template's own XML is written `&gt;`; values from
+`{{ … }}` are escaped automatically. Saving refuses a template that doesn't
+parse (`template_syntax`), uses a variable it doesn't declare
+(`template_render`) or drops what an identity mode needs, such as the
+accounts or the domain join (`template_invalid`, one entry per problem).
+
+Give the client the variable, preview what it will get, arm and boot:
+
+```powershell
+$cj = api Get "/clients/$($client.id)"; $etag = $cj.etag
+'id','etag','createdAt','updatedAt','lastSeenAt','lastIp','lastArch','source' | % { $cj.PSObject.Properties.Remove($_) }
+$cj | Add-Member -Force variables @{ site = 'lab' }
+api Put "/clients/$($client.id)" $cj $etag
+(api Post "/unattend-templates/$($t.id)/render" @{ profileId = $p.id; clientId = $client.id }) | Select-Object ok, findings
+$d = api Post /deployments @{ clientId = $client.id; profileId = $p.id }
+$d.unattendTemplate; $d.variables                # the copy the deployment keeps
+Start-VM nd-client-01
+```
+
+Expect: after Setup signs `labadmin` in, `C:\netdeploy-template.txt` says
+`site lab deployment <id>`. Editing the template after arming doesn't
+change this deployment; deleting a template a profile uses is `409
+template_in_use`, and the built-in one is read-only (`409 built_in`).

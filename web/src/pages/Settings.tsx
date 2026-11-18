@@ -9,6 +9,7 @@ import { Alert, Badge, PageHeader, Section, tabPanelProps, Tabs, td, th } from "
 import { formatBytes } from "@/lib/format";
 import { ApiError, errorMessage, unwrap, type FieldError } from "@/lib/problem";
 import { AdminCertificate } from "./settings/AdminCertificate";
+import { ContentHttps } from "./settings/ContentHttps";
 import { BackupSettingsSection, BackupStatusSection } from "./settings/Backups";
 
 type Settings = Schemas["Settings"];
@@ -96,6 +97,10 @@ function toRequest(draft: Settings): Settings {
   if (s.bootPrompt && !s.bootPrompt.password) delete s.bootPrompt.password;
   const { certificateInfo: _shown, ...admin } = s.admin;
   s.admin = admin;
+  if (s.contentHttps) {
+    const { ca: _ca, certificate: _cert, ...contentHttps } = s.contentHttps;
+    s.contentHttps = contentHttps as typeof s.contentHttps;
+  }
   if (!s.admin.privateKeyPem) delete s.admin.privateKeyPem;
   return s;
 }
@@ -598,6 +603,7 @@ export function SettingsPage() {
                 )}
                 <AdminCertificate key={`${base.etag}/${discards}`} draft={draft.admin} base={base.admin} edit={(fn) => edit((s) => fn(s.admin))} />
               </Section>
+              <ContentHttps settings={base} />
             </div>
           </div>
         )}
@@ -874,12 +880,24 @@ function InterfaceCard({
           <FieldMessages path={`${path}.services.tftp`} />
           <Checkbox label="HTTP" hint="Boot files, images and drivers for the agent, and HTTP Boot." checked={services.http} onChange={(v) => edit((i) => void (i.services.http = v))} />
           <FieldMessages path={`${path}.services.http`} />
+          <Checkbox
+            label="HTTPS"
+            hint="The same over TLS, with a certificate from this server’s content CA. Boot images with https:// server addresses keep the boot prompt password and unattend secrets off the wire."
+            checked={services.https}
+            onChange={(v) => edit((i) => void (i.services.https = v))}
+          />
+          <FieldMessages path={`${path}.services.https`} />
           <FieldMessages path={`${path}.services`} />
         </div>
         <div className="space-y-5">
           <Field label="HTTP port" path={`${path}.services.httpPort`}>
             {(p) => (
               <NumberInput {...p} min={1} max={65535} disabled={!services.http} value={services.httpPort} onChange={(v) => edit((i) => void (i.services.httpPort = v as number))} />
+            )}
+          </Field>
+          <Field label="HTTPS port" path={`${path}.services.httpsPort`}>
+            {(p) => (
+              <NumberInput {...p} min={1} max={65535} disabled={!services.https} value={services.httpsPort} onChange={(v) => edit((i) => void (i.services.httpsPort = v as number))} />
             )}
           </Field>
           {dhcp.mode !== "off" && (

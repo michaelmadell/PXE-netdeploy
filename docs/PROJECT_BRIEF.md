@@ -13,6 +13,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 | What to build next | [plan/phase-6-handover.md](plan/phase-6-handover.md) |
 | What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | What Phase 2 lab runs measured | [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
+| What Phase 6 measured | [spikes/phase-6-findings.md](spikes/phase-6-findings.md) |
 | Setup and dev workflow | [dev/getting-started.md](dev/getting-started.md) |
 | Test lab | [dev/test-environments.md](dev/test-environments.md) |
 
@@ -85,6 +86,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0025 | The agent and `/agent/*`: check-in (armed/locked; a running deployment whose client checks in again failed `restarted`), unlock (argon2id, rate-limited), hashed tokens, plan, `/agent/files/{sha256}` with Range; in WinPE: prompt, disk auto-select, diskpart, download + `dism /Apply-Image`, OS drivers, WinRE, `bcdboot` (`/bootex` for 2023), UEFI boot order from Go. |
 | 0026 | Deployments: arming from the API with validation, profile and secret snapshots, timeouts (expiry, inactivity), graceful cancel, built-in unattend for none/local/AD (credentials or offline join in the unattend), computer name patterns. |
 | 0027 | Unattend templates: whole-document Go templates over the built-in's data, auto XML-escaping, previews never decrypt (`********`), checks per identity mode on save and when arming, one built-in template in code (`builtin`), copied into each deployment. |
+| 0028 | Content HTTPS: one internal CA (RSA-3072, ten years) made when HTTPS is first enabled, its key sealed with the secrets key and in backups; an in-memory server certificate for the HTTPS addresses and boot images' https hosts; `serverUrls` all http or all https; the agent trusts only the CA, at the later of its clock and the CA's start; CA fingerprint is a build input. Custom certificate and CA rotation deferred. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -171,7 +173,9 @@ tenant) and the SMB install method (only if needed). Results:
 
 **Phase 6: Linux and iPXE paths, content HTTPS, auth, packaging.** Start
 from [plan/phase-6-handover.md](plan/phase-6-handover.md): what Phase 5
-established, the decisions to make, and what carries over.
+established, the decisions to make, and what carries over. Decision 1,
+content HTTPS (ADR 0028), is built and unit-tested (2026-11-18); its lab
+checks are listed in [spikes/phase-6-findings.md](spikes/phase-6-findings.md).
 
 ## Open questions and things to verify
 

@@ -12,7 +12,7 @@ type Info = Schemas["CertificateInfo"];
 const DAY = 24 * 60 * 60 * 1000;
 
 /** "ab12cd…" → "AB:12:CD:…", the way browsers show fingerprints. */
-const colonHex = (h: string) => h.toUpperCase().match(/.{2}/g)?.join(":") ?? h;
+export const colonHex = (h: string) => h.toUpperCase().match(/.{2}/g)?.join(":") ?? h;
 
 /** Split a file that may hold a certificate chain, a key, or both. */
 function pemBlocks(text: string) {

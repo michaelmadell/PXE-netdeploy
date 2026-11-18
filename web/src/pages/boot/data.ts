@@ -58,14 +58,16 @@ export function refreshBootImages() {
  * HTTP on, at the address clients use. These are baked into a boot image.
  */
 export function suggestedServerUrls(settings: Settings | undefined, adapters: HostInterface[] | undefined): string[] {
-  const urls: string[] = [];
+  // https:// wherever an interface has HTTPS on, and then only https://: the
+  // server refuses a mix (ADR 0028).
+  const urls = { http: [] as string[], https: [] as string[] };
   for (const i of settings?.interfaces ?? []) {
-    if (!i.services.http) continue;
     const host = i.advertisedAddress || adapters?.find((a) => a.name === i.name)?.addresses[0]?.address;
     if (!host) continue;
-    urls.push(`http://${host}${i.services.httpPort === 80 ? "" : `:${i.services.httpPort}`}`);
+    if (i.services.https) urls.https.push(`https://${host}${i.services.httpsPort === 443 ? "" : `:${i.services.httpsPort}`}`);
+    if (i.services.http) urls.http.push(`http://${host}${i.services.httpPort === 80 ? "" : `:${i.services.httpPort}`}`);
   }
-  return urls;
+  return urls.https.length ? urls.https : urls.http;
 }
 
 /** Ready Windows images: what a boot image (and a profile) can be made from. */
@@ -81,6 +83,9 @@ export const buildCodes: Record<string, string> = {
   source_image_unavailable: "The source image is missing or not ready.",
   agent_unavailable: "This server has no agent for the image’s architecture. Run “just agent”, then restart the server.",
   build_in_progress: "A build of this boot image is already queued or running.",
+  content_https_not_available:
+    "The server addresses are https:// but there is no content CA yet. Turn HTTPS on for a deployment interface in Settings, then build again.",
+  mixed_server_urls: "Server addresses must be all http:// or all https://, so the agent can never be pushed onto plain HTTP.",
   insufficient_storage: "Not enough free space: about four times the size of boot.wim is needed above the storage reserve.",
 };
 
@@ -109,6 +114,7 @@ export const staleReasonText: Record<NonNullable<BootImage["staleReasons"]>[numb
   builder: "the builder changed",
   agent: "the agent was updated",
   "server-urls": "the server addresses changed",
+  "content-ca": "the content CA changed",
   bootmgr: "the boot manager choice changed",
   tftp: "the TFTP settings changed",
   drivers: "its drivers changed",

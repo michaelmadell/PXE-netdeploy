@@ -29,8 +29,6 @@ import { ImageDetailPage } from "@/pages/images/ImageDetail";
 import { ImagesPage } from "@/pages/images/Images";
 import { Overview } from "@/pages/Overview";
 import { Planned } from "@/pages/Planned";
-import { ProfilesPage } from "@/pages/profiles/Profiles";
-import { SecretsPage } from "@/pages/secrets/Secrets";
 
 // Loaded when first opened: the editor brings CodeMirror.
 const TemplatesPage = lazy(() => import("@/pages/templates/Templates").then((m) => ({ default: m.TemplatesPage })));
@@ -39,6 +37,8 @@ const DriverPackagesPage = lazy(() => import("@/pages/drivers/Packages").then((m
 const DriverPackageDetailPage = lazy(() => import("@/pages/drivers/PackageDetail").then((m) => ({ default: m.DriverPackageDetailPage })));
 const SettingsPage = lazy(() => import("@/pages/Settings").then((m) => ({ default: m.SettingsPage })));
 const DriverGroupsPage = lazy(() => import("@/pages/drivers/Groups").then((m) => ({ default: m.DriverGroupsPage })));
+const ProfilesPage = lazy(() => import("@/pages/profiles/Profiles").then((m) => ({ default: m.ProfilesPage })));
+const SecretsPage = lazy(() => import("@/pages/secrets/Secrets").then((m) => ({ default: m.SecretsPage })));
 const loading = <p className="text-muted-foreground">Loading…</p>;
 
 type NavItem = { to: string; label: string; icon: LucideIcon; planned?: string };
@@ -117,12 +117,12 @@ export function App() {
           <Route path="/templates" element={<Suspense fallback={loading}><TemplatesPage /></Suspense>} />
           <Route path="/templates/new" element={<Suspense fallback={loading}><TemplateEditorPage /></Suspense>} />
           <Route path="/templates/:templateId" element={<Suspense fallback={loading}><TemplateEditorPage /></Suspense>} />
-          <Route path="/profiles" element={<ProfilesPage />} />
+          <Route path="/profiles" element={<Suspense fallback={loading}><ProfilesPage /></Suspense>} />
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/clients/:clientId" element={<ClientDetailPage />} />
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/deployments/:deploymentId" element={<DeploymentDetailPage />} />
-          <Route path="/secrets" element={<SecretsPage />} />
+          <Route path="/secrets" element={<Suspense fallback={loading}><SecretsPage /></Suspense>} />
           <Route path="/settings" element={<Suspense fallback={loading}><SettingsPage /></Suspense>} />
           {nav
             .filter((n) => n.planned)

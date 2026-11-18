@@ -10,7 +10,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 | Components, boot flows, roadmap | [architecture.md](architecture.md) |
 | Why each decision was made | [adr/](adr/README.md) |
 | The API (source of truth) | [../api/openapi.yaml](../api/openapi.yaml) |
-| What to build next | [plan/phase-3-handover.md](plan/phase-3-handover.md) |
+| What to build next | [plan/phase-6-handover.md](plan/phase-6-handover.md) |
 | What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | What Phase 2 lab runs measured | [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | Setup and dev workflow | [dev/getting-started.md](dev/getting-started.md) |
@@ -79,7 +79,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0019 | Driver packages: zip/7z/CAB (LZX via `expand.exe`/`cabextract`), own INF parser, catalog signature chained to pinned Microsoft roots plus a per-file hash check; `whql`/`vendor`/`unsigned`/`unknown`. |
 | 0020 | Backups: scheduled (hourly/daily/weekly/monthly, local time) job; DB snapshot + certs + referenced blobs, incremental, retention 5; local folder or SMB share (pure-Go client); offline backup/restore commands. |
 | 0021 | Secrets storage: AES-256-GCM under one data key wrapped by DPAPI (Windows) or a 0600 key file (Linux); key never in backups; passphrase export/import; `share-credential` kind. |
-| 0022 | Building boot images: export one boot.wim index, add agent/config/`winpeshl.ini` (DISM also injects drivers; wimlib stages them for `drvload`), boot files from the built WIM, a content-store tree; wimlib preferred (1.3 s vs DISM's 43 s; required on Linux), DISM (inbox, elevated) otherwise, no ADK; storage drivers (PERC, RST VMD) load in WinPE with `drvload`; `inputHash` caching and reuse; stale computed on read; last good build keeps serving. |
+| 0022 | Building boot images: export one boot.wim index, add agent/config/`winpeshl.ini` (DISM also injects drivers; wimlib stages them for `drvload`), boot files from the built WIM, a content-store tree; wimlib preferred (1.3 s vs DISM's 43 s; required on Linux), DISM (inbox, elevated) otherwise, no ADK; storage drivers (PERC, RST VMD) load in WinPE with `drvload`; `inputHash` caching and reuse; stale computed on read; last good build keeps serving. Amended 2026-11-18: boot.wim's Setup image (index 2) by default, because plain WinPE can't run DISM offline servicing for OS drivers; builds record `canAddOsDrivers`. |
 | 0023 | Own BCD writer (`internal/bcd`): REGF hive in Go with the Phase 1 RAM-disk elements, fixed GUID and timestamps (reproducible), no bcdedit/hivex; capabilities drop `bcdTool`. |
 | 0024 | What a client boots: armed deployment's profile, else the client's, else the default; no fallback past a broken choice; sessions pin their trees against GC; no cache; profile storage brought forward; temporary `-tftp-root` flags removed. |
 | 0025 | The agent and `/agent/*`: check-in (armed/locked; a running deployment whose client checks in again failed `restarted`), unlock (argon2id, rate-limited), hashed tokens, plan, `/agent/files/{sha256}` with Range; in WinPE: prompt, disk auto-select, diskpart, download + `dism /Apply-Image`, OS drivers, WinRE, `bcdboot` (`/bootex` for 2023), UEFI boot order from Go. |
@@ -152,17 +152,26 @@ images, boot images, profiles (with accounts and domain), clients,
 deployments (live progress and logs) and secrets. Deferred: the SMB install
 method. Results: [spikes/phase-4-findings.md](spikes/phase-4-findings.md).
 
+**Done (Phase 5, 2026-11-16 to 2026-11-18):** unattend templates (ADR
+0027): whole-document Go templates over the built-in's data, previews that
+never decrypt secrets, checks per identity mode, copied into each deployment;
+lab-tested with a custom template and the built-in one. OS drivers: plain
+WinPE (boot.wim index 1) can't run DISM offline servicing (`0x80004002`), so
+boot images now default to the Setup image and validation refuses OS drivers
+on a boot image that can't add them (ADR 0022 amendment); index 2 deployed
+with 101 drivers. The web UI is complete for everything built: template
+editor with live preview, driver packages and groups, Settings in tabs
+(deployment timeouts, backups with snapshots, the admin certificate), DHCP
+leases on Clients, and the Overview's readiness from `validate` with every
+profile's status. Deferred, unscheduled: Entra/Autopilot (needs an Intune
+tenant) and the SMB install method (only if needed). Results:
+[spikes/phase-5-findings.md](spikes/phase-5-findings.md).
+
 ## Next step
 
-**Phase 5: unattend templates, Entra, the remaining UI.** Start from
-[plan/phase-5-handover.md](plan/phase-5-handover.md): what Phase 4
+**Phase 6: Linux and iPXE paths, content HTTPS, auth, packaging.** Start
+from [plan/phase-6-handover.md](plan/phase-6-handover.md): what Phase 5
 established, the decisions to make, and what carries over.
-
-Decision 1, unattend templates (ADR 0027), is built and lab-tested
-(2026-11-17): a custom template and the built-in one both deployed
-`nd-client-01`. Results: [spikes/phase-5-findings.md](spikes/phase-5-findings.md).
-Next: decision 2 (Entra/Autopilot, needs an Intune tenant) or decision 4
-(remaining UI, including the template editor).
 
 ## Open questions and things to verify
 

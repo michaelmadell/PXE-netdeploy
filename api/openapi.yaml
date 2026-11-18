@@ -1085,7 +1085,10 @@ paths:
         optional components requested without DISM or a matching ADK (error);
         identity mode missing a required secret, or a secret of the wrong kind
         (error); OS driver groups on a profile whose boot image cannot add them
-        (`boot_image_cannot_add_drivers`, error; a warning while unknown); template whose `identityModes` excludes the profile's mode (error);
+        (`boot_image_cannot_add_drivers`, error; a warning while unknown);
+        none of the boot image's `serverUrls` served by an interface with HTTP
+        on at that address and port (`agent_unreachable`, warning; a URL naming
+        a host by DNS name counts when its port is served); template whose `identityModes` excludes the profile's mode (error);
         the unattend template's checks against the profile's data (ADR 0027:
         errors such as `unattend_missing_join`, `unattend_architecture`,
         `reserved_account_name`; warnings such as `unattend_ignores_computer_name`),

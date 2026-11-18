@@ -26,7 +26,11 @@ const types: Event["type"][] = [
   "profile.updated",
 ];
 
+/** Event types that can change what POST /profiles/{id}/validate finds. */
+const affectsValidation = new Set(["settings.updated", "bootImage.updated", "profile.updated", "client.updated", "driverPackage.updated"]);
+
 function handle(qc: QueryClient, ev: Event) {
+  if (affectsValidation.has(ev.type)) void qc.invalidateQueries({ queryKey: ["profile-validation"] });
   switch (ev.type) {
     case "health.updated":
       if (ev.data) qc.setQueryData(["health"], ev.data);

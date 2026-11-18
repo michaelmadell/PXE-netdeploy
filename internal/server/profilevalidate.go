@@ -67,6 +67,11 @@ func (s *Server) validateProfile(ctx context.Context, p store.Profile) ([]findin
 		if bi.SelectedBootManager != nil && json.Unmarshal(bi.SelectedBootManager, &bm) == nil && bm.Signer != "" && bm.Signer != "windows-uefi-ca-2023" {
 			add("warning", "boot_manager_2011_only", "Boot image %q serves a PCA 2011-signed boot manager; machines that have revoked it won't boot.", bi.Name)
 		}
+		// The agent in WinPE calls the boot image's serverUrls: something
+		// must serve HTTP there, or machines boot and then find nothing.
+		if s.settings != nil && !agentReachable(bi.ServerURLs, s.settings.HTTPEndpoints()) {
+			add("warning", "agent_unreachable", "None of boot image %q's server addresses (%s) is served by a deployment interface with HTTP on. Machines will start Windows PE, then fail to reach this server. Turn HTTP on for the interface at that address and port in Settings, or change the boot image's server addresses and rebuild.", bi.Name, strings.Join(bi.ServerURLs, ", "))
+		}
 		// OS drivers need DISM offline servicing, which plain WinPE can't run
 		// (ADR 0022 amendment): refuse before a disk is wiped.
 		if len(p.OSDriverGroupIDs) > 0 && bi.TreeID != nil {

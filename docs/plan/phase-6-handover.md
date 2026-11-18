@@ -117,7 +117,7 @@ bundling it (ADR 0022), versioning shown in health and the UI.
 | `cloudsoda/go-smb2` | Pinned by commit; NTLM tested, Kerberos not |
 | Backups don't include `secrets.key` by design | The UI and health say to run `netdeployd key export` once |
 | Raw Go error text in problem `detail` fields | Open |
-| Not lab-tested in Phase 5 | An AD join through a custom template; the `windowsPE` pass removal on a real deployment; a backup run and snapshot list from the UI; the Overview's readiness and `agent_unreachable` against a real server |
+| Not lab-tested in Phase 5 | An AD join through a custom template; the `windowsPE` pass removal on a real deployment; `agent_unreachable` seen on a real profile (unit-tested) |
 
 ## Lab and environment
 

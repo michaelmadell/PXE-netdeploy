@@ -88,3 +88,19 @@ records `canAddOsDrivers: false` with the warning; adopting carries it),
 `TestBootImageCannotAddDrivers` (validate error, arming refused, warning
 while unknown, nothing without OS drivers).
 
+## Remaining UI (decision 4, UI passes 4 to 6)
+
+**Automated, 2026-11-18:** `TestAdminCertificateInfo` (generated until a
+valid custom pair is stored), `TestCertificateWarning` (30 days, expired,
+renewal advice), `TestAgentReachable` (address and port, `advertisedAddress`,
+DNS names by port, no HTTPS yet); `tsc` and the Vite build.
+
+**Lab, 2026-11-18** (the user, against the restarted server):
+
+| Check | Result |
+|---|---|
+| Admin certificate: separate files, a combined PEM, a mismatched pair, a 10-day certificate, back to the generated one | **Worked.** Mismatched pair refused; "Expires soon" and `admin_certificate_expiring` shown; a combined file fills both boxes (after a fix: the certificate box hid a certificate identical to the one in use) |
+| A backup with Back up now | **Worked** |
+| Settings tabs, deployment timeouts, DHCP leases on Clients | **Worked** |
+| Overview readiness from `validate` and the Profiles list | **Worked** |
+

@@ -148,10 +148,19 @@ func countSealedBy(ctx context.Context, st *store.Store, fp string) int {
 
 // passphrase reads it from a file, or asks (twice when confirming).
 func passphrase(file string, confirm bool) ([]byte, error) {
+	return askSecret(file, "Passphrase", confirm, secrets.MinPassphrase)
+}
+
+// askSecret reads a secret from a file, or asks for it by label (twice
+// when confirming, then at least min characters).
+func askSecret(file, label string, confirm bool, min int) ([]byte, error) {
 	if file != "" {
 		b, err := os.ReadFile(file)
 		return []byte(strings.TrimRight(string(b), "\r\n")), err
 	}
+	// One reader for both answers: a new one per answer would lose the
+	// second line of piped input in the first one's buffer.
+	in := bufio.NewReader(os.Stdin)
 	ask := func(prompt string) ([]byte, error) {
 		fmt.Fprint(os.Stderr, prompt)
 		if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -159,23 +168,23 @@ func passphrase(file string, confirm bool) ([]byte, error) {
 			fmt.Fprintln(os.Stderr)
 			return b, err
 		}
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := in.ReadString('\n')
 		return []byte(strings.TrimRight(line, "\r\n")), err
 	}
-	p, err := ask("Passphrase: ")
+	p, err := ask(label + ": ")
 	if err != nil {
 		return nil, err
 	}
 	if confirm {
-		if len([]rune(string(p))) < secrets.MinPassphrase {
-			return nil, fmt.Errorf("the passphrase must be at least %d characters", secrets.MinPassphrase)
+		if len([]rune(string(p))) < min {
+			return nil, fmt.Errorf("the %s must be at least %d characters", strings.ToLower(label), min)
 		}
 		p2, err := ask("Again: ")
 		if err != nil {
 			return nil, err
 		}
 		if string(p) != string(p2) {
-			return nil, errors.New("the passphrases don't match")
+			return nil, fmt.Errorf("the %ss don't match", strings.ToLower(label))
 		}
 	}
 	return p, nil

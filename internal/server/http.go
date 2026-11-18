@@ -96,13 +96,18 @@ func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		slog.Info("http",
+		ctx, li := withLogInfo(r.Context())
+		next.ServeHTTP(rec, r.WithContext(ctx))
+		attrs := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 			"remote", r.RemoteAddr,
-		)
+		}
+		if li.who != "" {
+			attrs = append(attrs, "who", li.who) // ADR 0029
+		}
+		slog.Info("http", attrs...)
 	})
 }

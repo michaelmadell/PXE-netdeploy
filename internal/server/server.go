@@ -46,6 +46,7 @@ type Server struct {
 	host     settings.HostLister
 	caps     capsCache
 	agent    agentState
+	auth     authState
 }
 
 // Deps are the Server's dependencies. Any may be nil in tests of operations
@@ -62,7 +63,12 @@ type Deps struct {
 	Backup   *backup.Service
 	Boot     *bootimage.Service
 	CA       *contentca.Authority // content HTTPS (ADR 0028); nil: none
-	Host     settings.HostLister  // nil: settings.SystemHost
+	// Setup is the first-account setup code (ADR 0029); nil once an
+	// account exists.
+	Setup *SetupCode
+	// Dev relaxes the session cookie and Origin check for `just dev`.
+	Dev  bool
+	Host settings.HostLister // nil: settings.SystemHost
 }
 
 // New returns a Server.
@@ -72,14 +78,28 @@ func New(version string, d Deps) *Server {
 	}
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
 		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot,
-		ca: d.CA, host: d.Host}
+		ca: d.CA, host: d.Host, auth: authState{dev: d.Dev, setup: d.Setup}}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
 // configuration warnings. Overall status is "degraded" if any service is in
 // error.
 func (s *Server) GetHealth(ctx context.Context, _ api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
-	return api.GetHealth200JSONResponse(s.health(ctx)), nil
+	h := s.health(ctx)
+	if _, ok := principalFrom(ctx); !ok {
+		h = publicHealth(h)
+	}
+	return api.GetHealth200JSONResponse(h), nil
+}
+
+// publicHealth is what monitoring sees without signing in (ADR 0029): the
+// overall status and each service's status, nothing about the configuration.
+func publicHealth(h api.Health) api.Health {
+	out := api.Health{Status: h.Status, Services: map[string]api.ServiceHealth{}}
+	for k, v := range h.Services {
+		out.Services[k] = api.ServiceHealth{Status: v.Status}
+	}
+	return out
 }
 
 // health builds the Health object (GET /system/health, health.updated).
@@ -194,6 +214,9 @@ func (s *Server) warnings() []warning {
 	}
 	cfg, _ := s.settings.Current()
 	var w []warning
+	if s.auth.dev {
+		w = append(w, warning{"dev_mode", "Started with -dev: the session cookie isn't Secure and the Origin check trusts X-Forwarded-Host. For development only."})
+	}
 	if s.settings.AdminOverridden() {
 		w = append(w, warning{"admin_address_overridden", "The -admin-addr flag replaces the stored admin address; remove it once settings are fixed."})
 	}

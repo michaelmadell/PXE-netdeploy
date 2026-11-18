@@ -17,7 +17,8 @@ var heartbeat = 15 * time.Second
 
 // StreamEvents implements GET /events as server-sent events.
 func (s *Server) StreamEvents(ctx context.Context, _ api.StreamEventsRequestObject) (api.StreamEventsResponseObject, error) {
-	return eventStream{ctx: ctx, bus: s.events}, nil
+	p, _ := principalFrom(ctx)
+	return eventStream{ctx: ctx, bus: s.events, srv: s, who: p}, nil
 }
 
 // eventStream writes the stream when the generated handler visits it, and
@@ -25,6 +26,20 @@ func (s *Server) StreamEvents(ctx context.Context, _ api.StreamEventsRequestObje
 type eventStream struct {
 	ctx context.Context
 	bus *events.Bus
+	srv *Server
+	who Principal // the stream's caller; its session ending closes it (ADR 0029)
+}
+
+// end tells the browser its session ended, so it shows the sign-in page.
+func (e eventStream) end(w http.ResponseWriter, rc *http.ResponseController, reason string) error {
+	data, err := json.Marshal(sessionEndedEvent(reason, time.Now().UTC()))
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", events.SessionEnded, data); err == nil {
+		_ = rc.Flush()
+	}
+	return nil
 }
 
 func (e eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
@@ -53,6 +68,11 @@ func (e eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 		case <-e.ctx.Done():
 			return nil
 		case <-t.C:
+			// Ended some other way (idle, expired, the database edited
+			// offline): noticed here within one heartbeat.
+			if e.srv != nil && !e.srv.stillValid(e.ctx, e.who) {
+				return e.end(w, rc, endExpired)
+			}
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return nil
 			}
@@ -62,6 +82,12 @@ func (e eventStream) VisitStreamEventsResponse(w http.ResponseWriter) error {
 					slog.Info("events subscriber dropped for falling behind")
 				}
 				return nil
+			}
+			if ev.Type == events.SessionEnded {
+				if se, ok := ev.Data.(sessionEnd); ok && se.matches(e.who) {
+					return e.end(w, rc, se.Reason)
+				}
+				continue // someone else's session: never forwarded
 			}
 			data, err := json.Marshal(ev)
 			if err != nil {

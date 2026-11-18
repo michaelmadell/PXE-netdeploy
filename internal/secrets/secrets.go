@@ -203,3 +203,31 @@ func (k *Keys) Ring(create bool) (*Ring, error) {
 	k.ring = r
 	return r, nil
 }
+
+// WriteRestricted writes a file only this server's account (and, on
+// Windows, SYSTEM and Administrators) can read, as for the key file. Used
+// for the setup code (ADR 0029).
+func WriteRestricted(path string, b []byte) error {
+	tmp := path + ".tmp"
+	os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := restrict(tmp); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}

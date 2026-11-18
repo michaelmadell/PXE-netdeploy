@@ -42,6 +42,7 @@ import (
 // commands are the offline subcommands.
 var commands = map[string]func(args []string) error{
 	"key":     keyCommand,
+	"admin":   adminCommand,
 	"backup":  backupCommand,
 	"restore": restoreCommand,
 }
@@ -63,6 +64,7 @@ type options struct {
 	adminAddr  string // empty: use Settings.admin
 	agentDir   string // agents when the binary embeds none
 	wimlibPath string // empty: wimlib-imagex from PATH
+	dev        bool   // relaxed session cookie for `just dev` (ADR 0029)
 }
 
 func main() {
@@ -82,6 +84,7 @@ func main() {
 	flag.StringVar(&o.adminAddr, "admin-addr", "", "recovery override for the admin listener, e.g. 127.0.0.1:8443; normally set in settings")
 	flag.StringVar(&o.agentDir, "agent-dir", "dist", "directory with agent-windows-<arch>.exe, used when this binary embeds no agents (built without -tags agent)")
 	flag.StringVar(&o.wimlibPath, "wimlib", "", "path to wimlib-imagex (default: found on PATH)")
+	flag.BoolVar(&o.dev, "dev", false, "development only: session cookie without Secure, Origin may match X-Forwarded-Host (the Vite proxy)")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
 	flag.Parse()
@@ -229,13 +232,30 @@ func run(o options) error {
 	boot := bootimage.New(bootimage.Options{Store: st, Content: content, Agents: agents, Events: bus, WimlibPath: o.wimlibPath,
 		ContentCA: func() ([]byte, string) { return ca.PEM(), ca.Fingerprint() }})
 	runner.Register(boot.Kind())
+	// The first account (ADR 0029): a setup code while there is none.
+	var setup *server.SetupCode
+	if n, err := st.CountUsers(ctx); err != nil {
+		return err
+	} else if n == 0 {
+		if setup, err = server.NewSetupCode(o.dataDir); err != nil {
+			return fmt.Errorf("setup code: %w", err)
+		}
+		slog.Warn("no admin account yet: open the web UI and create one with this setup code",
+			"setup_code", setup.Display(), "file", setup.Path())
+	} else {
+		server.RemoveSetupCode(o.dataDir)
+	}
+	if o.dev {
+		slog.Warn("-dev: the session cookie isn't Secure; for development only")
+	}
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
-		Vault: vault, Backup: backups, Boot: boot, CA: ca})
+		Vault: vault, Backup: backups, Boot: boot, CA: ca, Setup: setup, Dev: o.dev})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}
 
 	go server.PurgeIdempotency(ctx, st, time.Hour)
+	go server.PurgeSessions(ctx, st, time.Hour)
 	if err := up.Start(ctx); err != nil {
 		return err
 	}
@@ -319,5 +339,9 @@ func adminHandler(impl *server.Server, st *store.Store, up *uploads.Manager) (ht
 		}
 		validated.ServeHTTP(w, r)
 	})
-	return server.Recover(server.Logging(server.WithRequestInfo(routed))), nil
+	auth, err := impl.Authenticate(spec)
+	if err != nil {
+		return nil, err
+	}
+	return server.Recover(server.Logging(server.WithRequestInfo(auth(routed)))), nil
 }

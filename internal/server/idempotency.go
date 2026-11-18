@@ -33,7 +33,10 @@ func Idempotency(st *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("Idempotency-Key")
-			if r.Method != http.MethodPost || key == "" || !strings.HasPrefix(r.URL.Path, apiBase+"/") {
+			// Never for tokens and sign-in: a stored replay would keep a
+			// secret (ADR 0029).
+			if r.Method != http.MethodPost || key == "" || !strings.HasPrefix(r.URL.Path, apiBase+"/") ||
+				strings.HasPrefix(r.URL.Path, apiBase+"/tokens") || strings.HasPrefix(r.URL.Path, apiBase+"/auth/") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -51,6 +54,11 @@ func Idempotency(st *store.Store) func(http.Handler) http.Handler {
 			sum := sha256.Sum256(body)
 			hash := hex.EncodeToString(sum[:])
 			scope := r.Method + " " + r.URL.Path
+			// Keys belong to the caller: another account or token can't
+			// replay someone else's response.
+			if p, ok := principalFrom(r.Context()); ok {
+				scope = p.Via + ":" + p.UserID + ":" + p.TokenID + " " + scope
+			}
 
 			unlock := locks.lock(scope + "\x00" + key)
 			defer unlock()

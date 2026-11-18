@@ -11,7 +11,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Liveness and per-service health (database, content store, DHCP, TFTP, HTTP). */
+        /**
+         * Liveness and per-service health (database, content store, DHCP, TFTP, HTTP).
+         * @description Open, for monitoring. Without a session or token only `status` and each
+         *     service's `status` are returned: no `detail`, bind failures, storage,
+         *     backup or warnings, which describe the configuration (ADR 0029).
+         */
         get: operations["getHealth"];
         put?: never;
         post?: never;
@@ -111,6 +116,8 @@ export interface paths {
          *     log: nothing is stored, `Last-Event-ID` is not supported, and a client
          *     that falls more than 64 events behind is disconnected. After any
          *     reconnect, re-read the resources you show.
+         *     Browsers authenticate it with the session cookie (`EventSource` can't
+         *     send headers).
          */
         get: operations["streamEvents"];
         put?: never;
@@ -1115,6 +1122,152 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who is calling, and whether the first account still has to be created. */
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign in with a username and password; sets the session cookie. */
+        post: operations["signIn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sign-out": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** End this session and clear the cookie. */
+        post: operations["signOut"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create the first account with the setup code, and sign it in.
+         * @description Only while no account exists. The setup code is in the server's log and
+         *     in `<data>/setup-code.txt`; both are made at startup and the file is
+         *     deleted once the first account exists.
+         */
+        post: operations["setUp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/session/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Change the signed-in account's password; its other sessions end. */
+        put: operations["changeOwnPassword"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List accounts. */
+        get: operations["listUsers"];
+        put?: never;
+        /** Create an account (full admin rights). */
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete an account, ending its sessions and revoking the API tokens it created. */
+        delete: operations["deleteUser"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{userId}/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Set another account's password; its sessions end. */
+        put: operations["setUserPassword"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tokens": {
         parameters: {
             query?: never;
@@ -1122,10 +1275,20 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List API tokens. */
+        /**
+         * List API tokens.
+         * @description Every account's tokens, newest first. Expired tokens are listed until revoked.
+         */
         get: operations["listTokens"];
         put?: never;
-        /** Create a new API token. */
+        /**
+         * Create a new API token for the signed-in account.
+         * @description Only with a session (`403 not_for_api_tokens` with a token). The secret
+         *     (`ndt_` and 43 base64url characters) is returned once and stored as a
+         *     SHA-256 hash. `expiresAt` must be in the future; null never expires.
+         *     `Idempotency-Key` is not supported here: a replayed response would keep
+         *     the secret.
+         */
         post: operations["createToken"];
         delete?: never;
         options?: never;
@@ -1649,7 +1812,7 @@ export interface components {
         };
         Event: {
             /** @enum {string} */
-            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated" | "driverPackage.updated" | "profile.updated";
+            type: "client.updated" | "lease.updated" | "settings.updated" | "health.updated" | "job.updated" | "deployment.updated" | "bootImage.updated" | "image.updated" | "driverPackage.updated" | "profile.updated" | "session.ended";
             /** Format: date-time */
             at: string;
             resourceId?: string;
@@ -1670,6 +1833,12 @@ export interface components {
              *       (created, import finished, edited); `data.change` is `deleted`
              *       when it was deleted. `resourceId` is the image or package id.
              *     * `deployment.updated`, `bootImage.updated`: from Phase 4.
+             *     * `session.ended`: `{reason}`, sent only on the streams of the session
+             *       or token that ended, which then close (ADR 0029). `reason` is
+             *       `password_changed` (the account's password was changed or set; the
+             *       session that changed it is kept), `account_deleted`, `signed_out`,
+             *       `token_revoked` or `expired` (noticed within 15 s). The UI shows
+             *       the sign-in page at once.
              */
             data?: Record<string, never>;
         };
@@ -2810,10 +2979,57 @@ export interface components {
             name: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description The username of the account that created it. */
+            createdBy: string;
             /** Format: date-time */
             expiresAt?: string | null;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Updated at most once a minute.
+             */
             lastUsedAt?: string | null;
+        };
+        User: {
+            id: string;
+            username: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            lastSignInAt?: string | null;
+            /** Format: date-time */
+            passwordChangedAt?: string | null;
+        };
+        /** @description Unique ignoring case. */
+        Username: string;
+        UserInput: {
+            username: components["schemas"]["Username"];
+            password: string;
+        };
+        SignInRequest: {
+            username: string;
+            password: string;
+        };
+        SetupRequest: {
+            setupCode: string;
+            username: components["schemas"]["Username"];
+            password: string;
+        };
+        Session: {
+            signedIn: boolean;
+            /** @description No account exists yet; create one with `POST /auth/setup`. */
+            setupRequired: boolean;
+            /** @description The signed-in account, or the account that created the token. */
+            user?: components["schemas"]["User"];
+            /**
+             * @description How this request authenticated.
+             * @enum {string}
+             */
+            via?: "cookie" | "token";
+            /**
+             * Format: date-time
+             * @description Cookie sessions: when the session ends at the latest (7 days after sign-in; 8 hours idle ends it sooner).
+             */
+            expiresAt?: string;
         };
         AgentIdentity: {
             macs: components["schemas"]["MacAddress"][];
@@ -2951,6 +3167,17 @@ export interface components {
         /** @description Error (RFC 9457). */
         Problem: {
             headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description Too many failed attempts from this address or for this username (`code: too_many_attempts`). */
+        TooManyAttempts: {
+            headers: {
+                /** @description Seconds until the next attempt is allowed. */
+                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -5015,6 +5242,295 @@ export interface operations {
             401: components["responses"]["Problem"];
         };
     };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Always 200; `signedIn` says whether the request is authenticated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+        };
+    };
+    signIn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignInRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in. `Set-Cookie` carries the session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            /** @description Wrong username or password (`code: bad_credentials`); the response doesn't say which. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No account exists yet (`code: setup_required`): use `POST /auth/setup`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["TooManyAttempts"];
+        };
+    };
+    signOut: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    setUp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupRequest"];
+            };
+        };
+        responses: {
+            /** @description Created and signed in. `Set-Cookie` carries the session. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            /** @description Wrong setup code (`code: bad_setup_code`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description An account already exists (`code: already_set_up`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: components["responses"]["Problem"];
+            429: components["responses"]["TooManyAttempts"];
+        };
+    };
+    changeOwnPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    currentPassword: string;
+                    newPassword: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Changed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            /** @description Wrong current password (`code: bad_credentials`), or an API token (`not_for_api_tokens`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["TooManyAttempts"];
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK, ordered by username. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["User"][];
+                    };
+                };
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserInput"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            /** @description The username is taken, ignoring case (`code: username_taken`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    deleteUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+            /** @description The last account can't be deleted (`code: last_user`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    setUserPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Set. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Problem"];
+            401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
     listTokens: {
         parameters: {
             query?: never;
@@ -5031,11 +5547,12 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        items?: components["schemas"]["ApiToken"][];
+                        items: components["schemas"]["ApiToken"][];
                     };
                 };
             };
             401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
         };
     };
     createToken: {
@@ -5068,6 +5585,7 @@ export interface operations {
             };
             400: components["responses"]["Problem"];
             401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
         };
     };
     revokeToken: {
@@ -5089,6 +5607,7 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Problem"];
+            403: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
         };
     };

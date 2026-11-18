@@ -3,5 +3,6 @@
 api/openapi.yaml:
   operation-4xx-response:
     - '#/paths/~1system~1health/get/responses'
+    - '#/paths/~1auth~1session/get/responses'
   no-unused-components:
     - '#/components/schemas/Event'

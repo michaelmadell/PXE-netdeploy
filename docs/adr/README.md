@@ -33,5 +33,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0026](0026-deployments.md) | Deployments: arming, snapshots, timeouts, cancelling, built-in unattend | accepted |
 | [0027](0027-unattend-templates.md) | Unattend templates | accepted |
 | [0028](0028-content-https.md) | Content HTTPS: an internal CA, sealed, trusted only by the agent | accepted |
+| [0029](0029-admin-authentication.md) | Admin authentication: local accounts, session cookies, API tokens | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

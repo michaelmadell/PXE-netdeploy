@@ -7,7 +7,10 @@ info:
 
     Draft v0 (OpenAPI 3.0.3 for generator compatibility). Two audiences:
 
-    * **Admin API** (`bearerAuth`): used by the web UI and automation.
+    * **Admin API**: the web UI signs in with a username and password and gets a
+      session cookie (`cookieAuth`); automation sends an API token
+      (`bearerAuth`). Either works on every admin operation, except that API
+      tokens can't manage accounts or tokens (`403 not_for_api_tokens`).
     * **Agent API**: used by the WinPE agent. `/agent/check-in` is unauthenticated,
       `/agent/unlock` exchanges the boot prompt password for a short session
       (`agentSessionAuth`), and everything during a deployment uses `agentAuth`.
@@ -18,6 +21,25 @@ info:
     through this API ("armed"), or someone at the machine enters the boot prompt
     password. Otherwise the agent counts down and boots the local disk, so
     machines with network boot first never loop.
+
+    ## Authentication (ADR 0029)
+    Named local accounts, all with full admin rights. `POST /auth/sign-in` sets
+    the `__Host-netdeploy-session` cookie (`HttpOnly`, `Secure`,
+    `SameSite=Strict`); a session ends after 8 hours idle and 7 days after
+    sign-in. Cookie requests that change something (`POST`, `PUT`, `PATCH`,
+    `DELETE`) must carry an `Origin` matching the admin listener, or get `403`
+    (`code: bad_origin`). API tokens (`Authorization: Bearer ndt_…`) are created
+    by a signed-in account, shown once, stored hashed, and revoked with the
+    account that created them. Without either, admin operations return `401`
+    (`code: unauthenticated`); `GET /auth/session` says whether the first
+    account still has to be created (`setupRequired`). Sign-in and setup
+    failures are rate-limited per username and per source IP (`429`,
+    `Retry-After`).
+
+    The first account is created with `POST /auth/setup` and a one-time setup
+    code the server writes to its log and to `<data>/setup-code.txt` while no
+    account exists. A locked-out server is recovered offline with
+    `netdeployd admin reset-password -user <name>` (server stopped).
 
     ## Conventions
     * All IDs are opaque ULID strings.
@@ -46,6 +68,7 @@ servers:
   - url: /api/v1
 
 security:
+  - cookieAuth: []
   - bearerAuth: []
 
 tags:
@@ -77,8 +100,12 @@ tags:
     description: Global settings for the deployment framework.
   - name: dhcp
     description: Leases handed out by the built-in DHCP server (configuration lives in settings).
+  - name: auth
+    description: Signing in, the session, and setting up the first account.
+  - name: users
+    description: Local admin accounts. Not available to API tokens.
   - name: tokens
-    description: Admin API tokens.
+    description: Admin API tokens. Not available to API tokens.
   - name: agent
     description: Called by the WinPE agent only. Never exposed to admin tokens.
 
@@ -90,6 +117,10 @@ paths:
       operationId: getHealth
       security: []
       summary: Liveness and per-service health (database, content store, DHCP, TFTP, HTTP).
+      description: |
+        Open, for monitoring. Without a session or token only `status` and each
+        service's `status` are returned: no `detail`, bind failures, storage,
+        backup or warnings, which describe the configuration (ADR 0029).
       responses:
         "200":
           description: Healthy or degraded.
@@ -190,6 +221,8 @@ paths:
         log: nothing is stored, `Last-Event-ID` is not supported, and a client
         that falls more than 64 events behind is disconnected. After any
         reconnect, re-read the resources you show.
+        Browsers authenticate it with the session cookie (`EventSource` can't
+        send headers).
       responses:
         "200":
           description: SSE stream. Each event's `data` is an `Event` JSON object.
@@ -1720,12 +1753,216 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
 
+  # ---------------------------------------------------------------- auth
+  /auth/session:
+    get:
+      tags: [auth]
+      operationId: getSession
+      security: []
+      summary: Who is calling, and whether the first account still has to be created.
+      responses:
+        "200":
+          description: Always 200; `signedIn` says whether the request is authenticated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+
+  /auth/sign-in:
+    post:
+      tags: [auth]
+      operationId: signIn
+      security: []
+      summary: Sign in with a username and password; sets the session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignInRequest" }
+      responses:
+        "200":
+          description: Signed in. `Set-Cookie` carries the session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401":
+          description: "Wrong username or password (`code: bad_credentials`); the response doesn't say which."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "409":
+          description: "No account exists yet (`code: setup_required`): use `POST /auth/setup`."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /auth/sign-out:
+    post:
+      tags: [auth]
+      operationId: signOut
+      summary: End this session and clear the cookie.
+      security:
+        - cookieAuth: []
+      responses:
+        "204": { description: Signed out. }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /auth/setup:
+    post:
+      tags: [auth]
+      operationId: setUp
+      security: []
+      summary: Create the first account with the setup code, and sign it in.
+      description: |
+        Only while no account exists. The setup code is in the server's log and
+        in `<data>/setup-code.txt`; both are made at startup and the file is
+        deleted once the first account exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetupRequest" }
+      responses:
+        "201":
+          description: Created and signed in. `Set-Cookie` carries the session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "Wrong setup code (`code: bad_setup_code`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "409":
+          description: "An account already exists (`code: already_set_up`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /auth/session/password:
+    put:
+      tags: [auth]
+      operationId: changeOwnPassword
+      summary: Change the signed-in account's password; its other sessions end.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8, maxLength: 256 }
+      responses:
+        "204": { description: Changed. }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "Wrong current password (`code: bad_credentials`), or an API token (`not_for_api_tokens`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  # ---------------------------------------------------------------- users
+  /users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: List accounts.
+      responses:
+        "200":
+          description: OK, ordered by username.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/User" } }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create an account (full admin rights).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409":
+          description: "The username is taken, ignoring case (`code: username_taken`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /users/{userId}:
+    parameters:
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: Delete an account, ending its sessions and revoking the API tokens it created.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409":
+          description: "The last account can't be deleted (`code: last_user`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+
+  /users/{userId}/password:
+    parameters:
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    put:
+      tags: [users]
+      operationId: setUserPassword
+      summary: Set another account's password; its sessions end.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 8, maxLength: 256 }
+      responses:
+        "204": { description: Set. }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
   # ---------------------------------------------------------------- tokens
   /tokens:
     get:
       tags: [tokens]
       operationId: listTokens
       summary: List API tokens.
+      description: Every account's tokens, newest first. Expired tokens are listed until revoked.
       responses:
         "200":
           description: OK (secrets never returned after creation).
@@ -1733,13 +1970,21 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [items]
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/ApiToken" } }
         "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
     post:
       tags: [tokens]
       operationId: createToken
-      summary: Create a new API token.
+      summary: Create a new API token for the signed-in account.
+      description: |
+        Only with a session (`403 not_for_api_tokens` with a token). The secret
+        (`ndt_` and 43 base64url characters) is returned once and stored as a
+        SHA-256 hash. `expiresAt` must be in the future; null never expires.
+        `Idempotency-Key` is not supported here: a replayed response would keep
+        the secret.
       requestBody:
         required: true
         content:
@@ -1748,7 +1993,7 @@ paths:
               type: object
               required: [name]
               properties:
-                name: { type: string }
+                name: { type: string, minLength: 1, maxLength: 100 }
                 expiresAt: { type: string, nullable: true, format: date-time }
       responses:
         "201":
@@ -1764,6 +2009,7 @@ paths:
                       secret: { type: string }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
 
   /tokens/{tokenId}:
     parameters:
@@ -1775,6 +2021,7 @@ paths:
       responses:
         "204": { description: Revoked. }
         "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
 
   # ---------------------------------------------------------------- agent
@@ -2028,10 +2275,15 @@ paths:
 
 components:
   securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: __Host-netdeploy-session
+      description: The web UI's session, from `POST /auth/sign-in` or `/auth/setup` (ADR 0029).
     bearerAuth:
       type: http
       scheme: bearer
-      description: Admin API token.
+      description: Admin API token (`ndt_…`) from `POST /tokens` (ADR 0029).
     agentAuth:
       type: http
       scheme: bearer
@@ -2099,6 +2351,13 @@ components:
   responses:
     Problem:
       description: Error (RFC 9457).
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    TooManyAttempts:
+      description: "Too many failed attempts from this address or for this username (`code: too_many_attempts`)."
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until the next attempt is allowed. }
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -2446,7 +2705,7 @@ components:
       properties:
         type:
           type: string
-          enum: [client.updated, lease.updated, settings.updated, health.updated, job.updated, deployment.updated, bootImage.updated, image.updated, driverPackage.updated, profile.updated]
+          enum: [client.updated, lease.updated, settings.updated, health.updated, job.updated, deployment.updated, bootImage.updated, image.updated, driverPackage.updated, profile.updated, session.ended]
         at: { type: string, format: date-time }
         resourceId: { type: string }
         data:
@@ -2468,6 +2727,12 @@ components:
               (created, import finished, edited); `data.change` is `deleted`
               when it was deleted. `resourceId` is the image or package id.
             * `deployment.updated`, `bootImage.updated`: from Phase 4.
+            * `session.ended`: `{reason}`, sent only on the streams of the session
+              or token that ended, which then close (ADR 0029). `reason` is
+              `password_changed` (the account's password was changed or set; the
+              session that changed it is kept), `account_deleted`, `signed_out`,
+              `token_revoked` or `expired` (noticed within 15 s). The UI shows
+              the sign-in page at once.
 
     # ---------- images
     ImageKind:
@@ -3855,13 +4120,71 @@ components:
     # ---------- tokens
     ApiToken:
       type: object
-      required: [id, name, createdAt]
+      required: [id, name, createdAt, createdBy]
       properties:
         id: { type: string }
         name: { type: string }
         createdAt: { type: string, format: date-time }
+        createdBy: { type: string, description: The username of the account that created it. }
         expiresAt: { type: string, nullable: true, format: date-time }
-        lastUsedAt: { type: string, nullable: true, format: date-time }
+        lastUsedAt:
+          type: string
+          nullable: true
+          format: date-time
+          description: Updated at most once a minute.
+
+    User:
+      type: object
+      required: [id, username, createdAt]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastSignInAt: { type: string, nullable: true, format: date-time }
+        passwordChangedAt: { type: string, nullable: true, format: date-time }
+
+    Username:
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+      description: Unique ignoring case.
+
+    UserInput:
+      type: object
+      required: [username, password]
+      properties:
+        username: { $ref: "#/components/schemas/Username" }
+        password: { type: string, minLength: 8, maxLength: 256 }
+
+    SignInRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, maxLength: 64 }
+        password: { type: string, maxLength: 256 }
+
+    SetupRequest:
+      type: object
+      required: [setupCode, username, password]
+      properties:
+        setupCode: { type: string, maxLength: 64 }
+        username: { $ref: "#/components/schemas/Username" }
+        password: { type: string, minLength: 8, maxLength: 256 }
+
+    Session:
+      type: object
+      required: [signedIn, setupRequired]
+      properties:
+        signedIn: { type: boolean }
+        setupRequired: { type: boolean, description: No account exists yet; create one with `POST /auth/setup`. }
+        user:
+          allOf:
+            - $ref: "#/components/schemas/User"
+          description: The signed-in account, or the account that created the token.
+        via: { type: string, enum: [cookie, token], description: How this request authenticated. }
+        expiresAt:
+          type: string
+          format: date-time
+          description: "Cookie sessions: when the session ends at the latest (7 days after sign-in; 8 hours idle ends it sooner)."
 
     # ---------- agent
     AgentIdentity:

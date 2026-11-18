@@ -169,6 +169,13 @@ func (a *agent) checkIn(ctx context.Context) (wire.CheckInResult, error) {
 				a.log.Warn("bad server URL", "url", u, "err", err)
 				continue
 			}
+			if strings.HasPrefix(strings.ToLower(u), "https://") {
+				// Only the content CA baked into the boot image (ADR 0028).
+				if err := c.Trust([]byte(a.cfg.ContentCAPEM), nil); err != nil {
+					a.log.Warn("https server URL without a usable content CA; rebuild the boot image", "url", u, "err", err)
+					continue
+				}
+			}
 			c.Retries = 1
 			a.con.Screen("Checking in with " + u)
 			res, err := c.CheckIn(ctx, id)

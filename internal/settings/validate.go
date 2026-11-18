@@ -161,6 +161,10 @@ func Validate(cfg Config, host Host) []FieldError {
 		eps = append(eps, endpoint{"tcp", cfg.Admin.BindAddress, cfg.Admin.Port, "admin", "admin listener"})
 	}
 
+	if cfg.ContentHTTPS.Custom() {
+		errs.add("contentHttps.certificatePem", "a custom content certificate isn't supported yet (ADR 0028); leave it null to use the internal content CA")
+	}
+
 	seen := map[string]int{}
 	for i, in := range cfg.Interfaces {
 		path := fmt.Sprintf("interfaces[%d]", i)
@@ -201,7 +205,7 @@ func Validate(cfg Config, host Host) []FieldError {
 			eps = append(eps, endpoint{"tcp", ip, in.Services.HTTPPort, path + ".services.httpPort", "HTTP content on " + in.Name})
 		}
 		if in.Services.HTTPS {
-			errs.add(path+".services.https", "HTTPS content is planned for Phase 6; use http for now")
+			eps = append(eps, endpoint{"tcp", ip, in.Services.HTTPSPort, path + ".services.httpsPort", "HTTPS content on " + in.Name})
 		}
 	}
 

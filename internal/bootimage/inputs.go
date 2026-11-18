@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // Recipe is the build recipe version: bump it whenever a change to the
@@ -15,13 +16,16 @@ const Recipe = 2 // 2: records canAddOsDrivers (ADR 0022 amendment, 2026-11-18)
 // Inputs is everything a build depends on (ADR 0022). Its JSON is hashed
 // for inputHash and stored with the build to explain staleness.
 type Inputs struct {
-	Recipe         int           `json:"recipe"`
-	BootWIM        string        `json:"bootWim"` // SHA-256 of the source boot.wim
-	SourceIndex    int           `json:"sourceIndex"`
-	Architecture   string        `json:"architecture"`
-	Builder        string        `json:"builder"` // resolved: dism or wimlib
-	Agent          string        `json:"agent"`   // SHA-256 of the agent binary
-	ServerURLs     []string      `json:"serverUrls"`
+	Recipe       int      `json:"recipe"`
+	BootWIM      string   `json:"bootWim"` // SHA-256 of the source boot.wim
+	SourceIndex  int      `json:"sourceIndex"`
+	Architecture string   `json:"architecture"`
+	Builder      string   `json:"builder"` // resolved: dism or wimlib
+	Agent        string   `json:"agent"`   // SHA-256 of the agent binary
+	ServerURLs   []string `json:"serverUrls"`
+	// ContentCA is the content CA's fingerprint for https:// server URLs
+	// (ADR 0028). Omitted otherwise, so HTTP boot images keep their hash.
+	ContentCA      string        `json:"contentCa,omitempty"`
 	Bootmgr        string        `json:"bootmgr"`
 	TFTPBlockSize  int           `json:"tftpBlockSize"`
 	TFTPWindowSize int           `json:"tftpWindowSize"`
@@ -75,6 +79,7 @@ const (
 	ReasonBuilder      = "builder"
 	ReasonAgent        = "agent"
 	ReasonServerURLs   = "server-urls"
+	ReasonContentCA    = "content-ca"
 	ReasonBootmgr      = "bootmgr"
 	ReasonTFTP         = "tftp"
 	ReasonDrivers      = "drivers"
@@ -99,8 +104,19 @@ func Diff(built, current Inputs) []string {
 	add(current.Builder != "" && built.Builder != current.Builder, ReasonBuilder)
 	add(current.Agent != "" && built.Agent != current.Agent, ReasonAgent)
 	add(!slices.Equal(built.ServerURLs, current.ServerURLs), ReasonServerURLs)
+	add(current.ContentCA != "" && built.ContentCA != current.ContentCA, ReasonContentCA)
 	add(built.Bootmgr != current.Bootmgr, ReasonBootmgr)
 	add(built.TFTPBlockSize != current.TFTPBlockSize || built.TFTPWindowSize != current.TFTPWindowSize, ReasonTFTP)
 	add(!slices.Equal(built.Drivers, current.Drivers), ReasonDrivers)
 	return out
+}
+
+// UsesHTTPS reports whether server URLs are https:// (Check refuses a mix).
+func UsesHTTPS(serverURLs []string) bool {
+	for _, u := range serverURLs {
+		if len(u) >= 8 && strings.EqualFold(u[:8], "https://") {
+			return true
+		}
+	}
+	return false
 }

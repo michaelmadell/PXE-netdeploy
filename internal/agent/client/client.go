@@ -5,8 +5,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +43,7 @@ func (e *APIError) Error() string {
 type Client struct {
 	base  *url.URL // e.g. http://10.77.0.1:8080
 	http  *http.Client
+	files *http.Client // downloads: no overall timeout
 	token string
 	// Retries for transient failures; zero means 5. Sleep is replaceable in
 	// tests.
@@ -53,7 +57,53 @@ func New(base string) (*Client, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("server URL %q: not an http(s) URL", base)
 	}
-	return &Client{base: u, http: &http.Client{Timeout: 30 * time.Second}}, nil
+	return &Client{base: u, http: &http.Client{Timeout: 30 * time.Second}, files: &http.Client{}}, nil
+}
+
+// Trust makes the client trust only the content CA in caPEM for HTTPS
+// (ADR 0028), verifying certificates at the later of now() and the CA's
+// notBefore: WinPE takes its clock from the RTC, which may be years behind,
+// and expiry is still checked. now nil: time.Now.
+func (c *Client) Trust(caPEM []byte, now func() time.Time) error {
+	cfg, err := TLSConfig(caPEM, now)
+	if err != nil {
+		return err
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.TLSClientConfig = cfg
+	t.ForceAttemptHTTP2 = false
+	c.http.Transport = t
+	c.files.Transport = t
+	return nil
+}
+
+// TLSConfig trusts only the CA in caPEM, at the later of now() and its
+// notBefore (see Trust).
+func TLSConfig(caPEM []byte, now func() time.Time) (*tls.Config, error) {
+	block, _ := pem.Decode(caPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("content CA: no PEM certificate")
+	}
+	ca, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("content CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	if now == nil {
+		now = time.Now
+	}
+	floor := ca.NotBefore
+	return &tls.Config{
+		RootCAs:    pool,
+		MinVersion: tls.VersionTLS12,
+		Time: func() time.Time {
+			if t := now(); t.After(floor) {
+				return t
+			}
+			return floor
+		},
+	}, nil
 }
 
 // Base is the server URL.
@@ -246,7 +296,7 @@ func (c *Client) downloadOnce(ctx context.Context, f wire.File, dest string, pro
 		if have > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
 		}
-		resp, err := (&http.Client{}).Do(req) // no overall timeout: files are large
+		resp, err := c.files.Do(req) // no overall timeout: files are large
 		if err != nil {
 			return err
 		}

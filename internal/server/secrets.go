@@ -259,8 +259,9 @@ func (s *Server) secretsWarnings(ctx context.Context) []warning {
 	if s.store == nil || s.vault == nil {
 		return nil
 	}
+	// The content CA's key is sealed with the same key (ADR 0028).
 	n, err := s.store.CountSecrets(ctx)
-	if err != nil || n == 0 {
+	if err != nil || (n == 0 && (s.ca == nil || s.ca.CA() == nil)) {
 		return nil
 	}
 	r, err := s.vault.Keys().Ring(false)
@@ -271,5 +272,5 @@ func (s *Server) secretsWarnings(ctx context.Context) []warning {
 	if ok, _ := s.store.State(ctx, StateKeyExport, &ex); ok && ex.Fingerprint == r.Fingerprint() {
 		return nil
 	}
-	return []warning{{"secrets_key_not_exported", "The secrets key has never been exported. Run `netdeployd key export` and keep the file safe: without it, secrets can't be restored on other hardware."}}
+	return []warning{{"secrets_key_not_exported", "The secrets key has never been exported. Run `netdeployd key export` and keep the file safe: without it, secrets and the content CA can't be restored on other hardware."}}
 }

@@ -37,6 +37,10 @@ func certificateInfo(source api.CertificateInfoSource, pair *tls.Certificate) *a
 			return nil
 		}
 	}
+	return x509Info(source, leaf)
+}
+
+func x509Info(source api.CertificateInfoSource, leaf *x509.Certificate) *api.CertificateInfo {
 	sum := sha256.Sum256(leaf.Raw)
 	issuer := leaf.Issuer.String()
 	info := &api.CertificateInfo{

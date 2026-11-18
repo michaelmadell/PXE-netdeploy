@@ -41,7 +41,8 @@ type AgentConfig struct {
 	// Drivers are INF paths relative to X:\netdeploy, loaded with drvload
 	// before wpeinit (wimlib builds only).
 	Drivers []string `json:"drivers"`
-	// ContentCAPEM is the content listener's CA (Phase 6); empty until then.
+	// ContentCAPEM is the content CA the agent trusts for https:// server
+	// URLs (ADR 0028); empty with http:// ones.
 	ContentCAPEM string `json:"contentCaPem"`
 }
 
@@ -80,7 +81,7 @@ func (s *Service) build(ctx context.Context, r *jobs.Run, bi store.BootImage, p 
 	if err != nil {
 		return err
 	}
-	if err := writeAgentFiles(add, p.agent, AgentConfig{ServerURLs: bi.ServerURLs, InputHash: p.hash, Drivers: staged}); err != nil {
+	if err := writeAgentFiles(add, p.agent, AgentConfig{ServerURLs: bi.ServerURLs, InputHash: p.hash, Drivers: staged, ContentCAPEM: string(p.caPEM)}); err != nil {
 		return err
 	}
 	out := filepath.Join(work, "boot.wim")

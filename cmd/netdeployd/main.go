@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/bootimage"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/certs"
+	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/datalock"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/imports"
@@ -149,6 +151,17 @@ func run(o options) error {
 		return cfg.BootPrompt.DefaultProfileID
 	}
 
+	// The content CA (ADR 0028): its key is sealed with the secrets key.
+	keys := secrets.NewKeys(o.dataDir)
+	ca := contentca.New(contentca.Options{
+		DataDir: o.dataDir,
+		Ring:    keys.Ring,
+		Names:   func() contentca.Names { return contentNames(svc, st) },
+	})
+	if err := ca.Load(); err != nil {
+		return err
+	}
+
 	var handler http.Handler
 	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
@@ -159,6 +172,7 @@ func run(o options) error {
 		Booter:             booter,
 		AdminOverride:      override,
 		GeneratedAdminCert: &generated.Certificates[0],
+		ContentCA:          ca,
 		Events:             bus,
 		// The agent API is the same API handler; the content listener only
 		// forwards /api/v1/agent/ to it.
@@ -201,7 +215,7 @@ func run(o options) error {
 	runner := jobs.New(jobs.Options{Store: st, Events: bus})
 	runner.Register(imports.NewImages(imports.ImagesOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
 	runner.Register(imports.NewDrivers(imports.DriversOptions{Store: st, Content: content, Uploads: up, Events: bus}).Kind())
-	vault := secrets.NewVault(st, secrets.NewKeys(o.dataDir))
+	vault := secrets.NewVault(st, keys)
 	backups := backup.NewService(backup.ServiceOptions{
 		Store: st, Content: content, Vault: vault, Jobs: runner, DataDir: o.dataDir, ServerVersion: version,
 		Config: func() backup.Config { cfg, _ := svc.Current(); return backupConfig(cfg.Backup) },
@@ -212,10 +226,11 @@ func run(o options) error {
 		return err
 	}
 	slog.Info("agents", "version", agents.Version, "source", agents.Source, "architectures", agents.Architectures(), "modified", agents.Modified)
-	boot := bootimage.New(bootimage.Options{Store: st, Content: content, Agents: agents, Events: bus, WimlibPath: o.wimlibPath})
+	boot := bootimage.New(bootimage.Options{Store: st, Content: content, Agents: agents, Events: bus, WimlibPath: o.wimlibPath,
+		ContentCA: func() ([]byte, string) { return ca.PEM(), ca.Fingerprint() }})
 	runner.Register(boot.Kind())
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
-		Vault: vault, Backup: backups, Boot: boot})
+		Vault: vault, Backup: backups, Boot: boot, CA: ca})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}
@@ -237,6 +252,31 @@ func run(o options) error {
 	<-network.Done()
 	<-runner.Done() // running jobs end as interrupted
 	return nil
+}
+
+// contentNames is what the HTTPS content certificate covers (ADR 0028):
+// the settings' HTTPS addresses and host name, and every host named in a
+// boot image's https:// server URLs.
+func contentNames(svc *settings.Service, st *store.Store) contentca.Names {
+	n := svc.ContentNames()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	urls, err := st.BootImageServerURLs(ctx)
+	if err != nil {
+		slog.Warn("content certificate: boot image server URLs", "err", err)
+	}
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" {
+			continue
+		}
+		if a, err := netip.ParseAddr(u.Hostname()); err == nil {
+			n.IPs = append(n.IPs, a)
+		} else {
+			n.DNS = append(n.DNS, u.Hostname())
+		}
+	}
+	return n
 }
 
 func adminHandler(impl *server.Server, st *store.Store, up *uploads.Manager) (http.Handler, error) {

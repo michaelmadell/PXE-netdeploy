@@ -11,6 +11,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/backup"
 	"github.com/michaelmadell/pxe-netdeploy/internal/bootimage"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
+	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
@@ -41,6 +42,7 @@ type Server struct {
 	vault    *secrets.Vault
 	backup   *backup.Service
 	boot     *bootimage.Service
+	ca       *contentca.Authority
 	host     settings.HostLister
 	caps     capsCache
 	agent    agentState
@@ -59,7 +61,8 @@ type Deps struct {
 	Vault    *secrets.Vault
 	Backup   *backup.Service
 	Boot     *bootimage.Service
-	Host     settings.HostLister // nil: settings.SystemHost
+	CA       *contentca.Authority // content HTTPS (ADR 0028); nil: none
+	Host     settings.HostLister  // nil: settings.SystemHost
 }
 
 // New returns a Server.
@@ -69,7 +72,7 @@ func New(version string, d Deps) *Server {
 	}
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
 		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot,
-		host: d.Host}
+		ca: d.CA, host: d.Host}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
@@ -201,6 +204,11 @@ func (s *Server) warnings() []warning {
 	}
 	if cw := certificateWarning(s.settings.AdminCertificate(), time.Now()); cw != nil {
 		w = append(w, *cw)
+	}
+	if s.ca != nil {
+		if cw := contentCAWarning(s.ca.CA(), time.Now()); cw != nil {
+			w = append(w, *cw)
+		}
 	}
 	if len(cfg.Interfaces) > 0 && cfg.BootPrompt.DefaultProfileID == "" {
 		w = append(w, warning{"no_default_profile", "No default profile: clients without a profile of their own are not answered."})

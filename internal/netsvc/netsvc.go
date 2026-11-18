@@ -65,16 +65,26 @@ type TFTPPlan struct {
 
 func (p TFTPPlan) key() string { return p.Bind.String() }
 
-// HTTPPlan is one content HTTP listener (ADR 0009). Handler is swapped in
-// place when the address doesn't change.
+// HTTPPlan is one content HTTP or HTTPS listener (ADR 0009, 0028).
+// Handler is swapped in place when the address doesn't change.
 type HTTPPlan struct {
 	Interface string
 	Bind      netip.AddrPort
 	Handler   http.Handler
-	Field     string // settings field it comes from, for errors
+	// GetCertificate, when set, makes this an HTTPS listener (TLS 1.2+,
+	// HTTP/1.1 only).
+	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	Field          string // settings field it comes from, for errors
 }
 
-func (p HTTPPlan) key() string { return p.Bind.String() }
+func (p HTTPPlan) scheme() string {
+	if p.GetCertificate != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func (p HTTPPlan) key() string { return p.scheme() + "|" + p.Bind.String() }
 
 // BindFailure is a listener that could not be started (api BindFailure).
 type BindFailure struct {
@@ -367,7 +377,7 @@ func (m *Manager) prepare(plan Plan) (*prepared, error) {
 			continue
 		}
 		p.opened = append(p.opened, func() { ln.Close() })
-		p.httpNew[k] = newHTTPUnit(hp.Interface+" http://"+hp.Bind.String(), ln, m.log)
+		p.httpNew[k] = newHTTPUnit(hp.Interface+" "+hp.scheme()+"://"+hp.Bind.String(), ln, hp.GetCertificate != nil, m.log)
 	}
 	return p, nil
 }
@@ -441,12 +451,17 @@ func (m *Manager) commit(p *prepared, plan Plan) {
 
 	// Content HTTP: swap handlers on kept listeners, start new, stop removed.
 	wantHTTP := map[string]http.Handler{}
+	wantCert := map[string]func(*tls.ClientHelloInfo) (*tls.Certificate, error){}
 	for _, hp := range plan.HTTP {
 		wantHTTP[hp.key()] = hp.Handler
+		wantCert[hp.key()] = hp.GetCertificate
 	}
 	for k, u := range m.http {
 		if h, ok := wantHTTP[k]; ok {
 			u.handler.Store(&h)
+			if g := wantCert[k]; g != nil {
+				u.getCert.Store(&g)
+			}
 			continue
 		}
 		u.stop()
@@ -456,6 +471,9 @@ func (m *Manager) commit(p *prepared, plan Plan) {
 	for k, u := range p.httpNew {
 		h := wantHTTP[k]
 		u.handler.Store(&h)
+		if g := wantCert[k]; g != nil {
+			u.getCert.Store(&g)
+		}
 		u.start()
 		m.http[k] = u
 		m.log.Info("content listener started", "listener", u.desc)
@@ -600,18 +618,21 @@ func (u *adminUnit) shutdown() {
 	}
 }
 
-// httpUnit is one content HTTP listener whose handler can be swapped.
+// httpUnit is one content HTTP or HTTPS listener whose handler (and
+// certificate source) can be swapped.
 type httpUnit struct {
 	desc    string
 	ln      net.Listener
+	tls     bool
 	srv     *http.Server
 	handler atomic.Pointer[http.Handler]
+	getCert atomic.Pointer[func(*tls.ClientHelloInfo) (*tls.Certificate, error)]
 	log     *slog.Logger
 	done    chan struct{}
 }
 
-func newHTTPUnit(desc string, ln net.Listener, log *slog.Logger) *httpUnit {
-	u := &httpUnit{desc: desc, ln: ln, log: log, done: make(chan struct{})}
+func newHTTPUnit(desc string, ln net.Listener, useTLS bool, log *slog.Logger) *httpUnit {
+	u := &httpUnit{desc: desc, ln: ln, tls: useTLS, log: log, done: make(chan struct{})}
 	u.srv = &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			(*u.handler.Load()).ServeHTTP(w, r)
@@ -621,6 +642,18 @@ func newHTTPUnit(desc string, ln net.Listener, log *slog.Logger) *httpUnit {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+	if useTLS {
+		u.srv.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			// HTTP/1.1 only: firmware HTTPS boot speaks nothing else, and
+			// one large download per connection gains nothing from HTTP/2.
+			NextProtos: []string{"http/1.1"},
+			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return (*u.getCert.Load())(hello)
+			},
+		}
+		u.srv.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
+	}
 	return u
 }
 
@@ -629,7 +662,12 @@ func (u *httpUnit) description() string { return u.desc }
 func (u *httpUnit) start() {
 	go func() {
 		defer close(u.done)
-		err := u.srv.Serve(u.ln)
+		var err error
+		if u.tls {
+			err = u.srv.ServeTLS(u.ln, "", "")
+		} else {
+			err = u.srv.Serve(u.ln)
+		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			u.log.Error("content listener stopped", "listener", u.desc, "err", err)
 		}

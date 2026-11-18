@@ -321,15 +321,18 @@ func TestCheck(t *testing.T) {
 		mod  func(*store.BootImageInput)
 		want string
 	}{
-		"arch":      {func(in *store.BootImageInput) { in.Architecture = "arm64" }, "architecture_mismatch"},
-		"index":     {func(in *store.BootImageInput) { in.SourceIndex = 2 }, "unknown_source_index"},
-		"bootmgr":   {func(in *store.BootImageInput) { in.Bootmgr = "windows-pca-2011" }, "bootmgr_unavailable"},
-		"ocs":       {func(in *store.BootImageInput) { in.OptionalComponents = []string{"WinPE-WMI"} }, "not_implemented"},
-		"iso":       {func(in *store.BootImageInput) { in.ProduceHTTPBootISO = true }, "not_implemented"},
-		"agent":     {func(in *store.BootImageInput) { in.AgentVersion = &other }, "agent_unavailable"},
-		"image":     {func(in *store.BootImageInput) { in.SourceImageID = "nope" }, "source_image_unavailable"},
-		"url":       {func(in *store.BootImageInput) { in.ServerURLs = []string{"ftp://x"} }, "invalid_request"},
-		"no urls":   {func(in *store.BootImageInput) { in.ServerURLs = nil }, "invalid_request"},
+		"arch":    {func(in *store.BootImageInput) { in.Architecture = "arm64" }, "architecture_mismatch"},
+		"index":   {func(in *store.BootImageInput) { in.SourceIndex = 2 }, "unknown_source_index"},
+		"bootmgr": {func(in *store.BootImageInput) { in.Bootmgr = "windows-pca-2011" }, "bootmgr_unavailable"},
+		"ocs":     {func(in *store.BootImageInput) { in.OptionalComponents = []string{"WinPE-WMI"} }, "not_implemented"},
+		"iso":     {func(in *store.BootImageInput) { in.ProduceHTTPBootISO = true }, "not_implemented"},
+		"agent":   {func(in *store.BootImageInput) { in.AgentVersion = &other }, "agent_unavailable"},
+		"image":   {func(in *store.BootImageInput) { in.SourceImageID = "nope" }, "source_image_unavailable"},
+		"url":     {func(in *store.BootImageInput) { in.ServerURLs = []string{"ftp://x"} }, "invalid_request"},
+		"no urls": {func(in *store.BootImageInput) { in.ServerURLs = nil }, "invalid_request"},
+		"mixed urls": {func(in *store.BootImageInput) {
+			in.ServerURLs = []string{"https://10.77.0.1", "http://10.77.0.1:8080"}
+		}, "mixed_server_urls"},
 		"long name": {func(in *store.BootImageInput) { in.Name = strings.Repeat("n", 201) }, "invalid_request"},
 	} {
 		in := f.input("pe")
@@ -572,10 +575,15 @@ func TestDiff(t *testing.T) {
 		ServerURLs: []string{"u"}, Bootmgr: "auto", TFTPBlockSize: 16384, TFTPWindowSize: 16, Drivers: cur.Drivers}).Hash() {
 		t.Error("driver order changes the hash")
 	}
+	// No contentCa for http:// URLs: the hash of an HTTP boot image is
+	// what it was before content HTTPS (ADR 0028).
+	if strings.Contains(string(base.JSON()), "contentCa") {
+		t.Errorf("contentCa in %s", base.JSON())
+	}
 	cur = Inputs{Recipe: 2, BootWIM: "x", SourceIndex: 2, Architecture: "arm64", Builder: "dism", Agent: "b", ServerURLs: []string{"v"},
-		Bootmgr: "windows-pca-2011", TFTPBlockSize: 1456, TFTPWindowSize: 16}
+		ContentCA: "ca", Bootmgr: "windows-pca-2011", TFTPBlockSize: 1456, TFTPWindowSize: 16}
 	want := []string{ReasonRecipe, ReasonSourceImage, ReasonSourceIndex, ReasonArchitecture, ReasonBuilder, ReasonAgent,
-		ReasonServerURLs, ReasonBootmgr, ReasonTFTP, ReasonDrivers}
+		ReasonServerURLs, ReasonContentCA, ReasonBootmgr, ReasonTFTP, ReasonDrivers}
 	if r := Diff(base, cur); !slices.Equal(r, want) {
 		t.Errorf("all changed: %v", r)
 	}
@@ -658,5 +666,49 @@ func TestSourceIndexDefault(t *testing.T) {
 	}
 	if got := f.svc.SourceIndex(f.ctx, "nope"); got != DefaultSourceIndex {
 		t.Errorf("unknown image: %d", got)
+	}
+}
+
+// TestContentCAInput: https:// server URLs need the content CA, carry it in
+// config.json, and go stale when it changes (ADR 0028).
+func TestContentCAInput(t *testing.T) {
+	f := newFixture(t)
+	f.runner(t)
+	caPEM, caFP := "", ""
+	f.svc.ca = func() ([]byte, string) { return []byte(caPEM), caFP }
+	in := f.input("tls")
+	in.ServerURLs = []string{"https://10.77.0.1"}
+	bi, err := f.st.CreateBootImage(f.ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, j, err := f.svc.Build(f.ctx, bi.ID, false); j != nil || code(err) != "content_https_not_available" {
+		t.Fatalf("without a CA: job %v, err %v", j, err)
+	}
+	caPEM, caFP = "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n", "fp1"
+	bi, j := f.build(t, bi.ID, false)
+	if j == nil || j.Status != store.JobSucceeded {
+		t.Fatalf("job %+v", j)
+	}
+	var cfg AgentConfig
+	json.Unmarshal([]byte(f.tools[BuilderWimlib].seen[0]["netdeploy/config.json"]), &cfg)
+	if cfg.ContentCAPEM != caPEM {
+		t.Errorf("config contentCaPem %q", cfg.ContentCAPEM)
+	}
+	caFP = "fp2"
+	if s, r := f.svc.Status(f.ctx, bi); s != "stale" || !slices.Equal(r, []string{ReasonContentCA}) {
+		t.Errorf("new CA: %s %v", s, r)
+	}
+
+	// An http:// boot image neither carries nor depends on the CA.
+	plain, _ := f.st.CreateBootImage(f.ctx, f.input("plain"))
+	plain, j = f.build(t, plain.ID, false)
+	if j == nil || j.Status != store.JobSucceeded {
+		t.Fatalf("plain job %+v", j)
+	}
+	json.Unmarshal([]byte(f.tools[BuilderWimlib].seen[1]["netdeploy/config.json"]), &cfg)
+	caFP = "fp3"
+	if s, _ := f.svc.Status(f.ctx, plain); s != "ready" || cfg.ContentCAPEM != "" {
+		t.Errorf("plain: %s, contentCaPem %q", s, cfg.ContentCAPEM)
 	}
 }

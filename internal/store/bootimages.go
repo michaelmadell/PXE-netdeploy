@@ -494,3 +494,26 @@ func (s *Store) BootDrivers(ctx context.Context, groupIDs []string) ([]BootDrive
 	}
 	return out, nil
 }
+
+// BootImageServerURLs returns every boot image's serverUrls, in no
+// particular order (names for the content certificate, ADR 0028).
+func (s *Store) BootImageServerURLs(ctx context.Context) ([]string, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT server_urls FROM boot_images`)
+	if err != nil {
+		return nil, fmt.Errorf("store: boot image server URLs: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("store: boot image server URLs: %w", err)
+		}
+		var urls []string
+		if err := json.Unmarshal([]byte(raw), &urls); err != nil {
+			return nil, fmt.Errorf("store: boot image server URLs: %w", err)
+		}
+		out = append(out, urls...)
+	}
+	return out, rows.Err()
+}

@@ -41,6 +41,7 @@ type ctxKey int
 const (
 	ctxBearer ctxKey = iota
 	ctxRemoteIP
+	ctxAccept
 )
 
 // WithRequestInfo puts the bearer token and the caller's IP into the
@@ -50,6 +51,9 @@ func WithRequestInfo(next http.Handler) http.Handler {
 		ctx := r.Context()
 		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 			ctx = context.WithValue(ctx, ctxBearer, strings.TrimSpace(tok))
+		}
+		if acc := r.Header.Get("Accept"); acc != "" {
+			ctx = context.WithValue(ctx, ctxAccept, acc)
 		}
 		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 			if a, err := netip.ParseAddr(host); err == nil {

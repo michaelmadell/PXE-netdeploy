@@ -8,31 +8,79 @@ import (
 )
 
 // agentReachable reports whether any of a boot image's serverUrls points
-// at an endpoint this server serves HTTP on. A URL naming a host by DNS
-// name counts when its port is served (the name can't be checked here);
-// https never counts until the content listener has HTTPS (Phase 6).
-func agentReachable(serverURLs []string, endpoints []netip.AddrPort) bool {
+// at an endpoint this server serves: http:// URLs against httpEPs,
+// https:// URLs against httpsEPs (ADR 0028). A URL naming a host by DNS
+// name counts when its port is served (the name can't be checked here).
+func agentReachable(serverURLs []string, httpEPs, httpsEPs []netip.AddrPort) bool {
 	for _, raw := range serverURLs {
-		u, err := url.Parse(raw)
-		if err != nil || !strings.EqualFold(u.Scheme, "http") {
+		u, ok := parseServerURL(raw)
+		if !ok {
 			continue
 		}
-		port := 80
-		if p := u.Port(); p != "" {
-			if port, err = strconv.Atoi(p); err != nil {
-				continue
-			}
+		eps := httpEPs
+		if u.https {
+			eps = httpsEPs
 		}
-		addr, perr := netip.ParseAddr(u.Hostname())
-		byName := perr != nil
-		for _, e := range endpoints {
-			if int(e.Port()) != port {
+		for _, e := range eps {
+			if int(e.Port()) != u.port {
 				continue
 			}
-			if byName || addr.Unmap() == e.Addr().Unmap() {
+			if !u.addr.IsValid() || u.addr == e.Addr().Unmap() {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// agentOverHTTP returns the boot image's http:// URLs whose address also
+// serves HTTPS (agent_over_http, ADR 0028): the boot prompt password and
+// unattend secrets travel in clear though HTTPS is on there. URLs naming a
+// host by DNS name aren't counted.
+func agentOverHTTP(serverURLs []string, httpsEPs []netip.AddrPort) []string {
+	var out []string
+	for _, raw := range serverURLs {
+		u, ok := parseServerURL(raw)
+		if !ok || u.https || !u.addr.IsValid() {
+			continue
+		}
+		for _, e := range httpsEPs {
+			if e.Addr().Unmap() == u.addr {
+				out = append(out, raw)
+				break
+			}
+		}
+	}
+	return out
+}
+
+type serverURL struct {
+	https bool
+	addr  netip.Addr // invalid: a DNS name
+	port  int
+}
+
+func parseServerURL(raw string) (serverURL, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return serverURL{}, false
+	}
+	var out serverURL
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		out.port = 80
+	case "https":
+		out.https, out.port = true, 443
+	default:
+		return serverURL{}, false
+	}
+	if p := u.Port(); p != "" {
+		if out.port, err = strconv.Atoi(p); err != nil {
+			return serverURL{}, false
+		}
+	}
+	if a, err := netip.ParseAddr(u.Hostname()); err == nil {
+		out.addr = a.Unmap()
+	}
+	return out, true
 }

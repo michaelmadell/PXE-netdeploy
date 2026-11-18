@@ -320,3 +320,46 @@ func TestContentListenerSwapsHandler(t *testing.T) {
 		t.Errorf("listener not stopped: %+v", st)
 	}
 }
+
+// TestContentHTTPS: an HTTPS content listener beside the HTTP one on the
+// same address, HTTP/1.1 only, certificate from GetCertificate (ADR 0028).
+func TestContentHTTPS(t *testing.T) {
+	s := newSockets()
+	plan := basePlan(t, testCert(t), tftpRoot(t))
+	cert := testCert(t)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, r.Proto) })
+	plan.HTTP = []HTTPPlan{
+		{Interface: "lab0", Bind: netip.MustParseAddrPort("10.77.0.1:80"), Handler: h, Field: "interfaces[0].services.httpPort"},
+		{Interface: "lab0", Bind: netip.MustParseAddrPort("10.77.0.1:443"), Handler: h, Field: "interfaces[0].services.httpsPort",
+			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert, nil }},
+	}
+	m := start(t, s, plan)
+	addrs := map[string]string{}
+	m.mu.Lock()
+	for k, u := range m.http {
+		addrs[k] = u.ln.Addr().String()
+	}
+	m.mu.Unlock()
+
+	c := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{
+		ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	resp, err := c.Get("https://" + addrs["https|10.77.0.1:443"] + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "HTTP/1.1" || resp.TLS == nil {
+		t.Fatalf("proto %q, TLS %v", b, resp.TLS != nil)
+	}
+	if string(resp.TLS.PeerCertificates[0].Raw) != string(cert.Certificate[0]) {
+		t.Error("not the GetCertificate certificate")
+	}
+	if _, err := c.Get("https://" + addrs["http|10.77.0.1:80"] + "/"); err == nil {
+		t.Error("the HTTP listener answered TLS")
+	}
+	st := m.Status()["content"]
+	if len(st.Running) != 2 || !strings.Contains(strings.Join(st.Running, " "), "https://10.77.0.1:443") {
+		t.Errorf("status %+v", st)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 	"github.com/michaelmadell/pxe-netdeploy/internal/content"
+	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
@@ -39,6 +40,9 @@ type Options struct {
 	AdminOverride netip.AddrPort
 	// GeneratedAdminCert is used when no custom admin certificate is set.
 	GeneratedAdminCert *tls.Certificate
+	// ContentCA issues the HTTPS content listeners' certificate (ADR 0028).
+	// Nil: interfaces with services.https get no HTTPS listener.
+	ContentCA *contentca.Authority
 	// Agent serves /api/v1/agent/ on content listeners (ADR 0009). Nil: 404.
 	Agent http.Handler
 	// Events receives client sightings and lease changes from DHCP.
@@ -130,6 +134,9 @@ func (s *Service) Start(ctx context.Context) error {
 	for _, fe := range Validate(cfg, s.opts.Host) {
 		s.log.Warn("stored settings don't apply on this host", "field", fe.Field, "problem", fe.Message)
 	}
+	if err := s.ensureContentCA(cfg); err != nil {
+		s.log.Error("HTTPS content listeners not started", "err", err)
+	}
 	plan := s.plan(cfg)
 	failures, err := s.opts.Network.Start(ctx, plan)
 	for _, f := range failures {
@@ -163,17 +170,30 @@ func (s *Service) Get() (api.Settings, string, error) {
 	cfg, tag := s.Current()
 	out, err := ToAPI(cfg, tag, s.guidance(cfg))
 	out.Admin.CertificateInfo = s.adminCertificate(cfg)
+	s.contentCertificates(cfg, &out)
 	return out, tag, err
 }
 
 // Replace validates in, binds what it needs, stores it and switches to it.
 // Errors: ErrPreconditionFailed, *ValidationError, *netsvc.BindError.
 func (s *Service) Replace(ctx context.Context, in api.Settings, ifMatch string) (api.Settings, string, error) {
+	next, tag, err := s.replace(ctx, in, ifMatch)
+	if err != nil {
+		return api.Settings{}, "", err
+	}
+	// Outside s.mu: issuing the content certificate reads the settings.
+	out, err := ToAPI(next, tag, s.guidance(next))
+	out.Admin.CertificateInfo = s.adminCertificate(next)
+	s.contentCertificates(next, &out)
+	return out, tag, err
+}
+
+func (s *Service) replace(ctx context.Context, in api.Settings, ifMatch string) (Config, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !etagMatches(ifMatch, s.version) {
-		return api.Settings{}, "", ErrPreconditionFailed
+		return Config{}, "", ErrPreconditionFailed
 	}
 	next, ferrs := FromAPI(in, s.cur)
 	ferrs = append(ferrs, Validate(next, s.opts.Host)...)
@@ -182,17 +202,22 @@ func (s *Service) Replace(ctx context.Context, in api.Settings, ifMatch string) 
 	}
 	if id := next.BootPrompt.DefaultProfileID; id != "" && s.opts.Store != nil {
 		if ok, err := s.opts.Store.ProfileExists(ctx, id); err != nil {
-			return api.Settings{}, "", err
+			return Config{}, "", err
 		} else if !ok {
 			ferrs = append(ferrs, FieldError{Field: "bootPrompt.defaultProfileId", Message: "no profile " + id})
 		}
 	}
+	if len(ferrs) == 0 {
+		if err := s.ensureContentCA(next); err != nil {
+			ferrs = append(ferrs, FieldError{Field: "contentHttps", Message: err.Error()})
+		}
+	}
 	if len(ferrs) > 0 {
-		return api.Settings{}, "", &ValidationError{Fields: dedupe(ferrs)}
+		return Config{}, "", &ValidationError{Fields: dedupe(ferrs)}
 	}
 	doc, err := json.Marshal(next)
 	if err != nil {
-		return api.Settings{}, "", fmt.Errorf("settings: encode: %w", err)
+		return Config{}, "", fmt.Errorf("settings: encode: %w", err)
 	}
 	plan := s.plan(next)
 	var version int64
@@ -205,17 +230,14 @@ func (s *Service) Replace(ctx context.Context, in api.Settings, ifMatch string) 
 		return err
 	})
 	if err != nil {
-		return api.Settings{}, "", err
+		return Config{}, "", err
 	}
 	s.cur, s.version = next, version
 	s.log.Info("settings applied", "version", version)
 	if !next.BootPrompt.RequirePassword {
 		s.log.Warn("boot prompt password is DISABLED (debug mode): anyone at a network-booted machine can re-image it")
 	}
-	tag := etag(version)
-	out, err := ToAPI(next, tag, s.guidance(next))
-	out.Admin.CertificateInfo = s.adminCertificate(next)
-	return out, tag, err
+	return next, etag(version), nil
 }
 
 // plan turns cfg into listeners. Interfaces that don't resolve on this host
@@ -260,6 +282,17 @@ func (s *Service) plan(cfg Config) netsvc.Plan {
 				Interface: in.Name, Bind: netip.AddrPortFrom(ip, uint16(in.Services.HTTPPort)),
 				Handler: s.contentHandler(in.Name), Field: path + ".services.httpPort",
 			})
+		}
+		if in.Services.HTTPS {
+			if s.opts.ContentCA != nil && s.opts.ContentCA.CA() != nil {
+				p.HTTP = append(p.HTTP, netsvc.HTTPPlan{
+					Interface: in.Name, Bind: netip.AddrPortFrom(ip, uint16(in.Services.HTTPSPort)),
+					Handler: s.contentHandler(in.Name), GetCertificate: s.opts.ContentCA.GetCertificate,
+					Field: path + ".services.httpsPort",
+				})
+			} else {
+				p.Notes["content"] = "HTTPS is on but there is no content CA (see the startup log)"
+			}
 		}
 		if in.Services.TFTP {
 			c := tftpCfg

@@ -17,12 +17,16 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
+	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
+	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
@@ -38,7 +42,7 @@ func generatedCert(t *testing.T) *tls.Certificate {
 
 // testService runs a Service on a real store, with every socket a loopback
 // port 0 so nothing privileged is needed.
-func testService(t *testing.T, dir string) *Service {
+func testService(t *testing.T, dir string, with ...func(*Options)) *Service {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	st, err := store.Open(ctx, dir, store.Options{})
@@ -53,8 +57,12 @@ func testService(t *testing.T, dir string) *Service {
 		ListenUDP:  func(netip.AddrPort) (net.PacketConn, error) { return net0() },
 		ListenTCP:  func(netip.AddrPort) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
 	})
-	svc := NewService(Options{Store: st, Network: mgr, Host: lab, Logger: quiet,
-		GeneratedAdminCert: generatedCert(t), Booter: testBooter{root: cas.DirFS(testRoot)}})
+	o := Options{Store: st, Network: mgr, Host: lab, Logger: quiet,
+		GeneratedAdminCert: generatedCert(t), Booter: testBooter{root: cas.DirFS(testRoot)}}
+	for _, f := range with {
+		f(&o)
+	}
+	svc := NewService(o)
 	if err := svc.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -187,4 +195,56 @@ func hasAttr(attrs []any, k, v string) bool {
 		}
 	}
 	return false
+}
+
+// TestContentHTTPS: enabling HTTPS makes the content CA and starts an HTTPS
+// listener; GET reports the CA and the certificate (ADR 0028).
+func TestContentHTTPS(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	var svc *Service
+	ca := contentca.New(contentca.Options{DataDir: dir, Ring: secrets.NewKeys(dir).Ring,
+		Names: func() contentca.Names { return svc.ContentNames() }})
+	if err := ca.Load(); err != nil {
+		t.Fatal(err)
+	}
+	svc = testService(t, dir, func(o *Options) { o.ContentCA = ca })
+
+	out, _, _ := svc.Get()
+	if out.ContentHttps == nil || out.ContentHttps.Ca != nil || out.ContentHttps.Certificate != nil {
+		t.Fatalf("before HTTPS: %+v", out.ContentHttps)
+	}
+	custom := apiSettings(t, `{"admin":{"bindAddress":"127.0.0.1","port":8443},"contentHttps":{"certificatePem":"x","privateKeyPem":"y"}}`)
+	var verr *ValidationError
+	if _, _, err := svc.Replace(ctx, custom, `"1"`); !errors.As(err, &verr) {
+		t.Fatalf("custom pair = %v, want ValidationError", err)
+	}
+	in := apiSettings(t, `{"admin":{"bindAddress":"127.0.0.1","port":8443},
+		"interfaces":[{"name":"lab0","advertisedAddress":"192.0.2.10","dhcp":{"mode":"off"},"services":{"https":true,"httpsPort":80}}]}`)
+	if _, _, err := svc.Replace(ctx, in, `"1"`); !errors.As(err, &verr) {
+		t.Fatalf("HTTPS on the HTTP port = %v, want ValidationError", err)
+	}
+	in = apiSettings(t, `{"admin":{"bindAddress":"127.0.0.1","port":8443},
+		"interfaces":[{"name":"lab0","advertisedAddress":"192.0.2.10","dhcp":{"mode":"off"},"services":{"https":true,"httpsPort":443}}]}`)
+	out, _, err := svc.Replace(ctx, in, `"1"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ca.CA() == nil {
+		t.Fatal("no CA after enabling HTTPS")
+	}
+	c := out.ContentHttps
+	if c == nil || c.Ca == nil || c.Certificate == nil || c.Ca.Subject != "CN=netdeploy content CA" {
+		t.Fatalf("contentHttps %+v", c)
+	}
+	if !slices.Contains(c.Certificate.IpAddresses, "192.0.2.10") || !slices.Contains(c.Certificate.IpAddresses, "10.77.0.1") {
+		t.Errorf("certificate addresses %v", c.Certificate.IpAddresses)
+	}
+	st := svc.opts.Network.Status()["content"]
+	if !strings.Contains(strings.Join(st.Running, " "), "https://10.77.0.1:443") {
+		t.Errorf("content listeners %+v", st)
+	}
+	if eps := svc.Endpoints(true); len(eps) != 2 || eps[0].Port() != 443 {
+		t.Errorf("HTTPS endpoints %v", eps)
+	}
 }

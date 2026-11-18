@@ -62,6 +62,8 @@ func probeCapabilities(ctx context.Context, version string, boot *bootimage.Serv
 	}
 	elevated := h.Elevated
 	c.Elevated = &elevated
+	https := true // ADR 0028: the internal content CA works on every host
+	c.ContentHttps = &https
 	agentVersion, arches := version, []api.Architecture{}
 	if boot != nil && boot.Agents() != nil {
 		agentVersion = boot.Agents().Version

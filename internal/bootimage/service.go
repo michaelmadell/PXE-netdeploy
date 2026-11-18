@@ -80,6 +80,9 @@ type Options struct {
 	// Classify returns a boot manager's signer (signer.Signer values). Nil:
 	// signer.Default().
 	Classify func(b []byte) string
+	// ContentCA returns the content CA (PEM) and its fingerprint, or nil and
+	// "" when there is none (ADR 0028). Nil: never one.
+	ContentCA func() (pem []byte, fingerprint string)
 }
 
 // Service defines, checks and builds boot images.
@@ -93,6 +96,7 @@ type Service struct {
 	detect   func(ctx context.Context) Host
 	newTool  func(name string, h Host) Tool
 	classify func(b []byte) string
+	ca       func() ([]byte, string)
 
 	hostMu sync.Mutex
 	hostAt time.Time
@@ -117,6 +121,9 @@ func New(o Options) *Service {
 	if o.BCD == nil {
 		o.BCD = builtinBCD{}
 	}
+	if o.ContentCA == nil {
+		o.ContentCA = func() ([]byte, string) { return nil, "" }
+	}
 	if o.Classify == nil {
 		o.Classify = func(b []byte) string {
 			res, err := signer.Default().Classify(bytes.NewReader(b), int64(len(b)))
@@ -127,7 +134,7 @@ func New(o Options) *Service {
 		}
 	}
 	return &Service{st: o.Store, content: o.Content, agents: o.Agents, events: o.Events, log: o.Logger.With("svc", "boot-images"),
-		bcd: o.BCD, detect: o.Detect, newTool: o.NewTool, classify: o.Classify}
+		bcd: o.BCD, detect: o.Detect, newTool: o.NewTool, classify: o.Classify, ca: o.ContentCA}
 }
 
 // Kind is the job kind to register with the runner.
@@ -247,11 +254,17 @@ func (s *Service) Check(ctx context.Context, in store.BootImageInput) *jobs.Erro
 	if len(in.ServerURLs) == 0 {
 		return jobs.Fail(http.StatusBadRequest, "invalid_request", "Invalid request", "serverUrls needs at least one URL.")
 	}
+	schemes := map[string]bool{}
 	for _, u := range in.ServerURLs {
 		p, err := url.Parse(u)
 		if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
 			return jobs.Fail(http.StatusBadRequest, "invalid_request", "Invalid request", fmt.Sprintf("serverUrls: %q is not an http(s) URL.", u))
 		}
+		schemes[p.Scheme] = true
+	}
+	if len(schemes) > 1 {
+		return unprocessable("mixed_server_urls", "Mixed server URLs",
+			"serverUrls must be all http:// or all https://: with both, blocking HTTPS would push the agent onto plain HTTP (ADR 0028).")
 	}
 	if len(in.OptionalComponents) > 0 {
 		return unprocessable("not_implemented", "Not implemented", "Optional components aren't supported yet (ADR 0022).")
@@ -323,6 +336,7 @@ type plan struct {
 	agent    agentbin.Binary
 	tool     Tool
 	warnings []string
+	caPEM    []byte // the content CA, for https:// server URLs
 }
 
 // plan resolves bi's inputs. For a status check (forBuild false) it
@@ -333,6 +347,13 @@ func (s *Service) plan(ctx context.Context, bi store.BootImage, forBuild bool) (
 		Recipe: Recipe, SourceIndex: bi.SourceIndex, Architecture: bi.Architecture, ServerURLs: bi.ServerURLs,
 		Bootmgr: bi.Bootmgr, TFTPBlockSize: bi.TFTPBlockSize, TFTPWindowSize: bi.TFTPWindowSize,
 	}}
+	if UsesHTTPS(bi.ServerURLs) {
+		p.caPEM, p.inputs.ContentCA = s.ca()
+		if p.inputs.ContentCA == "" && forBuild {
+			return p, unprocessable("content_https_not_available", "Content HTTPS not available",
+				"The server URLs are https:// but there is no content CA yet: enable HTTPS on a deployment interface in Settings first (ADR 0028).")
+		}
+	}
 	im, _, perr := s.sourceImage(ctx, bi.SourceImageID)
 	if perr != nil {
 		return p, perr

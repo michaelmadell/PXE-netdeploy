@@ -35,7 +35,9 @@ const (
 )
 
 // Files copied from the data directory with the database.
-var dataFiles = []string{"admin-cert.pem", "admin-key.pem"}
+// The content CA (ADR 0028) is there too, its key sealed with the secrets
+// key, which backups never hold.
+var dataFiles = []string{"admin-cert.pem", "admin-key.pem", "content-ca.pem", "content-ca-key.enc"}
 
 // Triggers.
 const (

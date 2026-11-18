@@ -69,8 +69,14 @@ func (s *Server) validateProfile(ctx context.Context, p store.Profile) ([]findin
 		}
 		// The agent in WinPE calls the boot image's serverUrls: something
 		// must serve HTTP there, or machines boot and then find nothing.
-		if s.settings != nil && !agentReachable(bi.ServerURLs, s.settings.HTTPEndpoints()) {
-			add("warning", "agent_unreachable", "None of boot image %q's server addresses (%s) is served by a deployment interface with HTTP on. Machines will start Windows PE, then fail to reach this server. Turn HTTP on for the interface at that address and port in Settings, or change the boot image's server addresses and rebuild.", bi.Name, strings.Join(bi.ServerURLs, ", "))
+		if s.settings != nil {
+			httpsEPs := s.settings.Endpoints(true)
+			if !agentReachable(bi.ServerURLs, s.settings.Endpoints(false), httpsEPs) {
+				add("warning", "agent_unreachable", "None of boot image %q's server addresses (%s) is served by a deployment interface with HTTP (or HTTPS, for https:// addresses) on. Machines will start Windows PE, then fail to reach this server. Turn it on for the interface at that address and port in Settings, or change the boot image's server addresses and rebuild.", bi.Name, strings.Join(bi.ServerURLs, ", "))
+			}
+			if plain := agentOverHTTP(bi.ServerURLs, httpsEPs); len(plain) > 0 {
+				add("warning", "agent_over_http", "Boot image %q reaches this server over plain HTTP (%s) although HTTPS is on there: the boot prompt password and unattend secrets travel in clear. Change its server addresses to https:// and rebuild.", bi.Name, strings.Join(plain, ", "))
+			}
 		}
 		// OS drivers need DISM offline servicing, which plain WinPE can't run
 		// (ADR 0022 amendment): refuse before a disk is wiped.

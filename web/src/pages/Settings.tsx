@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router";
 import { api, type Schemas } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox, Field, FieldErrors, Input, NumberInput, RadioCards, Select, useFieldErrors } from "@/components/ui/form";
-import { Alert, PageHeader, Section, td, th } from "@/components/ui/misc";
+import { Alert, Badge, PageHeader, Section, tabPanelProps, Tabs, td, th } from "@/components/ui/misc";
 import { formatBytes } from "@/lib/format";
 import { ApiError, errorMessage, unwrap, type FieldError } from "@/lib/problem";
+import { AdminCertificate } from "./settings/AdminCertificate";
+import { BackupSettingsSection, BackupStatusSection } from "./settings/Backups";
 
 type Settings = Schemas["Settings"];
 type Iface = Schemas["InterfaceSettings"];
@@ -28,6 +31,32 @@ function adapterLabel(h: HostInterface): string {
 }
 
 const GiB = 1024 ** 3;
+
+const tabs = [
+  { id: "network", label: "Network" },
+  { id: "deployments", label: "Deployments" },
+  { id: "storage", label: "Storage & backups" },
+  { id: "admin", label: "Admin" },
+] as const;
+type Tab = (typeof tabs)[number]["id"];
+
+/** Which tab shows the control for a server error's field path. */
+function tabOf(field: string | undefined): Tab {
+  const top = (field ?? "").split(/[.[]/)[0];
+  switch (top) {
+    case "bootPrompt":
+    case "deployments":
+      return "deployments";
+    case "storage":
+    case "backup":
+      return "storage";
+    case "admin":
+    case "contentHttps":
+      return "admin";
+    default:
+      return "network";
+  }
+}
 
 const newPool = (): Pool => ({
   start: "",
@@ -65,6 +94,9 @@ function toRequest(draft: Settings): Settings {
     }
   }
   if (s.bootPrompt && !s.bootPrompt.password) delete s.bootPrompt.password;
+  const { certificateInfo: _shown, ...admin } = s.admin;
+  s.admin = admin;
+  if (!s.admin.privateKeyPem) delete s.admin.privateKeyPem;
   return s;
 }
 
@@ -121,10 +153,21 @@ export function SettingsPage() {
     queryFn: async () => unwrap(await api.GET("/profiles", { params: { query: { limit: 200 } } })),
   });
 
+  const [params, setParams] = useSearchParams();
+  const tab: Tab = tabs.some((t) => t.id === params.get("tab")) ? (params.get("tab") as Tab) : "network";
+  const setTab = (t: Tab) => setParams(t === "network" ? {} : { tab: t }, { replace: true });
+  const leases = useQuery({
+    queryKey: ["dhcp-leases"],
+    queryFn: async () => unwrap(await api.GET("/dhcp/leases", { params: { query: { limit: 200 } } })),
+    refetchInterval: 30_000,
+  });
+
   // `base` is the server's copy the draft was made from; its etag goes in If-Match.
   const [base, setBase] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [saved, setSaved] = useState(false);
+  // Bumped by Discard, so panels with their own edit state start again.
+  const [discards, setDiscards] = useState(0);
 
   const dirty = useMemo(
     () => !!base && !!draft && JSON.stringify(toRequest(draft)) !== JSON.stringify(toRequest(base)),
@@ -150,6 +193,10 @@ export function SettingsPage() {
   const save = useMutation({
     mutationFn: async (s: Settings) =>
       unwrap(await api.PUT("/settings", { params: { header: { "If-Match": base?.etag ?? "*" } }, body: toRequest(s) })),
+    onError: (err) => {
+      const fields = err instanceof ApiError ? err.fields : [];
+      if (fields.length && !fields.some((f) => tabOf(f.field) === tab)) setTab(tabOf(fields[0]!.field));
+    },
     onSuccess: (data) => {
       setBase(data);
       setDraft(structuredClone(data));
@@ -207,277 +254,353 @@ export function SettingsPage() {
           description="Changes apply together when you save. If a listener can’t start, nothing changes and the running configuration is kept."
         />
 
-        <div className="space-y-6">
-          <Section
-            title="Deployment interfaces"
-            description="Network adapters that face the machines you deploy to. Each has its own DHCP mode and serves boot files over TFTP and HTTP."
-            actions={
-              <Button size="sm" onClick={() => edit((s) => s.interfaces.push(newInterface()))}>
-                <Plus aria-hidden /> Add interface
-              </Button>
-            }
-          >
-            {draft.interfaces.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No interfaces yet. Add the adapter connected to your deployment network; until then nothing answers
-                network boot requests.
-              </p>
-            ) : (
-              <div className="space-y-5">
-                {draft.interfaces.map((iface, i) => (
-                  <InterfaceCard
-                    key={i}
-                    index={i}
-                    iface={iface}
-                    saved={base.interfaces.find((b) => b.name === iface.name)}
-                    adapters={adapters.data}
-                    adaptersLoading={adapters.isPending}
-                    usedElsewhere={draft.interfaces.filter((_, n) => n !== i).map((o) => o.name)}
-                    edit={(fn) => edit((s) => fn(s.interfaces[i]!))}
-                    remove={() => edit((s) => void s.interfaces.splice(i, 1))}
-                  />
-                ))}
-              </div>
-            )}
-          </Section>
+        <Tabs
+          label="Settings"
+          idPrefix="settings"
+          value={tab}
+          onChange={setTab}
+          className="mb-6"
+          tabs={tabs.map((t) => {
+            const n = fieldErrors.filter((e) => tabOf(e.field) === t.id).length;
+            return { ...t, badge: n > 0 ? <Badge tone="error">{n}</Badge> : undefined };
+          })}
+        />
+        {tab === "network" && (
+          <div {...tabPanelProps("settings", "network")}>
+            <div className="space-y-6">
+              <Section
+                title="Deployment interfaces"
+                description="Network adapters that face the machines you deploy to. Each has its own DHCP mode and serves boot files over TFTP and HTTP."
+                actions={
+                  <Button size="sm" onClick={() => edit((s) => s.interfaces.push(newInterface()))}>
+                    <Plus aria-hidden /> Add interface
+                  </Button>
+                }
+              >
+                {draft.interfaces.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No interfaces yet. Add the adapter connected to your deployment network; until then nothing answers
+                    network boot requests.
+                  </p>
+                ) : (
+                  <div className="space-y-5">
+                    {draft.interfaces.map((iface, i) => (
+                      <InterfaceCard
+                        key={i}
+                        index={i}
+                        iface={iface}
+                        saved={base.interfaces.find((b) => b.name === iface.name)}
+                        adapters={adapters.data}
+                        adaptersLoading={adapters.isPending}
+                        usedElsewhere={draft.interfaces.filter((_, n) => n !== i).map((o) => o.name)}
+                        edit={(fn) => edit((s) => fn(s.interfaces[i]!))}
+                        remove={() => edit((s) => void s.interfaces.splice(i, 1))}
+                    leases={leases.data?.items.filter((l) => l.interface === iface.name).length}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Section>
 
-          {draft.tftp && (
-            <Section
-              title="TFTP"
-              description="Limits for every transfer. Clients negotiate up to these; lower them if boot files stall on your network."
-            >
-              <div className="grid gap-5 sm:grid-cols-3">
-                <Field label="Maximum block size" path="tftp.maxBlockSize" hint="Bytes, 512 to 65464. Default 8192.">
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={512}
-                      max={65464}
-                      value={draft.tftp!.maxBlockSize}
-                      onChange={(v) => edit((s) => void (s.tftp!.maxBlockSize = v as number))}
-                    />
-                  )}
-                </Field>
-                <Field label="Maximum window size" path="tftp.maxWindowSize" hint="Blocks sent before waiting for an acknowledgement, 1 to 64. Default 8.">
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={1}
-                      max={64}
-                      value={draft.tftp!.maxWindowSize}
-                      onChange={(v) => edit((s) => void (s.tftp!.maxWindowSize = v as number))}
-                    />
-                  )}
-                </Field>
-                <Field label="Retransmit timeout" path="tftp.timeoutSeconds" hint="Seconds, 1 to 60. Each lost block costs one timeout.">
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={1}
-                      max={60}
-                      value={draft.tftp!.timeoutSeconds}
-                      onChange={(v) => edit((s) => void (s.tftp!.timeoutSeconds = v as number))}
-                    />
-                  )}
-                </Field>
-              </div>
-            </Section>
-          )}
-
-          {bp && (
-            <Section
-              title="Boot prompt"
-              description="What a network-booted machine shows when no deployment is scheduled for it. Without the password it counts down and starts from its own disk."
-            >
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Field
-                  label={bp.hasPassword ? "Change password" : "Set password"}
-                  path="bootPrompt.password"
-                  hint={
-                    password && password.length < 8
-                      ? "At least 8 characters."
-                      : bp.hasPassword
-                        ? "A password is set. Leave empty to keep it."
-                        : "No password is set: only scheduled deployments can run. At least 8 characters."
-                  }
+              {draft.tftp && (
+                <Section
+                  title="TFTP"
+                  description="Limits for every transfer. Clients negotiate up to these; lower them if boot files stall on your network."
                 >
-                  {(p) => (
-                    <Input
-                      {...p}
-                      type="password"
-                      autoComplete="new-password"
-                      value={password}
-                      onChange={(e) => edit((s) => void (s.bootPrompt!.password = e.target.value))}
-                    />
-                  )}
-                </Field>
-                <Field
-                  label="Default profile"
-                  path="bootPrompt.defaultProfileId"
-                  hint="Offered to machines that have no profile of their own. With none, unknown machines are not answered."
-                >
-                  {(p) => (
-                    <Select
-                      {...p}
-                      value={bp.defaultProfileId ?? ""}
-                      onChange={(e) => edit((s) => void (s.bootPrompt!.defaultProfileId = e.target.value || null))}
-                    >
-                      <option value="">None</option>
-                      {profiles.data?.items.map((pr) => (
-                        <option key={pr.id} value={pr.id}>
-                          {pr.name}
-                        </option>
-                      ))}
-                      {bp.defaultProfileId && !profiles.data?.items.some((pr) => pr.id === bp.defaultProfileId) && (
-                        <option value={bp.defaultProfileId}>{bp.defaultProfileId}</option>
+                  <div className="grid gap-5 sm:grid-cols-3">
+                    <Field label="Maximum block size" path="tftp.maxBlockSize" hint="Bytes, 512 to 65464. Default 8192.">
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={512}
+                          max={65464}
+                          value={draft.tftp!.maxBlockSize}
+                          onChange={(v) => edit((s) => void (s.tftp!.maxBlockSize = v as number))}
+                        />
                       )}
-                    </Select>
-                  )}
-                </Field>
-                <Field label="Prompt countdown" path="bootPrompt.timeoutSeconds" hint="Seconds before the machine starts from its disk, 5 to 3600.">
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={5}
-                      max={3600}
-                      value={bp.timeoutSeconds}
-                      onChange={(v) => edit((s) => void (s.bootPrompt!.timeoutSeconds = v as number))}
-                    />
-                  )}
-                </Field>
-                <Field
-                  label="Scheduled deployment countdown"
-                  path="bootPrompt.armedCountdownSeconds"
-                  hint="Seconds before a scheduled deployment starts, 0 to 300. Any key opens the menu instead."
-                >
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={0}
-                      max={300}
-                      value={bp.armedCountdownSeconds}
-                      onChange={(v) => edit((s) => void (s.bootPrompt!.armedCountdownSeconds = v as number))}
-                    />
-                  )}
-                </Field>
-              </div>
-              <Checkbox
-                className="mt-5"
-                label="Require the password"
-                hint="Turn off for debugging only."
-                checked={bp.requirePassword}
-                onChange={(v) => edit((s) => void (s.bootPrompt!.requirePassword = v))}
-              />
-              {!bp.requirePassword && (
-                <Alert tone="warning" className="mt-3" title="Anyone at a machine on a deployment network can re-image it">
-                  The profile menu opens without a password while this is off.
-                </Alert>
+                    </Field>
+                    <Field label="Maximum window size" path="tftp.maxWindowSize" hint="Blocks sent before waiting for an acknowledgement, 1 to 64. Default 8.">
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={1}
+                          max={64}
+                          value={draft.tftp!.maxWindowSize}
+                          onChange={(v) => edit((s) => void (s.tftp!.maxWindowSize = v as number))}
+                        />
+                      )}
+                    </Field>
+                    <Field label="Retransmit timeout" path="tftp.timeoutSeconds" hint="Seconds, 1 to 60. Each lost block costs one timeout.">
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={1}
+                          max={60}
+                          value={draft.tftp!.timeoutSeconds}
+                          onChange={(v) => edit((s) => void (s.tftp!.timeoutSeconds = v as number))}
+                        />
+                      )}
+                    </Field>
+                  </div>
+                </Section>
               )}
-            </Section>
-          )}
 
-          {draft.architectures && (
-            <Section title="Client types" description="Which kinds of machine get an answer when they network boot.">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Checkbox
-                  label="UEFI x64"
-                  checked={draft.architectures.uefiX64}
-                  onChange={(v) => edit((s) => void (s.architectures!.uefiX64 = v))}
-                />
-                <Checkbox
-                  label="UEFI ARM64"
-                  checked={draft.architectures.uefiArm64}
-                  onChange={(v) => edit((s) => void (s.architectures!.uefiArm64 = v))}
-                />
-                <Checkbox
-                  label="UEFI HTTP Boot"
-                  hint="Firmware that downloads its boot file over HTTP instead of TFTP."
-                  checked={draft.architectures.httpBoot}
-                  onChange={(v) => edit((s) => void (s.architectures!.httpBoot = v))}
-                />
-                <Checkbox
-                  label="Legacy BIOS"
-                  hint="Windows 11 needs UEFI, so this is normally off."
-                  checked={draft.architectures.bios}
-                  onChange={(v) => edit((s) => void (s.architectures!.bios = v))}
-                />
-              </div>
-            </Section>
-          )}
-
-          {draft.storage && (
-            <Section title="Storage" description="Limits for the content store, where imported images, drivers and uploads are kept.">
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Field
-                  label="Free space to keep (GiB)"
-                  path="storage.reserveBytes"
-                  hint={`Uploads and imports that would leave less than this are refused. Now ${formatBytes(base.storage?.reserveBytes)}.`}
-                >
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={0}
-                      step="any"
-                      value={draft.storage!.reserveBytes / GiB}
-                      onChange={(v) => edit((s) => void (s.storage!.reserveBytes = v === undefined ? (v as never) : Math.round(v * GiB)))}
+              {draft.architectures && (
+                <Section title="Client types" description="Which kinds of machine get an answer when they network boot.">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Checkbox
+                      label="UEFI x64"
+                      checked={draft.architectures.uefiX64}
+                      onChange={(v) => edit((s) => void (s.architectures!.uefiX64 = v))}
                     />
-                  )}
-                </Field>
-                <Field
-                  label="Keep unused uploads for (hours)"
-                  path="storage.uploadExpiryHours"
-                  hint="Uploads that were never imported are deleted this long after their last activity, 1 to 720."
-                >
-                  {(p) => (
-                    <NumberInput
-                      {...p}
-                      min={1}
-                      max={720}
-                      value={draft.storage!.uploadExpiryHours}
-                      onChange={(v) => edit((s) => void (s.storage!.uploadExpiryHours = v as number))}
+                    <Checkbox
+                      label="UEFI ARM64"
+                      checked={draft.architectures.uefiArm64}
+                      onChange={(v) => edit((s) => void (s.architectures!.uefiArm64 = v))}
                     />
-                  )}
-                </Field>
-              </div>
-            </Section>
-          )}
+                    <Checkbox
+                      label="UEFI HTTP Boot"
+                      hint="Firmware that downloads its boot file over HTTP instead of TFTP."
+                      checked={draft.architectures.httpBoot}
+                      onChange={(v) => edit((s) => void (s.architectures!.httpBoot = v))}
+                    />
+                    <Checkbox
+                      label="Legacy BIOS"
+                      hint="Windows 11 needs UEFI, so this is normally off."
+                      checked={draft.architectures.bios}
+                      onChange={(v) => edit((s) => void (s.architectures!.bios = v))}
+                    />
+                  </div>
+                </Section>
+              )}
 
-          <Section
-            title="Admin listener"
-            description="Where this web UI and the admin API listen (always HTTPS). Keep it on a management address that deployment networks can’t reach."
-          >
-            <div className="grid gap-5 sm:grid-cols-2">
-              <Field label="Address" path="admin.bindAddress" hint="An IPv4 address of this server. 127.0.0.1 allows this machine only.">
-                {(p) => (
-                  <Input
-                    {...p}
-                    {...ipProps}
-                    value={draft.admin.bindAddress}
-                    onChange={(e) => edit((s) => void (s.admin.bindAddress = e.target.value.trim()))}
-                  />
-                )}
-              </Field>
-              <Field label="Port" path="admin.port">
-                {(p) => (
-                  <NumberInput
-                    {...p}
-                    min={1}
-                    max={65535}
-                    value={draft.admin.port}
-                    onChange={(v) => edit((s) => void (s.admin.port = v as number))}
-                  />
-                )}
-              </Field>
             </div>
-            {adminMoved && (
-              <Alert tone="warning" className="mt-4" title="This page will move">
-                After saving, open https://{draft.admin.bindAddress === "0.0.0.0" ? "<this server>" : draft.admin.bindAddress}:
-                {draft.admin.port}. The old address closes a few seconds later. If you lock yourself out, start
-                netdeployd with -admin-addr.
-              </Alert>
-            )}
-          </Section>
-        </div>
+          </div>
+        )}
+        {tab === "deployments" && (
+          <div {...tabPanelProps("settings", "deployments")}>
+            <div className="space-y-6">
+              {bp && (
+                <Section
+                  title="Boot prompt"
+                  description="What a network-booted machine shows when no deployment is scheduled for it. Without the password it counts down and starts from its own disk."
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                      label={bp.hasPassword ? "Change password" : "Set password"}
+                      path="bootPrompt.password"
+                      hint={
+                        password && password.length < 8
+                          ? "At least 8 characters."
+                          : bp.hasPassword
+                            ? "A password is set. Leave empty to keep it."
+                            : "No password is set: only scheduled deployments can run. At least 8 characters."
+                      }
+                    >
+                      {(p) => (
+                        <Input
+                          {...p}
+                          type="password"
+                          autoComplete="new-password"
+                          value={password}
+                          onChange={(e) => edit((s) => void (s.bootPrompt!.password = e.target.value))}
+                        />
+                      )}
+                    </Field>
+                    <Field
+                      label="Default profile"
+                      path="bootPrompt.defaultProfileId"
+                      hint="Offered to machines that have no profile of their own. With none, unknown machines are not answered."
+                    >
+                      {(p) => (
+                        <Select
+                          {...p}
+                          value={bp.defaultProfileId ?? ""}
+                          onChange={(e) => edit((s) => void (s.bootPrompt!.defaultProfileId = e.target.value || null))}
+                        >
+                          <option value="">None</option>
+                          {profiles.data?.items.map((pr) => (
+                            <option key={pr.id} value={pr.id}>
+                              {pr.name}
+                            </option>
+                          ))}
+                          {bp.defaultProfileId && !profiles.data?.items.some((pr) => pr.id === bp.defaultProfileId) && (
+                            <option value={bp.defaultProfileId}>{bp.defaultProfileId}</option>
+                          )}
+                        </Select>
+                      )}
+                    </Field>
+                    <Field label="Prompt countdown" path="bootPrompt.timeoutSeconds" hint="Seconds before the machine starts from its disk, 5 to 3600.">
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={5}
+                          max={3600}
+                          value={bp.timeoutSeconds}
+                          onChange={(v) => edit((s) => void (s.bootPrompt!.timeoutSeconds = v as number))}
+                        />
+                      )}
+                    </Field>
+                    <Field
+                      label="Scheduled deployment countdown"
+                      path="bootPrompt.armedCountdownSeconds"
+                      hint="Seconds before a scheduled deployment starts, 0 to 300. Any key opens the menu instead."
+                    >
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={0}
+                          max={300}
+                          value={bp.armedCountdownSeconds}
+                          onChange={(v) => edit((s) => void (s.bootPrompt!.armedCountdownSeconds = v as number))}
+                        />
+                      )}
+                    </Field>
+                  </div>
+                  <Checkbox
+                    className="mt-5"
+                    label="Require the password"
+                    hint="Turn off for debugging only."
+                    checked={bp.requirePassword}
+                    onChange={(v) => edit((s) => void (s.bootPrompt!.requirePassword = v))}
+                  />
+                  {!bp.requirePassword && (
+                    <Alert tone="warning" className="mt-3" title="Anyone at a machine on a deployment network can re-image it">
+                      The profile menu opens without a password while this is off.
+                    </Alert>
+                  )}
+                </Section>
+              )}
+
+              {draft.deployments && (
+                <Section title="Deployment timeouts" description="When the server gives up on a deployment and marks it failed.">
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                      label="Scheduled deployments expire after (hours)"
+                      path="deployments.armedExpiryHours"
+                      hint="A scheduled deployment the machine hasn’t started by then fails as expired, 1 to 720. Default 72."
+                    >
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={1}
+                          max={720}
+                          value={draft.deployments!.armedExpiryHours}
+                          onChange={(v) => edit((s) => void (s.deployments!.armedExpiryHours = v as number))}
+                        />
+                      )}
+                    </Field>
+                    <Field
+                      label="Running deployments time out after (minutes)"
+                      path="deployments.inactivityMinutes"
+                      hint="With no word from the machine for this long, a running deployment fails as timed out, 5 to 1440. Default 30."
+                    >
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={5}
+                          max={1440}
+                          value={draft.deployments!.inactivityMinutes}
+                          onChange={(v) => edit((s) => void (s.deployments!.inactivityMinutes = v as number))}
+                        />
+                      )}
+                    </Field>
+                  </div>
+                </Section>
+              )}
+            </div>
+          </div>
+        )}
+        {tab === "storage" && (
+          <div {...tabPanelProps("settings", "storage")}>
+            <div className="space-y-6">
+              {draft.storage && (
+                <Section title="Storage" description="Limits for the content store, where imported images, drivers and uploads are kept.">
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                      label="Free space to keep (GiB)"
+                      path="storage.reserveBytes"
+                      hint={`Uploads and imports that would leave less than this are refused. Now ${formatBytes(base.storage?.reserveBytes)}.`}
+                    >
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={0}
+                          step="any"
+                          value={draft.storage!.reserveBytes / GiB}
+                          onChange={(v) => edit((s) => void (s.storage!.reserveBytes = v === undefined ? (v as never) : Math.round(v * GiB)))}
+                        />
+                      )}
+                    </Field>
+                    <Field
+                      label="Keep unused uploads for (hours)"
+                      path="storage.uploadExpiryHours"
+                      hint="Uploads that were never imported are deleted this long after their last activity, 1 to 720."
+                    >
+                      {(p) => (
+                        <NumberInput
+                          {...p}
+                          min={1}
+                          max={720}
+                          value={draft.storage!.uploadExpiryHours}
+                          onChange={(v) => edit((s) => void (s.storage!.uploadExpiryHours = v as number))}
+                        />
+                      )}
+                    </Field>
+                  </div>
+                </Section>
+              )}
+
+              {draft.backup && <BackupSettingsSection backup={draft.backup} edit={(fn) => edit((s) => fn(s.backup!))} />}
+              <BackupStatusSection
+                saved={base.backup}
+                pending={JSON.stringify(draft.backup?.destination ?? null) !== JSON.stringify(base.backup?.destination ?? null)}
+              />
+            </div>
+          </div>
+        )}
+        {tab === "admin" && (
+          <div {...tabPanelProps("settings", "admin")}>
+            <div className="space-y-6">
+              <Section
+                title="Admin listener"
+                description="Where this web UI and the admin API listen (always HTTPS). Keep it on a management address that deployment networks can’t reach."
+              >
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field label="Address" path="admin.bindAddress" hint="An IPv4 address of this server. 127.0.0.1 allows this machine only.">
+                    {(p) => (
+                      <Input
+                        {...p}
+                        {...ipProps}
+                        value={draft.admin.bindAddress}
+                        onChange={(e) => edit((s) => void (s.admin.bindAddress = e.target.value.trim()))}
+                      />
+                    )}
+                  </Field>
+                  <Field label="Port" path="admin.port">
+                    {(p) => (
+                      <NumberInput
+                        {...p}
+                        min={1}
+                        max={65535}
+                        value={draft.admin.port}
+                        onChange={(v) => edit((s) => void (s.admin.port = v as number))}
+                      />
+                    )}
+                  </Field>
+                </div>
+                {adminMoved && (
+                  <Alert tone="warning" className="mt-4" title="This page will move">
+                    After saving, open https://{draft.admin.bindAddress === "0.0.0.0" ? "<this server>" : draft.admin.bindAddress}:
+                    {draft.admin.port}. The old address closes a few seconds later. If you lock yourself out, start
+                    netdeployd with -admin-addr.
+                  </Alert>
+                )}
+                <AdminCertificate key={`${base.etag}/${discards}`} draft={draft.admin} base={base.admin} edit={(fn) => edit((s) => fn(s.admin))} />
+              </Section>
+            </div>
+          </div>
+        )}
 
         {/* Save bar: always in view, so a long form never hides its own result. */}
         <div className="fixed inset-x-0 bottom-0 z-10 border-t bg-background/95 backdrop-blur md:left-60">
@@ -517,6 +640,7 @@ export function SettingsPage() {
                   onClick={() => {
                     save.reset();
                     setDraft(structuredClone(base));
+                    setDiscards((n) => n + 1);
                   }}
                 >
                   Discard
@@ -542,6 +666,7 @@ function InterfaceCard({
   usedElsewhere,
   edit,
   remove,
+  leases,
 }: {
   index: number;
   iface: Iface;
@@ -554,6 +679,8 @@ function InterfaceCard({
   usedElsewhere: string[];
   edit: (fn: (i: Iface) => void) => void;
   remove: () => void;
+  /** Current leases on this interface (full DHCP), if they could be read. */
+  leases?: number;
 }) {
   const path = `interfaces[${index}]`;
   const { dhcp, services } = iface;
@@ -775,7 +902,20 @@ function InterfaceCard({
       </div>
 
       <FieldMessages path={path} />
-      <div className="mt-4 flex justify-end">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm text-muted-foreground">
+          {saved?.dhcp.mode === "full" && leases !== undefined && (
+            <>
+              {leases === 0 ? "No addresses leased" : `${leases} ${leases === 1 ? "address" : "addresses"} leased`} ·{" "}
+              <Link
+                className="text-primary underline-offset-4 hover:underline"
+                to={`/clients?tab=leases&interface=${encodeURIComponent(iface.name)}`}
+              >
+                View leases
+              </Link>
+            </>
+          )}
+        </span>
         <Button variant="destructive-ghost" size="sm" onClick={remove}>
           <Trash2 aria-hidden /> Remove interface
         </Button>

@@ -88,6 +88,7 @@ function jobUpdated(qc: QueryClient, ev: Event) {
     void qc.invalidateQueries({ queryKey: ["driver-package"] });
     void qc.invalidateQueries({ queryKey: ["uploads"] });
     void qc.invalidateQueries({ queryKey: ["health"] });
+    void qc.invalidateQueries({ queryKey: ["backups"] });
   }
 }
 

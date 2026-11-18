@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -281,5 +282,32 @@ func TestBackupSettingsValidation(t *testing.T) {
 	cfg, errs := FromAPI(apiSettings(t, `{"admin":{"bindAddress":"127.0.0.1","port":8443},"interfaces":[]}`), Defaults())
 	if len(errs) != 0 || cfg.Backup.Schedule.Frequency != "disabled" || cfg.Backup.Retention != 5 || cfg.Backup.Destination != nil {
 		t.Errorf("defaults: %+v %v", cfg.Backup, errs)
+	}
+}
+
+// The admin certificate's details: the generated one until a valid custom
+// pair is stored.
+func TestAdminCertificateInfo(t *testing.T) {
+	gc, gk := selfSigned(t)
+	gen, err := tls.X509KeyPair([]byte(gc), []byte(gk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{opts: Options{GeneratedAdminCert: &gen}}
+	cfg := Defaults()
+	info := s.adminCertificate(cfg)
+	if info == nil || info.Source != api.CertificateInfoSourceGenerated || info.Subject != "CN=t" || len(info.Sha256) != 64 {
+		t.Fatalf("generated: %+v", info)
+	}
+	c, k := selfSigned(t)
+	cfg.Admin.Certificate = CertPair{CertificatePEM: c, PrivateKeyPEM: k}
+	custom := s.adminCertificate(cfg)
+	if custom == nil || custom.Source != api.CertificateInfoSourceCustom || custom.Sha256 == info.Sha256 {
+		t.Fatalf("custom: %+v", custom)
+	}
+	// A broken stored pair is not served, so it isn't described either.
+	cfg.Admin.Certificate.PrivateKeyPEM = gk
+	if got := s.adminCertificate(cfg); got.Source != api.CertificateInfoSourceGenerated {
+		t.Errorf("broken pair: %+v", got)
 	}
 }

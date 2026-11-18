@@ -199,8 +199,31 @@ func (s *Server) warnings() []warning {
 	} else if cfg.BootPrompt.PasswordHash == "" {
 		w = append(w, warning{"boot_prompt_no_password", "No boot prompt password is set: only deployments scheduled through the API can run."})
 	}
+	if cw := certificateWarning(s.settings.AdminCertificate(), time.Now()); cw != nil {
+		w = append(w, *cw)
+	}
 	if len(cfg.Interfaces) > 0 && cfg.BootPrompt.DefaultProfileID == "" {
 		w = append(w, warning{"no_default_profile", "No default profile: clients without a profile of their own are not answered."})
 	}
 	return w
+}
+
+// certificateWarning: admin_certificate_expiring within 30 days of the
+// admin certificate's expiry, and after it.
+func certificateWarning(c *api.CertificateInfo, now time.Time) *warning {
+	if c == nil {
+		return nil
+	}
+	renew := "Set a new certificate in Settings."
+	if c.Source == api.CertificateInfoSourceGenerated {
+		renew = "Set your own in Settings, or delete admin-cert.pem and admin-key.pem from the data directory and restart to generate a new one."
+	}
+	day := c.NotAfter.Format("2 January 2006")
+	switch left := c.NotAfter.Sub(now); {
+	case left <= 0:
+		return &warning{"admin_certificate_expiring", "The admin certificate expired on " + day + ". " + renew}
+	case left < 30*24*time.Hour:
+		return &warning{"admin_certificate_expiring", fmt.Sprintf("The admin certificate expires in %d days (%s). %s", (left+24*time.Hour-1)/(24*time.Hour), day, renew)}
+	}
+	return nil
 }

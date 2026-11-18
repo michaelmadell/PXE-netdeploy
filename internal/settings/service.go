@@ -162,6 +162,7 @@ func (s *Service) AdminOverridden() bool { return s.opts.AdminOverride.IsValid()
 func (s *Service) Get() (api.Settings, string, error) {
 	cfg, tag := s.Current()
 	out, err := ToAPI(cfg, tag, s.guidance(cfg))
+	out.Admin.CertificateInfo = s.adminCertificate(cfg)
 	return out, tag, err
 }
 
@@ -213,6 +214,7 @@ func (s *Service) Replace(ctx context.Context, in api.Settings, ifMatch string) 
 	}
 	tag := etag(version)
 	out, err := ToAPI(next, tag, s.guidance(next))
+	out.Admin.CertificateInfo = s.adminCertificate(next)
 	return out, tag, err
 }
 

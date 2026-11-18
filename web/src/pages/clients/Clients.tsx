@@ -1,19 +1,22 @@
 import { useMutation } from "@tanstack/react-query";
 import { CircleStop, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/form";
-import { Alert, Dialog, PageHeader, td, th } from "@/components/ui/misc";
+import { Alert, Dialog, PageHeader, tabPanelProps, Tabs, td, th } from "@/components/ui/misc";
 import { formatDateTime } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/problem";
 import { refreshDeployments, useActiveDeployments, type Deployment } from "@/pages/deployments/data";
 import { ArmDialog, CancelDialog, DeploymentBadge } from "@/pages/deployments/parts";
 import { ClientForm } from "./ClientForm";
+import { LeasesPanel } from "./Leases";
 import { clientError, clientName, refreshClients, sourceText, useClients, useProfiles, type Client, type ClientFilter } from "./data";
 
 export function ClientsPage() {
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "leases" ? "leases" : "clients";
   const [filter, setFilter] = useState<ClientFilter>({});
   const clients = useClients(filter);
   const profiles = useProfiles();
@@ -37,112 +40,134 @@ export function ClientsPage() {
       <PageHeader
         title="Clients"
         description="Machines this server knows: ones you added, and ones discovered when they network booted. Assign a profile, then deploy one remotely: it installs on its next network boot without the boot prompt."
-        actions={addButton}
+        actions={tab === "clients" ? addButton : undefined}
       />
-      <div className="mb-4 flex flex-wrap gap-3">
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Show</span>
-          <Select
-            className="w-44"
-            value={filter.source ?? ""}
-            onChange={(e) => setFilter({ ...filter, source: (e.target.value || undefined) as ClientFilter["source"] })}
-          >
-            <option value="">All clients</option>
-            <option value="manual">Added by hand</option>
-            <option value="discovered">Discovered</option>
-          </Select>
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Profile</span>
-          <Select className="w-52" value={filter.profileId ?? ""} onChange={(e) => setFilter({ ...filter, profileId: e.target.value || undefined })}>
-            <option value="">Any</option>
-            {profiles.data?.items.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
-        </label>
-      </div>
-
-      {clients.isPending ? (
-        <p className="text-muted-foreground">Loading clients…</p>
-      ) : clients.isError ? (
-        <Alert tone="error" title="Clients couldn’t be loaded">
-          {errorMessage(clients.error)}
-        </Alert>
-      ) : items.length === 0 ? (
-        <div className="rounded-lg border border-dashed px-6 py-12 text-center">
-          <p className="font-medium">{filtered ? "No clients match" : "No clients yet"}</p>
-          <p className="mx-auto mt-1 max-w-prose text-sm text-muted-foreground">
-            {filtered
-              ? "Change the filters above."
-              : "Machines appear here when they network boot from this server, or add one by its MAC address."}
-          </p>
-          {!filtered && <div className="mt-4 flex justify-center">{addButton}</div>}
+      <Tabs
+        label="Clients"
+        idPrefix="clients"
+        className="mb-6"
+        value={tab}
+        onChange={(t) => setParams(t === "clients" ? {} : { tab: t }, { replace: true })}
+        tabs={[
+          { id: "clients", label: "Clients" },
+          { id: "leases", label: "DHCP leases" },
+        ]}
+      />
+      {tab === "leases" ? (
+        <div {...tabPanelProps("clients", "leases")}>
+          <LeasesPanel
+            iface={params.get("interface") ?? ""}
+            setIface={(name) => setParams(name ? { tab: "leases", interface: name } : { tab: "leases" }, { replace: true })}
+          />
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border bg-card px-5 py-2">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b">
-                <th scope="col" className={th}>Client</th>
-                <th scope="col" className={th}>Profile</th>
-                <th scope="col" className={th}>Last seen</th>
-                <th scope="col" className={th}>Deployment</th>
-                <th scope="col" className={`${th} pr-0 text-right`}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((c) => {
-                const d = active.get(c.id!);
-                return (
-                  <tr key={c.id} className="border-b last:border-0">
-                    <td className={td}>
-                      <Link to={`/clients/${c.id}`} className="font-medium text-primary underline-offset-4 hover:underline">
-                        {clientName(c)}
-                      </Link>
-                      <div className="font-mono text-xs text-muted-foreground">{c.mac}</div>
-                      {c.source && <div className="text-xs text-muted-foreground">{sourceText[c.source]}</div>}
-                    </td>
-                    <td className={td}>{profileName(c.profileId) ?? <span className="text-muted-foreground">Default</span>}</td>
-                    <td className={td}>
-                      {formatDateTime(c.lastSeenAt)}
-                      {c.lastIp && <div className="font-mono text-xs text-muted-foreground">{c.lastIp}</div>}
-                    </td>
-                    <td className={td}>
-                      {d ? (
-                        <Link to={`/deployments/${d.id}`} className="hover:underline">
-                          <DeploymentBadge d={d} />
-                        </Link>
-                      ) : (
-                        <span className="text-muted-foreground">–</span>
-                      )}
-                    </td>
-                    <td className={`${td} pr-0`}>
-                      <div className="flex justify-end gap-1">
-                        {d ? (
-                          <Button size="sm" variant="destructive-ghost" aria-label={`Cancel the deployment of ${clientName(c)}`} onClick={() => setCancelling(d)}>
-                            <CircleStop aria-hidden /> Cancel
-                          </Button>
-                        ) : (
-                          <Button size="sm" variant="ghost" aria-label={`Deploy ${clientName(c)}`} onClick={() => setArming(c)}>
-                            <Play aria-hidden /> Deploy
-                          </Button>
-                        )}
-                        <Button size="sm" variant="ghost" aria-label={`Edit ${clientName(c)}`} onClick={() => setEditing(c)}>
-                          <Pencil aria-hidden /> Edit
-                        </Button>
-                        <Button size="sm" variant="destructive-ghost" aria-label={`Delete ${clientName(c)}`} onClick={() => setDeleting(c)}>
-                          <Trash2 aria-hidden /> Delete
-                        </Button>
-                      </div>
-                    </td>
+        <div {...tabPanelProps("clients", "clients")}>
+          <div className="mb-4 flex flex-wrap gap-3">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Show</span>
+              <Select
+                className="w-44"
+                value={filter.source ?? ""}
+                onChange={(e) => setFilter({ ...filter, source: (e.target.value || undefined) as ClientFilter["source"] })}
+              >
+                <option value="">All clients</option>
+                <option value="manual">Added by hand</option>
+                <option value="discovered">Discovered</option>
+              </Select>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Profile</span>
+              <Select className="w-52" value={filter.profileId ?? ""} onChange={(e) => setFilter({ ...filter, profileId: e.target.value || undefined })}>
+                <option value="">Any</option>
+                {profiles.data?.items.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          </div>
+
+          {clients.isPending ? (
+            <p className="text-muted-foreground">Loading clients…</p>
+          ) : clients.isError ? (
+            <Alert tone="error" title="Clients couldn’t be loaded">
+              {errorMessage(clients.error)}
+            </Alert>
+          ) : items.length === 0 ? (
+            <div className="rounded-lg border border-dashed px-6 py-12 text-center">
+              <p className="font-medium">{filtered ? "No clients match" : "No clients yet"}</p>
+              <p className="mx-auto mt-1 max-w-prose text-sm text-muted-foreground">
+                {filtered
+                  ? "Change the filters above."
+                  : "Machines appear here when they network boot from this server, or add one by its MAC address."}
+              </p>
+              {!filtered && <div className="mt-4 flex justify-center">{addButton}</div>}
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border bg-card px-5 py-2">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b">
+                    <th scope="col" className={th}>Client</th>
+                    <th scope="col" className={th}>Profile</th>
+                    <th scope="col" className={th}>Last seen</th>
+                    <th scope="col" className={th}>Deployment</th>
+                    <th scope="col" className={`${th} pr-0 text-right`}>Actions</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {items.map((c) => {
+                    const d = active.get(c.id!);
+                    return (
+                      <tr key={c.id} className="border-b last:border-0">
+                        <td className={td}>
+                          <Link to={`/clients/${c.id}`} className="font-medium text-primary underline-offset-4 hover:underline">
+                            {clientName(c)}
+                          </Link>
+                          <div className="font-mono text-xs text-muted-foreground">{c.mac}</div>
+                          {c.source && <div className="text-xs text-muted-foreground">{sourceText[c.source]}</div>}
+                        </td>
+                        <td className={td}>{profileName(c.profileId) ?? <span className="text-muted-foreground">Default</span>}</td>
+                        <td className={td}>
+                          {formatDateTime(c.lastSeenAt)}
+                          {c.lastIp && <div className="font-mono text-xs text-muted-foreground">{c.lastIp}</div>}
+                        </td>
+                        <td className={td}>
+                          {d ? (
+                            <Link to={`/deployments/${d.id}`} className="hover:underline">
+                              <DeploymentBadge d={d} />
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground">–</span>
+                          )}
+                        </td>
+                        <td className={`${td} pr-0`}>
+                          <div className="flex justify-end gap-1">
+                            {d ? (
+                              <Button size="sm" variant="destructive-ghost" aria-label={`Cancel the deployment of ${clientName(c)}`} onClick={() => setCancelling(d)}>
+                                <CircleStop aria-hidden /> Cancel
+                              </Button>
+                            ) : (
+                              <Button size="sm" variant="ghost" aria-label={`Deploy ${clientName(c)}`} onClick={() => setArming(c)}>
+                                <Play aria-hidden /> Deploy
+                              </Button>
+                            )}
+                            <Button size="sm" variant="ghost" aria-label={`Edit ${clientName(c)}`} onClick={() => setEditing(c)}>
+                              <Pencil aria-hidden /> Edit
+                            </Button>
+                            <Button size="sm" variant="destructive-ghost" aria-label={`Delete ${clientName(c)}`} onClick={() => setDeleting(c)}>
+                              <Trash2 aria-hidden /> Delete
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

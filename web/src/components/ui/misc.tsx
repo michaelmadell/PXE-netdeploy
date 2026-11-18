@@ -168,3 +168,74 @@ export function PageHeader({ title, description, actions }: { title: string; des
 
 export const th = "py-2 pr-4 text-left font-medium text-muted-foreground";
 export const td = "py-2.5 pr-4 align-top";
+
+export type TabItem<T extends string> = { id: T; label: string; badge?: ReactNode };
+
+/**
+ * A row of tabs (WAI-ARIA tabs pattern: arrow keys, Home and End move
+ * between them). Pair with `tabPanelProps` on the panel shown.
+ */
+export function Tabs<T extends string>({
+  tabs,
+  value,
+  onChange,
+  label,
+  idPrefix,
+  className,
+}: {
+  tabs: TabItem<T>[];
+  value: T;
+  onChange: (id: T) => void;
+  label: string;
+  idPrefix: string;
+  className?: string;
+}) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const move = (to: number) => {
+    const n = (to + tabs.length) % tabs.length;
+    onChange(tabs[n]!.id);
+    refs.current[n]?.focus();
+  };
+  return (
+    <div role="tablist" aria-label={label} className={cn("flex gap-1 overflow-x-auto shadow-[inset_0_-1px_0_var(--border)]", className)}>
+      {tabs.map((t, i) => {
+        const selected = t.id === value;
+        return (
+          <button
+            key={t.id}
+            ref={(el) => void (refs.current[i] = el)}
+            type="button"
+            role="tab"
+            id={`${idPrefix}-tab-${t.id}`}
+            aria-selected={selected}
+            aria-controls={`${idPrefix}-panel-${t.id}`}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onChange(t.id)}
+            onKeyDown={(e) => {
+              const k = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+              if (k === undefined) return;
+              e.preventDefault();
+              move(k);
+            }}
+            className={cn(
+              "flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors",
+              "focus-visible:outline-2 focus-visible:outline-offset-2",
+              selected ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t.label}
+            {t.badge}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export const tabPanelProps = (idPrefix: string, id: string) => ({
+  role: "tabpanel" as const,
+  id: `${idPrefix}-panel-${id}`,
+  "aria-labelledby": `${idPrefix}-tab-${id}`,
+  tabIndex: 0,
+  className: "rounded-md focus-visible:outline-2 focus-visible:outline-offset-4",
+});

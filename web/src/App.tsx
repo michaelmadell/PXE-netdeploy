@@ -31,13 +31,13 @@ import { Overview } from "@/pages/Overview";
 import { Planned } from "@/pages/Planned";
 import { ProfilesPage } from "@/pages/profiles/Profiles";
 import { SecretsPage } from "@/pages/secrets/Secrets";
-import { SettingsPage } from "@/pages/Settings";
 
 // Loaded when first opened: the editor brings CodeMirror.
 const TemplatesPage = lazy(() => import("@/pages/templates/Templates").then((m) => ({ default: m.TemplatesPage })));
 const TemplateEditorPage = lazy(() => import("@/pages/templates/TemplateEditor").then((m) => ({ default: m.TemplateEditorPage })));
 const DriverPackagesPage = lazy(() => import("@/pages/drivers/Packages").then((m) => ({ default: m.DriverPackagesPage })));
 const DriverPackageDetailPage = lazy(() => import("@/pages/drivers/PackageDetail").then((m) => ({ default: m.DriverPackageDetailPage })));
+const SettingsPage = lazy(() => import("@/pages/Settings").then((m) => ({ default: m.SettingsPage })));
 const DriverGroupsPage = lazy(() => import("@/pages/drivers/Groups").then((m) => ({ default: m.DriverGroupsPage })));
 const loading = <p className="text-muted-foreground">Loading…</p>;
 
@@ -123,7 +123,7 @@ export function App() {
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/deployments/:deploymentId" element={<DeploymentDetailPage />} />
           <Route path="/secrets" element={<SecretsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings" element={<Suspense fallback={loading}><SettingsPage /></Suspense>} />
           {nav
             .filter((n) => n.planned)
             .map((n) => (

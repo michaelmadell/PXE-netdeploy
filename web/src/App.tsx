@@ -8,16 +8,22 @@ import {
   Layers,
   LayoutDashboard,
   ListChecks,
+  LogOut,
   Settings,
   UserCog,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { lazy, Suspense } from "react";
 import { NavLink, Route, Routes } from "react-router";
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/api/client";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { api, type Schemas } from "@/api/client";
+import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/misc";
 import { useServerEvents } from "@/lib/events";
+import { errorMessage, unwrap } from "@/lib/problem";
+import { sessionChanged, useSession } from "@/lib/session";
+import { SetupPage, SignInPage } from "@/pages/auth/SignIn";
 import { cn } from "@/lib/utils";
 import { BootImageDetailPage } from "@/pages/boot/BootImageDetail";
 import { BootImagesPage } from "@/pages/boot/BootImages";
@@ -38,6 +44,7 @@ const DriverPackageDetailPage = lazy(() => import("@/pages/drivers/PackageDetail
 const SettingsPage = lazy(() => import("@/pages/Settings").then((m) => ({ default: m.SettingsPage })));
 const DriverGroupsPage = lazy(() => import("@/pages/drivers/Groups").then((m) => ({ default: m.DriverGroupsPage })));
 const ProfilesPage = lazy(() => import("@/pages/profiles/Profiles").then((m) => ({ default: m.ProfilesPage })));
+const AccountsPage = lazy(() => import("@/pages/accounts/Accounts").then((m) => ({ default: m.AccountsPage })));
 const SecretsPage = lazy(() => import("@/pages/secrets/Secrets").then((m) => ({ default: m.SecretsPage })));
 const loading = <p className="text-muted-foreground">Loading…</p>;
 
@@ -55,11 +62,37 @@ const nav: NavItem[] = [
   { to: "/clients", label: "Clients", icon: UserCog },
   { to: "/deployments", label: "Deployments", icon: ListChecks },
   { to: "/secrets", label: "Secrets", icon: KeyRound },
+  { to: "/accounts", label: "Accounts", icon: Users },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
+/**
+ * Everything needs a session (ADR 0029): the first-account setup while there
+ * is no account, the sign-in page without a session, else the app at the
+ * address the person opened.
+ */
 export function App() {
+  const session = useSession();
+  if (session.isPending) return <p className="p-8 text-muted-foreground">Loading…</p>;
+  if (session.isError)
+    return (
+      <div className="p-8">
+        <Alert tone="error" className="max-w-xl" title="Can’t reach netdeploy">
+          {errorMessage(session.error)}
+        </Alert>
+      </div>
+    );
+  if (session.data.setupRequired) return <SetupPage />;
+  if (!session.data.signedIn || !session.data.user) return <SignInPage />;
+  return <Shell user={session.data.user} />;
+}
+
+function Shell({ user }: { user: Schemas["User"] }) {
   useServerEvents();
+  const signOut = useMutation({
+    mutationFn: async () => unwrap(await api.POST("/auth/sign-out")),
+    onSettled: sessionChanged,
+  });
   // Shared with the Overview page's query; this one only reads the warnings.
   const health = useQuery({
     queryKey: ["health"],
@@ -72,7 +105,7 @@ export function App() {
 
   return (
     <div className="flex min-h-dvh">
-      <aside className="w-60 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+      <aside className="sticky top-0 flex h-dvh w-60 shrink-0 flex-col overflow-y-auto border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
         <div className="px-5 py-4 text-base font-semibold tracking-tight">netdeploy</div>
         <nav aria-label="Main">
           <ul className="space-y-0.5 px-2">
@@ -96,6 +129,14 @@ export function App() {
             ))}
           </ul>
         </nav>
+        <div className="mt-auto border-t border-sidebar-border px-4 py-3">
+          <p className="truncate text-sm font-medium" title={user.username}>
+            {user.username}
+          </p>
+          <Button size="sm" variant="ghost" className="-ml-3 mt-1" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
+            <LogOut aria-hidden /> Sign out
+          </Button>
+        </div>
       </aside>
 
       <main className="min-w-0 flex-1 px-8 py-6">
@@ -123,6 +164,7 @@ export function App() {
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/deployments/:deploymentId" element={<DeploymentDetailPage />} />
           <Route path="/secrets" element={<Suspense fallback={loading}><SecretsPage /></Suspense>} />
+          <Route path="/accounts" element={<Suspense fallback={loading}><AccountsPage /></Suspense>} />
           <Route path="/settings" element={<Suspense fallback={loading}><SettingsPage /></Suspense>} />
           {nav
             .filter((n) => n.planned)

@@ -87,6 +87,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0026 | Deployments: arming from the API with validation, profile and secret snapshots, timeouts (expiry, inactivity), graceful cancel, built-in unattend for none/local/AD (credentials or offline join in the unattend), computer name patterns. |
 | 0027 | Unattend templates: whole-document Go templates over the built-in's data, auto XML-escaping, previews never decrypt (`********`), checks per identity mode on save and when arming, one built-in template in code (`builtin`), copied into each deployment. |
 | 0028 | Content HTTPS: one internal CA (RSA-3072, ten years) made when HTTPS is first enabled, its key sealed with the secrets key and in backups; an in-memory server certificate for the HTTPS addresses and boot images' https hosts; `serverUrls` all http or all https; the agent trusts only the CA, at the later of its clock and the CA's start; CA fingerprint is a build input. Custom certificate and CA rotation deferred. |
+| 0029 | Admin authentication: named local accounts (full admin, argon2id) with session cookies for the UI (`__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`, 8 h idle, 7 days max, Origin check) and `ndt_` bearer tokens for automation (hashed, shown once, can't manage accounts or tokens); first account from a setup code in the log and `setup-code.txt`; offline `admin reset-password`; health without auth is status only. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -174,8 +175,10 @@ tenant) and the SMB install method (only if needed). Results:
 **Phase 6: Linux and iPXE paths, content HTTPS, auth, packaging.** Start
 from [plan/phase-6-handover.md](plan/phase-6-handover.md): what Phase 5
 established, the decisions to make, and what carries over. Decision 1,
-content HTTPS (ADR 0028), is built and unit-tested (2026-11-18); its lab
-checks are listed in [spikes/phase-6-findings.md](spikes/phase-6-findings.md).
+content HTTPS (ADR 0028), is built and lab-tested (2026-11-18). Decision 3,
+admin authentication (ADR 0029), is built, unit-tested and smoke-tested
+against the binary; its lab checks are in
+[spikes/phase-6-findings.md](spikes/phase-6-findings.md).
 
 ## Open questions and things to verify
 

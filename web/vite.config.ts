@@ -12,7 +12,8 @@ export default defineConfig({
     port: 5173,
     // The Go server's admin listener uses a self-signed certificate in development.
     proxy: {
-      "/api": { target: "https://127.0.0.1:8443", secure: false, changeOrigin: true },
+      // xfwd: netdeployd -dev checks Origin against X-Forwarded-Host (ADR 0029).
+      "/api": { target: "https://127.0.0.1:8443", secure: false, changeOrigin: true, xfwd: true },
     },
   },
 });

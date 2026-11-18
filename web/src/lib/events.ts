@@ -6,6 +6,7 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import type { Schemas } from "@/api/client";
+import { sessionChanged } from "@/lib/session";
 
 type Event = Schemas["Event"];
 type Job = Schemas["Job"];
@@ -24,6 +25,7 @@ const types: Event["type"][] = [
   "image.updated",
   "driverPackage.updated",
   "profile.updated",
+  "session.ended",
 ];
 
 /** Event types that can change what POST /profiles/{id}/validate finds. */
@@ -32,6 +34,11 @@ const affectsValidation = new Set(["settings.updated", "bootImage.updated", "pro
 function handle(qc: QueryClient, ev: Event) {
   if (affectsValidation.has(ev.type)) void qc.invalidateQueries({ queryKey: ["profile-validation"] });
   switch (ev.type) {
+    case "session.ended":
+      // This session's password was changed elsewhere, its account deleted,
+      // or it signed out in another tab: straight to the sign-in page.
+      sessionChanged();
+      break;
     case "health.updated":
       if (ev.data) qc.setQueryData(["health"], ev.data);
       else void qc.invalidateQueries({ queryKey: ["health"] });
@@ -142,6 +149,9 @@ export function useServerEvents() {
     es.onerror = () => {
       // EventSource reconnects by itself; note that events may have been missed.
       dropped = true;
+      // It gives up on an error status, e.g. 401 after a restart once the
+      // session has gone: re-read the session, which shows the sign-in page.
+      if (es.readyState === EventSource.CLOSED) void qc.invalidateQueries({ queryKey: ["session"] });
     };
     es.onopen = () => {
       if (dropped) void qc.invalidateQueries();

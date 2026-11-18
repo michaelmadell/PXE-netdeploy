@@ -83,6 +83,22 @@ Start the server (elevated, for UDP 67/69):
 go run .\cmd\netdeployd\
 ```
 
+**Signing in (ADR 0029, from 2026-11-18).** Every admin call needs a session
+or an API token. On the first start the server logs a setup code (also in
+`<data>/setup-code.txt`); open the web UI and create the first account with
+it. For the commands below, create a token on the Accounts page and set
+`$PSDefaultParameterValues` once per shell so every call sends it:
+
+```powershell
+$env:ND_TOKEN = 'ndt_…'   # from Accounts → Create token
+$PSDefaultParameterValues['Invoke-RestMethod:Headers'] = @{ Authorization = "Bearer $env:ND_TOKEN" }
+$PSDefaultParameterValues['Invoke-WebRequest:Headers'] = @{ Authorization = "Bearer $env:ND_TOKEN" }
+```
+
+Calls that pass their own `-Headers` (the `If-Match` ones) need the
+`Authorization` entry added to that table too. Locked out: stop the server
+and run `netdeployd admin reset-password -data <dir> -user <name>`.
+
 In another shell, add the lab interface in full DHCP mode:
 
 ```powershell

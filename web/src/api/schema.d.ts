@@ -392,7 +392,9 @@ export interface paths {
          *     the source image (a ready `windows` image of the same architecture),
          *     `sourceIndex`, the driver groups, `agentVersion` and `bootmgr`.
          *     `optionalComponents` and `produceHttpBootIso: true` are refused with
-         *     `422` (`code: not_implemented`) for now (ADR 0022).
+         *     `422` (`code: not_implemented`) for now (ADR 0022). `serverUrls` must all
+         *     use one scheme: mixing `http://` and `https://` is refused with `422`
+         *     (`code: mixed_server_urls`, ADR 0028).
          */
         post: operations["createBootImage"];
         delete?: never;
@@ -658,8 +660,11 @@ export interface paths {
          *     (error); OS driver groups on a profile whose boot image cannot add them
          *     (`boot_image_cannot_add_drivers`, error; a warning while unknown);
          *     none of the boot image's `serverUrls` served by an interface with HTTP
-         *     on at that address and port (`agent_unreachable`, warning; a URL naming
-         *     a host by DNS name counts when its port is served); template whose `identityModes` excludes the profile's mode (error);
+         *     (or HTTPS, for `https://` URLs) on at that address and port
+         *     (`agent_unreachable`, warning; a URL naming a host by DNS name counts when
+         *     its port is served); `http://` server URLs served by an interface that
+         *     also has HTTPS on (`agent_over_http`, warning: the boot prompt password
+         *     and unattend secrets travel in clear, ADR 0028); template whose `identityModes` excludes the profile's mode (error);
          *     the unattend template's checks against the profile's data (ADR 0027:
          *     errors such as `unattend_missing_join`, `unattend_architecture`,
          *     `reserved_account_name`; warnings such as `unattend_ignores_computer_name`),
@@ -1074,7 +1079,10 @@ export interface paths {
         };
         /**
          * CA certificate for the HTTPS content listener (to enrol in firmware for HTTPS boot).
-         * @description Content HTTPS is planned for Phase 6; until then this always returns `404` (`code: content_https_not_available`).
+         * @description The internal content CA (ADR 0028), created the first time an interface
+         *     enables `services.https`. Boot images whose `serverUrls` are `https://`
+         *     carry it in the agent's config; firmware needs it enrolled for HTTPS boot.
+         *     `404` (`code: content_https_not_available`) until the CA exists.
          */
         get: operations["getContentCaCertificate"];
         put?: never;
@@ -1495,7 +1503,8 @@ export interface components {
              *     (secrets exist but the key was never exported with `netdeployd key
              *     export`; without it they can't be restored on other hardware, ADR 0021),
              *     `admin_certificate_expiring` (the admin certificate expires within 30
-             *     days, or has expired).
+             *     days, or has expired), `content_ca_expiring` (the content CA expires
+             *     within a year, or has expired; ADR 0028).
              */
             warnings?: {
                 code: string;
@@ -1591,6 +1600,8 @@ export interface components {
                 /** @description The tool used (wimlib: from `-wimlib` or PATH). */
                 path?: string;
             }[];
+            /** @description Whether this server can serve content over HTTPS (`services.https`, ADR 0028). */
+            contentHttps?: boolean;
             /** @description Windows hosts: whether the server runs elevated (DISM needs it). Always false on Linux. */
             elevated?: boolean;
             /** @description The WinPE agent bundled with this server (ADR 0022). */
@@ -1877,7 +1888,10 @@ export interface components {
             agentVersion?: string;
             /**
              * @description Baked into the image as the agent's config; tried in order. Changing
-             *     the server's address therefore marks images `stale`.
+             *     the server's address therefore marks images `stale`. All `http://` or
+             *     all `https://` (`422 mixed_server_urls` otherwise), so the agent can't
+             *     be pushed onto plain HTTP. With `https://` the image also carries the
+             *     content CA, and the agent trusts only that CA (ADR 0028).
              */
             serverUrls: string[];
             /**
@@ -1961,7 +1975,7 @@ export interface components {
              */
             status: "draft" | "building" | "ready" | "stale" | "failed";
             /** @description What changed since the last build (only when `stale`). */
-            readonly staleReasons?: ("source-image" | "source-index" | "architecture" | "builder" | "agent" | "server-urls" | "bootmgr" | "tftp" | "drivers" | "recipe")[];
+            readonly staleReasons?: ("source-image" | "source-index" | "architecture" | "builder" | "agent" | "server-urls" | "content-ca" | "bootmgr" | "tftp" | "drivers" | "recipe")[];
             /**
              * @description `inputHash` of the build being served (ADR 0022): a hash of every build
              *     input (recipe version, the source boot.wim, index, architecture, resolved
@@ -2495,11 +2509,34 @@ export interface components {
                  */
                 timeoutSeconds: number;
             };
-            /** @description TLS for the content listener on interfaces with `services.https` enabled (Phase 6; stored but unused until then). */
+            /**
+             * @description TLS for the content listener on interfaces with `services.https` enabled
+             *     (ADR 0028). The server's certificate is issued from an internal CA,
+             *     created the first time an interface enables HTTPS (download it via
+             *     `/settings/content-ca`). The CA's key is sealed with the secrets key
+             *     (ADR 0021): a restore without `netdeployd key export` creates a new CA,
+             *     which makes boot images with `https://` server URLs `stale`.
+             */
             contentHttps?: {
-                /** @description Null generates a certificate from an internal CA (download via `/settings/content-ca`). */
+                /**
+                 * @description A custom certificate is not supported yet: a non-null value is refused
+                 *     with `422` (`invalid_settings`, an error on this field). Null uses the
+                 *     internal CA.
+                 */
                 certificatePem?: string | null;
+                /** @description As `certificatePem`. */
                 privateKeyPem?: string | null;
+                /** @description The internal content CA (RSA-3072, ten years); null until created. */
+                readonly ca?: components["schemas"]["CertificateInfo"] | null;
+                /**
+                 * @description The certificate the HTTPS content listeners serve now: RSA-2048, issued
+                 *     from the CA, kept only in memory and reissued when its names change
+                 *     (every HTTPS interface's address and `advertisedAddress`, this host's
+                 *     name, and each host named in a boot image's `https://` server URLs).
+                 *     Its `notBefore` is the CA's, so agents with a clock behind the CA's
+                 *     creation still accept it. Null while no interface serves HTTPS.
+                 */
+                readonly certificate?: components["schemas"]["CertificateInfo"] | null;
             };
             /**
              * @description What a network-booted machine shows when no deployment is armed for it
@@ -2591,9 +2628,11 @@ export interface components {
         };
         CertificateInfo: {
             /**
-             * @description `generated`: the self-signed certificate made on first run (`admin-cert.pem`
-             *     in the data directory; valid two years, for localhost, 127.0.0.1, ::1 and
-             *     this host's name). `custom`: `admin.certificatePem`.
+             * @description `generated`: made by this server. For the admin listener, the self-signed
+             *     certificate made on first run (`admin-cert.pem` in the data directory; valid
+             *     two years, for localhost, 127.0.0.1, ::1 and this host's name); for content
+             *     HTTPS, the internal CA and the certificates it issues. `custom`:
+             *     `admin.certificatePem`.
              * @enum {string}
              */
             source: "generated" | "custom";
@@ -2693,7 +2732,9 @@ export interface components {
                 /** @default 80 */
                 httpPort: number;
                 /**
-                 * @description Content over HTTPS. Planned for Phase 6; `true` is refused with `422` until then.
+                 * @description Content and the agent API over HTTPS, with a certificate from the internal
+                 *     content CA (ADR 0028). Independent of `http`: plain HTTP is still needed
+                 *     for HTTP Boot without TLS and for boot images with `http://` server URLs.
                  * @default false
                  */
                 https: boolean;
@@ -4936,7 +4977,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Problem"];
-            /** @description HTTPS content is not configured (always, until Phase 6). */
+            /** @description No content CA yet (no interface has enabled `services.https`). */
             404: {
                 headers: {
                     [name: string]: unknown;

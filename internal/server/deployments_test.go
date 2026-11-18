@@ -205,3 +205,52 @@ func TestOfflineDomainJoinUnattend(t *testing.T) {
 		t.Errorf("unattend: %d\n%s", w.Code, body)
 	}
 }
+
+// A profile with OS drivers on a boot image that can't add them (plain
+// WinPE, ADR 0022 amendment) is refused before a disk is wiped; unknown
+// (built before it was recorded) is only a warning.
+func TestBootImageCannotAddDrivers(t *testing.T) {
+	f := newAgentFixture(t)
+	p, _ := f.st.Profile(f.ctx, f.profile)
+	bi, _ := f.st.BootImage(f.ctx, p.BootImageID)
+	rebuild := func(can *bool) {
+		t.Helper()
+		if err := f.st.AdoptBootImageBuild(f.ctx, bi.ID, store.BootBuild{TreeID: *bi.TreeID, InputHash: *bi.InputHash, Inputs: bi.BuiltInputs,
+			BuiltWith: *bi.BuiltWith, SelectedBootManager: bi.SelectedBootManager, CanAddOSDrivers: can}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	no := false
+	rebuild(&no)
+	got := decode[api.BootImage](t, f.call("GET", "/boot-images/"+bi.ID, "", ""))
+	if got.CanAddOsDrivers == nil || *got.CanAddOsDrivers {
+		t.Fatalf("canAddOsDrivers: %v", got.CanAddOsDrivers)
+	}
+	v := decode[api.ValidationResult](t, f.call("POST", "/profiles/"+f.profile+"/validate", "", ""))
+	if v.Ok || !hasFinding(v.Findings, "boot_image_cannot_add_drivers") {
+		t.Fatalf("validate: %+v", v)
+	}
+	c, _ := f.st.CreateClient(f.ctx, store.ClientInput{MAC: "00:15:5d:00:85:09"})
+	if w := f.call("POST", "/deployments", "", `{"clientId":"`+c.ID+`","profileId":"`+f.profile+`"}`); w.Code != 422 ||
+		!strings.Contains(w.Body.String(), "profile_invalid") {
+		t.Fatalf("arm: %d %s", w.Code, w.Body)
+	}
+
+	rebuild(nil)
+	v = decode[api.ValidationResult](t, f.call("POST", "/profiles/"+f.profile+"/validate", "", ""))
+	if !v.Ok || !hasFinding(v.Findings, "boot_image_cannot_add_drivers") {
+		t.Fatalf("unknown: %+v", v)
+	}
+
+	// Without OS drivers the boot image is fine.
+	rebuild(&no)
+	in := p.ProfileInput
+	in.OSDriverGroupIDs = []string{}
+	if _, err := f.st.ReplaceProfile(f.ctx, p.ID, in, p.Version); err != nil {
+		t.Fatal(err)
+	}
+	v = decode[api.ValidationResult](t, f.call("POST", "/profiles/"+f.profile+"/validate", "", ""))
+	if hasFinding(v.Findings, "boot_image_cannot_add_drivers") {
+		t.Fatalf("no OS drivers: %+v", v)
+	}
+}

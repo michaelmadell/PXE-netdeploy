@@ -10,7 +10,7 @@ import (
 
 // Recipe is the build recipe version: bump it whenever a change to the
 // build code changes what a build produces, so existing builds go stale.
-const Recipe = 1
+const Recipe = 2 // 2: records canAddOsDrivers (ADR 0022 amendment, 2026-11-18)
 
 // Inputs is everything a build depends on (ADR 0022). Its JSON is hashed
 // for inputHash and stored with the build to explain staleness.

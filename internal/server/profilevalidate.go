@@ -67,6 +67,16 @@ func (s *Server) validateProfile(ctx context.Context, p store.Profile) ([]findin
 		if bi.SelectedBootManager != nil && json.Unmarshal(bi.SelectedBootManager, &bm) == nil && bm.Signer != "" && bm.Signer != "windows-uefi-ca-2023" {
 			add("warning", "boot_manager_2011_only", "Boot image %q serves a PCA 2011-signed boot manager; machines that have revoked it won't boot.", bi.Name)
 		}
+		// OS drivers need DISM offline servicing, which plain WinPE can't run
+		// (ADR 0022 amendment): refuse before a disk is wiped.
+		if len(p.OSDriverGroupIDs) > 0 && bi.TreeID != nil {
+			switch {
+			case bi.CanAddOSDrivers == nil:
+				add("warning", "boot_image_cannot_add_drivers", "Boot image %q was built before netdeploy recorded whether it can add OS drivers; build it again to check.", bi.Name)
+			case !*bi.CanAddOSDrivers:
+				add("error", "boot_image_cannot_add_drivers", "Boot image %q is plain Windows PE (boot.wim index %d), which can't add OS drivers. Use the Windows Setup image (index 2 on install media), or remove the profile's OS driver groups.", bi.Name, bi.SourceIndex)
+			}
+		}
 		if s.settings != nil {
 			if cfg, _ := s.settings.Current(); bi.TFTPBlockSize > cfg.TFTP.MaxBlockSize || bi.TFTPWindowSize > cfg.TFTP.MaxWindowSize {
 				add("warning", "tftp_capped_by_server", "Boot image %q asks for TFTP %d/%d; the server caps it at %d/%d.",

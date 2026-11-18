@@ -383,7 +383,7 @@ $imageId = (api Get "/jobs/$($job.id)").resourceId     # repeat until the job su
 $bi = api Post /boot-images @{ name = 'WinPE x64'; sourceImageId = $imageId; architecture = 'x64'; serverUrls = @('http://10.77.0.1:8080') }
 $build = api Post "/boot-images/$($bi.id)/build" @{}
 api Get "/jobs/$($build.id)"                           # until succeeded
-api Get "/boot-images/$($bi.id)" | Select-Object status, builtWith, sizeBytes
+api Get "/boot-images/$($bi.id)" | Select-Object status, builtWith, sizeBytes, sourceIndex, canAddOsDrivers
 
 # 3. A profile using it, made the default.
 $p = api Post /profiles @{ name = 'Win11 Pro'; bootImageId = $bi.id; installImageId = $imageId; editionIndex = 6;
@@ -673,3 +673,29 @@ Expect: after Setup signs `labadmin` in, `C:\netdeploy-template.txt` says
 `site lab deployment <id>`. Editing the template after arming doesn't
 change this deployment; deleting a template a profile uses is `409
 template_in_use`, and the built-in one is read-only (`409 built_in`).
+
+## OS drivers and the Setup image (Phase 5, ADR 0022 amendment)
+
+The agent can add OS drivers only from boot.wim's Windows Setup image
+(index 2 on install media); plain WinPE (index 1) fails DISM with
+`0x80004002`. A new boot image without `sourceIndex` uses the Setup image.
+Check the refusal with a plain WinPE boot image (continues with `api`,
+`$imageId` and a profile `$p` that has `osDriverGroupIds`):
+
+```powershell
+$pe = api Post /boot-images @{ name = 'WinPE plain'; sourceImageId = $imageId; sourceIndex = 1; architecture = 'x64';
+                               serverUrls = @('http://10.77.0.1:8080') }
+$build = api Post "/boot-images/$($pe.id)/build" @{}
+api Get "/jobs/$($build.id)"                              # until succeeded
+api Get "/boot-images/$($pe.id)" | Select-Object canAddOsDrivers, warnings   # False, the plain-WinPE warning
+$p.bootImageId = $pe.id; save-profile
+(api Post "/profiles/$($p.id)/validate").findings          # error boot_image_cannot_add_drivers
+api Post /deployments @{ clientId = $client.id; profileId = $p.id }   # 422 profile_invalid
+```
+
+Put the profile back on the Setup boot image (`canAddOsDrivers: true`) and
+deploy: the log shows `injecting-drivers` and the drivers' count. Boot
+images built before this change show `stale` (`recipe`) and
+`canAddOsDrivers` empty until rebuilt; changing `sourceIndex` from 1 to 2 marks it stale
+(`source-index`).
+

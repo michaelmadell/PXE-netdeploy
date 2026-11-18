@@ -58,6 +58,7 @@ type BootImage struct {
 	BuiltWith           *string
 	BuiltAt             *time.Time
 	SelectedBootManager json.RawMessage
+	CanAddOSDrivers     *bool
 	Warnings            []string
 	Error               json.RawMessage
 	LastJobID           *string
@@ -73,27 +74,33 @@ type BootBuild struct {
 	Inputs              json.RawMessage
 	BuiltWith           string
 	SelectedBootManager json.RawMessage
-	Warnings            []string
+	// CanAddOSDrivers: whether the build has the WinPE-Setup package (nil: unknown).
+	CanAddOSDrivers *bool
+	Warnings        []string
 }
 
 const bootImageCols = `id, name, source_image_id, source_index, architecture, agent_version, server_urls, builder, optional_components,
 	bootmgr, tftp_block_size, tftp_window_size, produce_http_boot_iso, state, tree_id, input_hash, built_inputs, built_with, built_at,
-	selected_boot_manager, warnings, error, last_job_id, version, created_at, updated_at`
+	selected_boot_manager, can_add_os_drivers, warnings, error, last_job_id, version, created_at, updated_at`
 
 func (s *Store) scanBootImage(ctx context.Context, q queryer, r rowScanner) (BootImage, error) {
 	var b BootImage
 	var agent, tree, hash, inputs, with, sbm, errDoc, job sql.NullString
 	var urls, ocs, warnings string
 	var iso int
-	var builtAt sql.NullInt64
+	var builtAt, canAdd sql.NullInt64
 	var created, updated int64
 	if err := r.Scan(&b.ID, &b.Name, &b.SourceImageID, &b.SourceIndex, &b.Architecture, &agent, &urls, &b.Builder, &ocs,
 		&b.Bootmgr, &b.TFTPBlockSize, &b.TFTPWindowSize, &iso, &b.State, &tree, &hash, &inputs, &with, &builtAt,
-		&sbm, &warnings, &errDoc, &job, &b.Version, &created, &updated); err != nil {
+		&sbm, &canAdd, &warnings, &errDoc, &job, &b.Version, &created, &updated); err != nil {
 		return BootImage{}, err
 	}
 	b.AgentVersion, b.TreeID, b.InputHash, b.BuiltWith, b.LastJobID = fromNullStr(agent), fromNullStr(tree), fromNullStr(hash), fromNullStr(with), fromNullStr(job)
 	b.BuiltAt = fromNullMS(builtAt)
+	if canAdd.Valid {
+		v := canAdd.Int64 == 1
+		b.CanAddOSDrivers = &v
+	}
 	b.ProduceHTTPBootISO = iso == 1
 	for _, j := range []struct {
 		src string
@@ -394,10 +401,17 @@ func (s *Store) recordBuild(ctx context.Context, id string, b BootBuild, cond st
 	if err != nil {
 		return err
 	}
+	var canAdd sql.NullInt64
+	if b.CanAddOSDrivers != nil {
+		canAdd = sql.NullInt64{Valid: true}
+		if *b.CanAddOSDrivers {
+			canAdd.Int64 = 1
+		}
+	}
 	now := ms(s.now())
 	res, err := s.w.ExecContext(ctx, `UPDATE boot_images SET state = 'built', tree_id = ?, input_hash = ?, built_inputs = ?, built_with = ?,
-		built_at = ?, selected_boot_manager = ?, warnings = ?, error = NULL, version = version + 1, updated_at = ?
-		WHERE id = ? AND `+cond, b.TreeID, b.InputHash, string(b.Inputs), b.BuiltWith, now, string(b.SelectedBootManager), warnings, now, id)
+		built_at = ?, selected_boot_manager = ?, can_add_os_drivers = ?, warnings = ?, error = NULL, version = version + 1, updated_at = ?
+		WHERE id = ? AND `+cond, b.TreeID, b.InputHash, string(b.Inputs), b.BuiltWith, now, string(b.SelectedBootManager), canAdd, warnings, now, id)
 	if err != nil {
 		return fmt.Errorf("store: record boot image build: %w", err)
 	}

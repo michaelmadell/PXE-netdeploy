@@ -114,7 +114,7 @@ export function BootImageDetailPage() {
             </Alert>
           ))}
           {built && (
-            <dl className="mt-4 grid gap-x-6 gap-y-4 text-sm sm:grid-cols-3">
+            <dl className="mt-4 grid gap-x-6 gap-y-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
               <div>
                 <dt className="text-muted-foreground">Built</dt>
                 <dd className="mt-0.5">
@@ -129,6 +129,16 @@ export function BootImageDetailPage() {
               <div>
                 <dt className="text-muted-foreground">Download size</dt>
                 <dd className="mt-0.5 tabular-nums">{formatBytes(b.sizeBytes)}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">OS drivers</dt>
+                <dd className="mt-0.5">
+                  {b.canAddOsDrivers == null
+                    ? "Unknown: rebuild to check"
+                    : b.canAddOsDrivers
+                      ? "Can be added (Windows Setup image)"
+                      : "Can’t be added (plain Windows PE)"}
+                </dd>
               </div>
             </dl>
           )}

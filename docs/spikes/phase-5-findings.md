@@ -40,3 +40,51 @@ already wrote `OOBE`, `UserAccounts`, `AutoLogon`).
 Not lab-tested: an AD join through a custom template (the save checks
 require the join for both methods); the `windowsPE` pass removal on a real
 deployment (unit- and server-tested).
+
+## OS drivers need the Setup image (ADR 0022 amendment)
+
+**Symptom, lab 2026-11-17:** with OS driver groups on the profile (Intel
+chipset, 101 INFs), every deployment from a boot image built from boot.wim
+index 1 failed at `injecting-drivers`: `dism.exe: exit status 0x80004002`.
+dism.log: DISM copies itself from the target (`Copying DISM from
+"W:\Windows\System32\Dism"`), starts `dismhost.exe`, and creating the
+DismHostManager remote object fails with `0x80004002` (E_NOINTERFACE).
+
+What was tried, all on index 1, all failing the same way:
+
+| Attempt | Result |
+|---|---|
+| WinPE's own `dism.exe`, `/ScratchDir` on the target disk | 0x80004002 |
+| The target image's own `W:\Windows\System32\Dism.exe` | 0x80004002 |
+| DISM from the media (`sources\` of the install image), sent with the deployment | 0x80004002 (reverted) |
+| Windows Server 2025 media instead of Windows 11 | 0x80004002 |
+
+Control, on the lab host: host DISM 26100.9549 added all 101 drivers to the
+same 26300 image mounted offline. The drivers and the DISM version weren't
+the problem.
+
+**Cause:** the WinPE environment. Plain WinPE (index 1) can't run DISM
+offline servicing at all; index 2 (Windows Setup) can. Index 2 differs by the
+WinPE-Setup, WinPE-Setup-Client and imagebasedsetup-media packages, most
+likely COM/registry registrations DismHost needs.
+
+**Fix:** index 2 with WinPE's own DISM, one `/Add-Driver /Recurse` run.
+Lab, Windows 11 Pro from index 2: **succeeded**, 101 drivers added, Setup
+finished. Setup's own program didn't start (the agent's `winpeshl.ini`
+replaces the shell), so the Phase 1 WDS block doesn't apply.
+
+Also from the investigation: the agent now flushes its log before reporting
+failure and copies `agent.log` to `W:\Windows\Temp\netdeploy-agent.log`
+when the target is mounted, and keeps DISM's log at
+`W:\Windows\Temp\netdeploy-dism.log` (the last 20 error lines are sent
+with the failure). wimlib's customise step now updates the exported WIM in
+place and exports again, avoiding the Windows rename that failed with
+"Resource busy".
+
+**Automated, 2026-11-18:** `TestHasSetupPackage` (package found in a Setup-
+shaped WIM, not in plain WinPE), `TestSourceIndexDefault` (header boot index
+2 chosen on a two-image boot.wim), `TestBuildLifecycle` (plain WinPE build
+records `canAddOsDrivers: false` with the warning; adopting carries it),
+`TestBootImageCannotAddDrivers` (validate error, arming refused, warning
+while unknown, nothing without OS drivers).
+

@@ -64,7 +64,7 @@ export function BootImageForm({
       : {
           name: "",
           sourceImageId: sources.length === 1 ? sources[0]!.image.id : "",
-          sourceIndex: 1,
+          sourceIndex: undefined,
           architecture: sources.length === 1 ? sources[0]!.win.architecture : "x64",
           driverGroupIds: [],
           serverUrls: [],
@@ -118,7 +118,7 @@ export function BootImageForm({
               value={draft.sourceImageId}
               onChange={(e) => {
                 const s = sources.find((x) => x.image.id === e.target.value);
-                set({ sourceImageId: e.target.value, architecture: s?.win.architecture ?? draft.architecture, sourceIndex: 1, bootmgr: "auto" });
+                set({ sourceImageId: e.target.value, architecture: s?.win.architecture ?? draft.architecture, sourceIndex: undefined, bootmgr: "auto" });
               }}
             >
               <option value="" disabled>
@@ -175,10 +175,15 @@ export function BootImageForm({
           <Field
             label="Image inside boot.wim"
             path="sourceIndex"
-            hint="Use the plain Windows PE image (normally 1). The Windows Setup image is larger and its Setup program gets in the way."
+            hint="Use the Windows Setup image (2 on install media): the agent can only add OS drivers from it. The plain Windows PE image is smaller but can’t add OS drivers."
           >
             {(p) => (
-              <Select {...p} value={draft.sourceIndex} onChange={(e) => set({ sourceIndex: Number(e.target.value) })}>
+              <Select
+                {...p}
+                value={draft.sourceIndex ?? ""}
+                onChange={(e) => set({ sourceIndex: e.target.value === "" ? undefined : Number(e.target.value) })}
+              >
+                {(!initial || draft.sourceIndex === undefined) && <option value="">Automatic (the Windows Setup image)</option>}
                 {indexes.map((b) => (
                   <option key={b.index} value={b.index}>
                     {b.index} · {b.name}

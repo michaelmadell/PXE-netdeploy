@@ -1,7 +1,8 @@
 # 22. Building boot images
 
 Status: accepted (2026-11-08; amended the same day after the lab builds:
-`auto` prefers wimlib, storage drivers allowed with wimlib). Refines
+`auto` prefers wimlib, storage drivers allowed with wimlib; amended
+2026-11-18: the Setup image by default, see the end). Refines
 [0005](0005-boot-image-builders.md).
 
 ## Context
@@ -78,8 +79,9 @@ A read-only probe of the Phase 3 ISO (`CPBA_X64FRE_EN-GB_DV9`, build
   `EFI/Microsoft/Boot/Fonts/*.ttf` (from `Fonts_EX` with `_EX` removed when
   serving the 2023 boot manager, else `Fonts`). Nothing at `\BCD`. All files
   come from the built WIM, not the media root.
-- **Defaults**: `sourceIndex` 1 (plain WinPE: smaller, and no Setup program
-  that blocks in WDS mode). `optionalComponents` and `produceHttpBootIso`
+- **Defaults**: ~~`sourceIndex` 1 (plain WinPE: smaller, and no Setup program
+  that blocks in WDS mode).~~ Superseded by the 2026-11-18 amendment below.
+  `optionalComponents` and `produceHttpBootIso`
   stay in the spec but are refused with `422 not_implemented`.
 - **Caching**: `inputHash` is the SHA-256 of a canonical JSON document of
   every input: a recipe version (bumped when the build code changes), the
@@ -118,3 +120,42 @@ A read-only probe of the Phase 3 ISO (`CPBA_X64FRE_EN-GB_DV9`, build
   wimlib's customise step took 1.3 s against DISM's 43 s.
 - Still to verify: DISM exporting straight from a content-store blob; SMB
   installs (`setup.exe` from a share) running in plain WinPE (index 1).
+
+## Amendment (2026-11-18): the Setup image by default
+
+**Context.** Adding OS drivers in the agent (`dism /Image:W:\ /Add-Driver`,
+Phase 4) failed on every lab deployment from index 1 with `0x80004002`
+(E_NOINTERFACE): DISM copies itself out of the target image, starts
+`dismhost.exe`, and creating its DismHostManager object fails. The same DISM
+binaries, the image's own DISM and the media's DISM all fail the same way
+in plain WinPE, for Windows 11 and Server 2025; the same command from boot.wim
+index 2 (Windows Setup) succeeds with WinPE's own DISM. Index 2 adds the
+WinPE-Setup, WinPE-Setup-Client and imagebasedsetup-media packages
+(Phase 5 findings). The Setup program that blocked in WDS mode (Phase 1)
+never starts here: our `winpeshl.ini` replaces the shell.
+
+**Decision.**
+
+- When `sourceIndex` is omitted, a boot image uses boot.wim's own boot index
+  from the WIM header: the Windows Setup image, 2 on install media. It falls
+  back to 1 if the header names no listed index. Existing boot images keep
+  the index they were saved with.
+- Each build records whether the built WinPE has the WinPE-Setup package
+  (`Windows/servicing/Packages/WinPE-Setup-Package~*.mum`):
+  `BootImage.canAddOsDrivers` (read-only; null until built, and for builds
+  made before this). A build without it gets a warning.
+- `validate` (and so arming and starting from the boot prompt) reports
+  `boot_image_cannot_add_drivers` for a profile with OS driver groups: an
+  error when its boot image can't add them, a warning while it's unknown.
+  The deployment is refused before a disk is wiped instead of failing at
+  `injecting-drivers`.
+- The recipe version goes to 2, so every existing build shows `stale`
+  (`recipe`) and a rebuild records the capability. Until rebuilt it keeps
+  serving, `canAddOsDrivers` is null, and validate reports the stale boot
+  image as usual.
+
+**Consequences.** Boot images are about 0.1 GB bigger expanded (2.56 GB
+against 2.45 GB); TFTP download time grows a little. Plain WinPE remains
+selectable for profiles without OS drivers. Lab: index 2 deploys Windows 11
+Pro with 101 Intel chipset drivers added (Phase 5 findings).
+

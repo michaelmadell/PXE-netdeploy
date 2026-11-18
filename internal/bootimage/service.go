@@ -198,6 +198,45 @@ func (s *Service) sourceImage(ctx context.Context, id string) (store.Image, wind
 	return im, d, nil
 }
 
+// SourceIndex is the boot.wim index a boot image uses when none is given:
+// boot.wim's own boot index from its header, which is the Windows Setup
+// image on install media. Plain WinPE (index 1) can't run DISM offline
+// servicing, so the agent can't add OS drivers from it (ADR 0022
+// amendment). Falls back to DefaultSourceIndex when the image or its
+// boot.wim can't be read; Check then reports what's wrong.
+func (s *Service) SourceIndex(ctx context.Context, imageID string) int {
+	if s.content == nil {
+		return DefaultSourceIndex
+	}
+	im, d, perr := s.sourceImage(ctx, imageID)
+	if perr != nil {
+		return DefaultSourceIndex
+	}
+	e, err := s.st.LookupTreeEntry(ctx, *im.TreeID, cas.Fold("sources/boot.wim"))
+	if err != nil {
+		return DefaultSourceIndex
+	}
+	path, err := s.content.BlobPath(e.SHA256)
+	if err != nil {
+		return DefaultSourceIndex
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return DefaultSourceIndex
+	}
+	defer f.Close()
+	info, err := wim.ReadInfo(f)
+	if err != nil {
+		return DefaultSourceIndex
+	}
+	for _, x := range d.BootImageIndexes {
+		if x.Index == info.BootIndex {
+			return info.BootIndex
+		}
+	}
+	return DefaultSourceIndex
+}
+
 // Check validates inputs for create and replace: everything that doesn't
 // depend on the host or on driver contents. Driver groups are checked by
 // the store (ErrUnknownDriverGroup).
@@ -472,7 +511,7 @@ func (s *Service) Build(ctx context.Context, id string, force bool) (store.BootI
 func (s *Service) adopt(ctx context.Context, id string, from store.BootImage) error {
 	err := s.st.AdoptBootImageBuild(ctx, id, store.BootBuild{
 		TreeID: *from.TreeID, InputHash: *from.InputHash, Inputs: from.BuiltInputs, BuiltWith: *from.BuiltWith,
-		SelectedBootManager: from.SelectedBootManager, Warnings: from.Warnings,
+		SelectedBootManager: from.SelectedBootManager, CanAddOSDrivers: from.CanAddOSDrivers, Warnings: from.Warnings,
 	})
 	if err == nil {
 		s.publish(id)

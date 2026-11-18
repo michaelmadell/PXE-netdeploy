@@ -19,9 +19,11 @@ import (
 
 // Boot images (ADR 0022).
 
+// bootImageInput converts the body; SourceIndex is 0 when omitted
+// (resolveSourceIndex fills it in).
 func bootImageInput(b *api.BootImageInput) store.BootImageInput {
 	in := store.BootImageInput{
-		Name: b.Name, SourceImageID: b.SourceImageId, SourceIndex: bootimage.DefaultSourceIndex, Architecture: string(b.Architecture),
+		Name: b.Name, SourceImageID: b.SourceImageId, Architecture: string(b.Architecture),
 		DriverGroupIDs: []string{}, AgentVersion: b.AgentVersion, ServerURLs: b.ServerUrls, Builder: "auto", Bootmgr: "auto",
 		OptionalComponents: []string{}, TFTPBlockSize: bootimage.DefaultTFTPBlockSize, TFTPWindowSize: bootimage.DefaultTFTPWindowSize,
 	}
@@ -93,6 +95,9 @@ func (s *Server) CreateBootImage(ctx context.Context, req api.CreateBootImageReq
 		return api.CreateBootImage400ApplicationProblemPlusJSONResponse{ProblemApplicationProblemPlusJSONResponse: badRequest("A JSON body is required.")}, nil
 	}
 	in := bootImageInput(req.Body)
+	if in.SourceIndex == 0 {
+		in.SourceIndex = s.boot.SourceIndex(ctx, in.SourceImageID)
+	}
 	p, err := s.checkBootImage(ctx, in)
 	if err != nil {
 		return nil, err
@@ -176,6 +181,9 @@ func (s *Server) ReplaceBootImage(ctx context.Context, req api.ReplaceBootImageR
 		return api.ReplaceBootImage412ApplicationProblemPlusJSONResponse(etagMismatch()), nil
 	}
 	in := bootImageInput(req.Body)
+	if in.SourceIndex == 0 {
+		in.SourceIndex = s.boot.SourceIndex(ctx, in.SourceImageID)
+	}
 	p, err := s.checkBootImage(ctx, in)
 	if err != nil {
 		return nil, err
@@ -330,6 +338,7 @@ func (s *Server) bootImageToAPI(ctx context.Context, bi store.BootImage) (api.Bo
 		Name: bi.Name, SourceImageId: bi.SourceImageID, SourceIndex: &idx, Architecture: api.Architecture(bi.Architecture),
 		DriverGroupIds: &groups, AgentVersion: bi.AgentVersion, ServerUrls: urls, Builder: &builder, Bootmgr: &bootmgr,
 		OptionalComponents: &ocs, ProduceHttpBootIso: &iso, InputHash: bi.InputHash, BuiltAt: bi.BuiltAt, LastJobId: bi.LastJobID,
+		CanAddOsDrivers: bi.CanAddOSDrivers,
 	}
 	out.Tftp = &struct {
 		BlockSize  *int `json:"blockSize,omitempty"`

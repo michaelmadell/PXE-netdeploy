@@ -64,12 +64,13 @@ func newAgentFixture(t *testing.T) *agentFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// A boot image built with the 2023 boot manager.
+	// A boot image built with the 2023 boot manager, from the Setup image.
+	canAdd := true
 	bi, _ := st.CreateBootImage(ctx, store.BootImageInput{Name: "pe", SourceImageID: im.ID, SourceIndex: 1, Architecture: "x64",
 		ServerURLs: []string{"http://x"}, Builder: "auto", Bootmgr: "auto", TFTPBlockSize: 16384, TFTPWindowSize: 16})
 	tree, _ := st.InsertTree(ctx, store.NewTree{Kind: store.TreeBootImage, Entries: []store.NewTreeEntry{{Path: "bootmgfw.efi", Fold: "bootmgfw.efi", SHA256: strings.Repeat("c", 64), Size: 1}}})
 	st.AdoptBootImageBuild(ctx, bi.ID, store.BootBuild{TreeID: tree, InputHash: strings.Repeat("e", 64), Inputs: json.RawMessage(`{}`),
-		BuiltWith: "wimlib", SelectedBootManager: json.RawMessage(`{"signer":"windows-uefi-ca-2023"}`)})
+		BuiltWith: "wimlib", SelectedBootManager: json.RawMessage(`{"signer":"windows-uefi-ca-2023"}`), CanAddOSDrivers: &canAdd})
 	// A driver package in a group, for the OS.
 	pkg, _, _ := st.CreateDriverImport(ctx, "nic", upload(strings.Repeat("d", 64)), "driverPackage.import")
 	dstg, _ := content.NewStaging("drv")

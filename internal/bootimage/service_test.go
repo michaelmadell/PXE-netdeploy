@@ -23,6 +23,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/agentbin"
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
+	"github.com/michaelmadell/pxe-netdeploy/internal/media/wim"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
@@ -372,6 +373,10 @@ func TestBuildLifecycle(t *testing.T) {
 	if sbm["signer"] != "windows-uefi-ca-2023" || sbm["sourcePath"] != "boot.wim:1/"+wimBootmgr2023 {
 		t.Errorf("selected boot manager: %v", sbm)
 	}
+	// peFiles is plain WinPE: no WinPE-Setup package, so no OS drivers.
+	if bi.CanAddOSDrivers == nil || *bi.CanAddOSDrivers || !slices.Contains(bi.Warnings, NoOSDriversWarning) {
+		t.Errorf("canAddOsDrivers %v, warnings %v", bi.CanAddOSDrivers, bi.Warnings)
+	}
 	added := f.tools[BuilderWimlib].seen[0]
 	if added["netdeploy/agent.exe"] != "MZ agent" || added[winpeshlPath] != winpeshl {
 		t.Errorf("added files: %v", added)
@@ -390,6 +395,9 @@ func TestBuildLifecycle(t *testing.T) {
 	twin, j = f.build(t, twin.ID, false)
 	if j != nil || twin.TreeID == nil || *twin.TreeID != *bi.TreeID {
 		t.Fatalf("twin: job %+v, tree %v", j, twin.TreeID)
+	}
+	if twin.CanAddOSDrivers == nil || *twin.CanAddOSDrivers {
+		t.Errorf("twin canAddOsDrivers %v", twin.CanAddOSDrivers)
 	}
 	if len(f.tools[BuilderWimlib].seen) != 1 {
 		t.Fatal("twin was built")
@@ -581,5 +589,74 @@ func TestFontName(t *testing.T) {
 	}
 	if fontName("a_EX.ttf", false) != "a_EX.ttf" {
 		t.Error("non-EX renamed")
+	}
+}
+
+// The Setup image is recognised by its WinPE-Setup package (ADR 0022
+// amendment); plain WinPE isn't.
+func TestHasSetupPackage(t *testing.T) {
+	for _, c := range []struct {
+		files fs.FS
+		want  bool
+	}{{peFiles, false}, {setupFiles(), true}} {
+		b := makeWIM(t, c.files)
+		rd, err := wim.Open(bytes.NewReader(b), int64(len(b)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hasSetupPackage(rd); got != c.want {
+			t.Errorf("hasSetupPackage = %v, want %v", got, c.want)
+		}
+	}
+}
+
+// setupFiles is peFiles plus the WinPE-Setup package, as in boot.wim index 2.
+func setupFiles() fstest.MapFS {
+	m := fstest.MapFS{}
+	for k, v := range peFiles {
+		m[k] = v
+	}
+	m[wimPackages+"/WinPE-Setup-Package~31bf3856ad364e35~amd64~~10.0.26100.1.mum"] = &fstest.MapFile{Data: []byte("<assembly/>")}
+	m[wimPackages+"/WinPE-Setup-Package~31bf3856ad364e35~amd64~~10.0.26100.1.cat"] = &fstest.MapFile{Data: []byte("cat")}
+	return m
+}
+
+// Without a sourceIndex, a boot image uses boot.wim's boot index: the
+// Setup image on install media.
+func TestSourceIndexDefault(t *testing.T) {
+	f := newFixture(t)
+	if got := f.svc.SourceIndex(f.ctx, f.image.ID); got != 1 {
+		t.Errorf("one-image boot.wim: %d", got)
+	}
+	// A two-image boot.wim whose header marks index 2 bootable.
+	var out writeSeeker
+	w := gowim.NewWriter(&out, gowim.Options{Security: gowim.UniformSecurity(sd), Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
+	for i, files := range []fs.FS{peFiles, setupFiles()} {
+		info := gowim.ImageInfo{Name: fmt.Sprintf("PE %d", i+1), Boot: i == 1,
+			Windows: &gowim.WindowsInfo{Arch: 9, Version: gowim.Version{Major: 10, Build: 26100, SPBuild: 9457}}}
+		if err := w.AddImage(f.ctx, files, info); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	up := f.upload(t, strings.Repeat("c", 64))
+	im, _, _ := f.st.CreateImageImport(f.ctx, store.NewImageImport{Name: "Media", UploadID: up}, "image.import")
+	stg, _ := f.content.NewStaging("media")
+	if _, _, err := stg.Add("sources/boot.wim", bytes.NewReader(out.b)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stg.Commit(f.ctx, store.TreeImage, func(ctx context.Context, tree string) error {
+		return f.st.CompleteImageImport(ctx, im.ID, store.ImportResult{Kind: "windows", TreeID: tree,
+			Details: json.RawMessage(`{"kind":"windows","architecture":"x64","bootImageIndexes":[{"index":1,"name":"PE"},{"index":2,"name":"Setup"}]}`)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.svc.SourceIndex(f.ctx, im.ID); got != 2 {
+		t.Errorf("install-media boot.wim: %d, want 2", got)
+	}
+	if got := f.svc.SourceIndex(f.ctx, "nope"); got != DefaultSourceIndex {
+		t.Errorf("unknown image: %d", got)
 	}
 }

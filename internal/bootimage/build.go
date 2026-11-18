@@ -114,10 +114,16 @@ func (s *Service) build(ctx context.Context, r *jobs.Run, bi store.BootImage, p 
 		"signer": bf.signer, "sourcePath": fmt.Sprintf("boot.wim:%d/%s", bi.SourceIndex, bf.source),
 		"sha256": bf.bootmgrSHA, "architecture": bi.Architecture,
 	})
+	warnings := p.warnings
+	if !bf.setup {
+		warnings = append(append([]string{}, warnings...), NoOSDriversWarning)
+		log.Warn("built image has no WinPE-Setup package: it cannot add OS drivers", "source_index", bi.SourceIndex)
+	}
+	canAdd := bf.setup
 	_, err = st.Commit(ctx, store.TreeBootImage, func(ctx context.Context, treeID string) error {
 		return s.st.CompleteBootImageBuild(ctx, bi.ID, store.BootBuild{
 			TreeID: treeID, InputHash: p.hash, Inputs: p.inputs.JSON(), BuiltWith: p.inputs.Builder,
-			SelectedBootManager: sbm, Warnings: p.warnings,
+			SelectedBootManager: sbm, CanAddOSDrivers: &canAdd, Warnings: warnings,
 		})
 	})
 	committed = true
@@ -243,6 +249,9 @@ type bootFiles struct {
 	source     string // path inside the WIM image
 	sdi        []byte
 	fonts      []treeFile
+	// setup: the image has the WinPE-Setup package, which DISM offline
+	// servicing needs (ADR 0022 amendment).
+	setup bool
 }
 
 // Boot files inside a WinPE image (Phase 3 findings, ADR 0022).
@@ -252,7 +261,28 @@ const (
 	wimSDI         = "Windows/Boot/DVD/EFI/boot.sdi"
 	wimFonts       = "Windows/Boot/Fonts"
 	wimFontsEX     = "Windows/Boot/Fonts_EX"
+	wimPackages    = "Windows/servicing/Packages"
+	setupPackage   = "winpe-setup-package~"
 )
+
+// NoOSDriversWarning is the build warning for an image without the
+// WinPE-Setup package.
+const NoOSDriversWarning = "This image is plain Windows PE (no WinPE-Setup package): the agent cannot add OS drivers from it, " +
+	"so profiles with OS driver groups are refused. Use the Windows Setup image (index 2 on install media)."
+
+// hasSetupPackage reports whether image 1 of rd has the WinPE-Setup package.
+func hasSetupPackage(rd *wim.Reader) bool {
+	ents, err := rd.ReadDir(1, wimPackages)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if strings.HasPrefix(strings.ToLower(e.Name()), setupPackage) && strings.EqualFold(path.Ext(e.Name()), ".mum") {
+			return true
+		}
+	}
+	return false
+}
 
 // readBootFiles reads the boot manager chosen by want, boot.sdi and the
 // fonts out of the built WIM.
@@ -293,6 +323,7 @@ func (s *Service) readBootFiles(wimPath, want string) (bootFiles, error) {
 			fmt.Sprintf("The built image has no boot manager signed %s.", want))
 	}
 	bf.bootmgrSHA = sha256Hex(bf.bootmgr)
+	bf.setup = hasSetupPackage(rd)
 	if bf.sdi, err = rd.ReadFile(1, wimSDI); err != nil {
 		return bf, unprocessable("boot_files_missing", "Boot files missing", "The image has no "+wimSDI+".")
 	}

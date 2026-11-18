@@ -655,7 +655,8 @@ export interface paths {
          *     refuse to boot); host DISM older than the image build (warning);
          *     optional components requested without DISM or a matching ADK (error);
          *     identity mode missing a required secret, or a secret of the wrong kind
-         *     (error); template whose `identityModes` excludes the profile's mode (error);
+         *     (error); OS driver groups on a profile whose boot image cannot add them
+         *     (`boot_image_cannot_add_drivers`, error; a warning while unknown); template whose `identityModes` excludes the profile's mode (error);
          *     the unattend template's checks against the profile's data (ADR 0027:
          *     errors such as `unattend_missing_join`, `unattend_architecture`,
          *     `reserved_account_name`; warnings such as `unattend_ignores_computer_name`),
@@ -1489,7 +1490,9 @@ export interface components {
              *     `backup_failed` (the last backup failed), `backup_overdue` (scheduled
              *     backups haven't succeeded for two intervals), `secrets_key_not_exported`
              *     (secrets exist but the key was never exported with `netdeployd key
-             *     export`; without it they can't be restored on other hardware, ADR 0021).
+             *     export`; without it they can't be restored on other hardware, ADR 0021),
+             *     `admin_certificate_expiring` (the admin certificate expires within 30
+             *     days, or has expired).
              */
             warnings?: {
                 code: string;
@@ -1854,12 +1857,14 @@ export interface components {
             /** @description A `windows` Image. */
             sourceImageId: string;
             /**
-             * @description Index inside boot.wim. 1 (plain WinPE on standard media) is the default:
-             *     index 2 (Windows Setup) is larger and its Setup program blocks in WDS mode
-             *     (Phase 1 findings). Must be one of the image's `bootImageIndexes`.
-             * @default 1
+             * @description Index inside boot.wim. Must be one of the image's `bootImageIndexes`.
+             *     When omitted on create, boot.wim's own boot index (from its header) is
+             *     used: the Windows Setup image, 2 on install media. Use the Setup image:
+             *     plain WinPE (index 1) cannot run DISM offline servicing, so the agent
+             *     cannot add OS drivers from it (ADR 0022 amendment, Phase 5 findings).
+             *     The agent replaces Setup's shell, so Setup itself never starts.
              */
-            sourceIndex: number;
+            sourceIndex?: number;
             architecture: components["schemas"]["Architecture"];
             driverGroupIds?: string[];
             /**
@@ -1966,6 +1971,13 @@ export interface components {
             builtAt?: string | null;
             /** @description The boot manager actually used by the last build. */
             selectedBootManager?: components["schemas"]["BootManager"] | null;
+            /**
+             * @description Whether the served build can add OS drivers during a deployment: true
+             *     when the built WinPE contains the WinPE-Setup package (the Setup image),
+             *     which DISM offline servicing needs. Null until built (or for builds made
+             *     before this was recorded: rebuild to find out).
+             */
+            readonly canAddOsDrivers?: boolean | null;
             artifacts?: components["schemas"]["BootArtifact"][];
             warnings?: string[];
             error?: components["schemas"]["Problem"] | null;
@@ -2449,6 +2461,8 @@ export interface components {
                 /** @description Null keeps the generated certificate. */
                 certificatePem?: string | null;
                 privateKeyPem?: string | null;
+                /** @description The certificate the admin listener serves now (generated or custom). */
+                readonly certificateInfo?: components["schemas"]["CertificateInfo"];
             };
             /** @description Deployment-network interfaces. Each runs its own DHCP mode and content services. */
             interfaces: components["schemas"]["InterfaceSettings"][];
@@ -2571,6 +2585,27 @@ export interface components {
                  */
                 httpBoot: boolean;
             };
+        };
+        CertificateInfo: {
+            /**
+             * @description `generated`: the self-signed certificate made on first run (`admin-cert.pem`
+             *     in the data directory; valid two years, for localhost, 127.0.0.1, ::1 and
+             *     this host's name). `custom`: `admin.certificatePem`.
+             * @enum {string}
+             */
+            source: "generated" | "custom";
+            /** @description The subject, e.g. `CN=netdeploy admin`. */
+            subject: string;
+            /** @description The issuer; the same as `subject` when self-signed. */
+            issuer?: string;
+            dnsNames: string[];
+            ipAddresses: string[];
+            /** Format: date-time */
+            notBefore: string;
+            /** Format: date-time */
+            notAfter: string;
+            /** @description SHA-256 fingerprint of the certificate (DER), lowercase hex. */
+            sha256: string;
         };
         /**
          * @description Scheduled backups (ADR 0020): the database, admin certificate and the

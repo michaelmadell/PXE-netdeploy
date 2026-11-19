@@ -143,6 +143,7 @@ account with the two capabilities, systemd unit from `running-the-lab.md`):
 | Port owner | **Worked**: the `422` named the process holding the port |
 | `data_dir_permissions` | **Worked in the API** (the directory at `755` named with its mode and the fix). The Overview listed it only under "Things to check" at the bottom, with the status still "ok", so it looked missing. Changed: the status reads "ok, N things to check" in the warning colour and the list sits under it |
 | File modes | SQLite created `netdeploy.db` `644` (and `admin-cert.pem` `644`): readable by anyone once the directory is opened. Changed: the server sets umask `077` at start, the check covers the database, the lab unit has `UMask=0077` |
+| The rest, after the fixes | **All good** (the user, 2026-11-19, "all is good from linux"): the remaining checks from `running-the-lab.md`, "A Linux host", including the Overview's status with warnings and the database at `600` |
 | Lab setup | A stuck host adapter on `NetDeployLab` ("media disconnected" while Internal) and `eth1` unmanaged by networkd delayed the run; the service's first start failed with `203/EXEC` (systemd couldn't run the binary) |
 
 **Not yet run:**
@@ -150,7 +151,39 @@ account with the two capabilities, systemd unit from `running-the-lab.md`):
 | Check | How |
 |---|---|
 | CI on Ubuntu | Push: wimtools and cabextract installed, `TestWimlibSetupImage` with the distribution's wimlib, the datagram ICMP socket (`ping_group_range` open on the runners), `scripts/linux-smoke.sh` with the tool checks |
-| The lab VM end to end | `running-the-lab.md`, "A Linux host": Ubuntu 24.04 VM, service account with the two capabilities, ISO import, wimlib build of index 2, HTTPS, deploy `nd-client-01` |
-| `missing_privileges` in the lab | The unit without its two capability lines |
-| The fixes above | Overview's status with warnings; a fresh data directory has `netdeploy.db` `600` |
 | Windows `ownerProcess` on a real conflict | E.g. HTTP 80 held by `http.sys` (expect `System (pid 4)`) |
+
+## Packaging (decision 5, ADR 0031)
+
+**Automated, 2026-11-19** (Windows lab host: `go test -count=1 ./...`,
+`just lint`, `just package -RequireInstaller`; Linux: cross-compiled tests in
+the Cowork VM):
+
+- `TestRenewGenerated`, `TestKeepCustom`: the generated admin certificate is
+  kept a year before expiry, renewed 20 days before (old pair kept as
+  `.old`); a certificate with another name is never replaced.
+- `TestDataDirACL` (Windows): a data directory `datalock` creates has a
+  protected list (SYSTEM, Administrators, the creating account); one where
+  Users can read is reported with the `icacls` fix.
+- The Windows binary, unelevated: `service install` says to run elevated;
+  `admin set-address` on a new folder creates it private and stores the
+  address; the server then listens there and logs to `-log-file`.
+- The Linux binary: `admin set-address` on a fresh data directory, then
+  serving on that address; a bad address refused; `service` explains it's
+  Windows only; `scripts/linux-smoke.sh` passes.
+- Packages built: `netdeploy-0.0.0-81-g1675124-dirty-setup.exe` (12 MB,
+  with wimlib 1.14.5) and the `.deb`s (amd64 15 MB, arm64 14 MB). The
+  `.deb`: control fields, conffile, scripts, debconf templates as intended
+  (`dpkg-deb -I/-c`); maintainer scripts parse (`sh -n`); the unit passes
+  `systemd-analyze verify`.
+
+**Not yet run:**
+
+| Check | How |
+|---|---|
+| The installer, fresh install | Run it elevated on a host without netdeployd running: pages, finish page with the setup code, service Running/Automatic, access list, firewall rule, wimlib and DISM in capabilities |
+| The installer, upgrade and uninstall | A second build over the first (no questions, service restarted); uninstall with and without moving the data |
+| The service under the SCM | Stop/start from services.msc; kill the process and watch the recovery action restart it |
+| The `.deb` in CI | `scripts/deb-smoke.sh`: install, capabilities from the unit, reconfigure to 127.0.0.1:9443, purge moves the data, reinstall starts fresh |
+| The `.deb` on `nd-linux` | Replace the hand-made unit: `sudo systemctl disable --now netdeploy`, remove `/etc/systemd/system/netdeploy.service`, install the `.deb` (it keeps `/var/lib/netdeploy`) |
+| The release workflow | Push a `v*` tag: wimlib download and hash check, ISCC from Chocolatey, the GitHub release |

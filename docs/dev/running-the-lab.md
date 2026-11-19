@@ -10,7 +10,13 @@ Since Phase 2 step 2, network services come from the stored settings
 | `-admin-addr` | Recovery override for the admin listener (health shows a warning while it's set) |
 | `-log`, `-log-level` | Logging |
 | `-agent-dir` | Where a server built without `-tags agent` finds `agent-windows-<arch>.exe` (default `dist`, after `just build`) |
-| `-wimlib` | Path to `wimlib-imagex` if it isn't on PATH |
+| `-wimlib` | Path to `wimlib-imagex`; default: `wimlib\wimlib-imagex.exe` next to the server (the Windows installer puts it there), else PATH |
+| `-log-file` | Write the log to a file instead of standard output (the Windows service uses `<data>\logs\netdeployd.log`; moved to `.1` past 64 MiB at start) |
+
+Offline commands (server stopped): `key export|import`, `backup`, `restore`,
+`admin reset-password`, `admin set-address -data <dir> <ip:port>` (where the
+admin web UI listens), and on Windows `service install|uninstall|start|stop`
+(ADR 0031).
 
 A fresh data directory starts with no interfaces, so nothing answers PXE until
 you add one.
@@ -717,6 +723,47 @@ images built before this change show `stale` (`recipe`) and
 (`source-index`).
 
 
+## Installing from the packages (Phase 6, ADR 0031)
+
+`just package` builds into `dist`: `netdeploy-<version>-setup.exe` (needs
+Inno Setup: `winget install JRSoftware.InnoSetup`, and wimlib unzipped in
+`.tmp\wimlib`) and `netdeploy_<version>_amd64.deb` / `_arm64.deb`. Until
+the first `v*` tag the version is `0.0.0-<commits>-g<hash>`.
+
+**Windows** (on a host that isn't already running netdeployd from `just dev`,
+or stop that first: both want the same ports):
+
+1. Run the installer (it asks for elevation; SmartScreen warns: unsigned).
+   Pages: the data folder (default `C:\ProgramData\netdeploy`), where the
+   admin web UI listens (this computer only, or all networks) and its port,
+   and the firewall rule.
+2. The finish page shows the setup code and opens `https://localhost:<port>`.
+3. Check: `Get-Service netdeploy` (Running, Automatic);
+   `Get-Content C:\ProgramData\netdeploy\logs\netdeployd.log -Tail 20`;
+   `(Get-Acl C:\ProgramData\netdeploy).Access` lists SYSTEM, Administrators
+   and you, not inherited; capabilities show wimlib from
+   `C:\Program Files\netdeploy\wimlib`, and DISM available (LocalSystem).
+4. Upgrade: run a newer installer; it stops the service, replaces the files
+   and starts it, without asking the questions again. The database is
+   snapshotted before any migration (`netdeploy.db.bak-v<N>-<time>`).
+5. Uninstall (Settings → Apps): removes the service and firewall rule, then
+   asks whether to remove the data; Yes moves it to
+   `netdeploy.removed-<time>` next to it.
+
+**Ubuntu** (24.04; replaces steps 3–4 of "A Linux host" below):
+
+```bash
+sudo apt install ./netdeploy_<version>_amd64.deb     # asks where the admin UI listens; prints the setup code
+systemctl status netdeploy
+sudo dpkg-reconfigure netdeploy                        # change the admin address later
+sudo apt purge netdeploy                               # data moved to /var/lib/netdeploy.purged-<time>
+```
+
+Extra flags (a content store elsewhere, for example) go in
+`/etc/default/netdeploy`; the file explains the drop-in a content store
+outside `/var/lib/netdeploy` needs. CI runs the whole cycle (install,
+reconfigure, purge, reinstall) with `scripts/deb-smoke.sh`.
+
 ## A Linux host (Phase 6, ADR 0030)
 
 Runs the whole server in an Ubuntu VM on `NetDeployLab` as a non-root service
@@ -784,6 +831,9 @@ Replace `eth1` with the name `ip -br link` showed.
 
 ### 3. Packages and the binary
 
+Since ADR 0031: install the `.deb` instead of steps 3 and 4 (see
+"Installing from the packages" above). By hand:
+
 ```bash
 sudo apt update && sudo apt install -y wimtools cabextract
 wimlib-imagex --version | head -1
@@ -798,7 +848,7 @@ scp dist\netdeployd-linux-amd64 labuser@<VM eth0 address>:netdeployd
 
 ### 4. The service account and unit (in the VM)
 
-Packaging (decision 5) will ship these; for now, by hand:
+The `.deb` (ADR 0031) does all of this; by hand:
 
 ```bash
 sudo useradd --system --home-dir /var/lib/netdeploy --shell /usr/sbin/nologin netdeploy

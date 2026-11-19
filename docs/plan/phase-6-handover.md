@@ -96,6 +96,8 @@ Microsoft's signed shim (Nov 2025) for non-Windows OSs.
 
 ### 5. Packaging
 
+> 2026-11-19: built (ADR 0031): an Inno Setup installer and a `.deb`.
+
 Windows service and Linux systemd unit, an installer or archive layout,
 upgrades (migrations run at start), the wimlib licence question before
 bundling it (ADR 0022), versioning shown in health and the UI.

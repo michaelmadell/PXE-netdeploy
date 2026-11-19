@@ -92,6 +92,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0028 | Content HTTPS: one internal CA (RSA-3072, ten years) made when HTTPS is first enabled, its key sealed with the secrets key and in backups; an in-memory server certificate for the HTTPS addresses and boot images' https hosts; `serverUrls` all http or all https; the agent trusts only the CA, at the later of its clock and the CA's start; CA fingerprint is a build input. Custom certificate and CA rotation deferred. |
 | 0029 | Admin authentication: named local accounts (full admin, argon2id) with session cookies for the UI (`__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`, 8 h idle, 7 days max, Origin check) and `ndt_` bearer tokens for automation (hashed, shown once, can't manage accounts or tokens); first account from a setup code in the log and `setup-code.txt`; offline `admin reset-password`; health without auth is status only. |
 | 0030 | Linux hosts: a non-root service account with `CAP_NET_BIND_SERVICE` and `CAP_NET_RAW`; privileges reported in capabilities and health (`missing_privileges`) instead of only bind failures; ping check falls back to Linux's unprivileged ICMP socket (`dhcp_ping_unavailable` otherwise); `ownerProcess` from `/proc` and the Windows owner tables; data directory permission checks; CI on Ubuntu with wimtools. iPXE and non-Windows OSs moved to a phase of their own. |
+| 0031 | Packaging: an Inno Setup installer (LocalSystem service, private data folder, admin address and firewall asked at install, wimlib bundled, uninstall moves data aside) and a `.deb` (sysusers account, hardened unit with two capabilities, debconf admin address, purge moves data aside); versions from git tags; the generated admin certificate renewed at start; a `v*` tag publishes a GitHub release. Unsigned for now. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -182,9 +183,12 @@ established, the decisions to make, and what carries over. Decision 1,
 content HTTPS (ADR 0028), is built and lab-tested (2026-11-18). Decision 3,
 admin authentication (ADR 0029), is built and lab-tested. Decision 4, now
 the Linux host only (ADR 0030; iPXE and non-Windows OSs are a phase of their
-own), is built and tested on a Linux kernel; the lab run is in
-[dev/running-the-lab.md](dev/running-the-lab.md) and its checks in
-[spikes/phase-6-findings.md](spikes/phase-6-findings.md).
+own), is built and lab-tested on `nd-linux`. Decision 5, packaging (ADR 0031),
+is built: the installer and `.deb`s build with `just package`; installing
+them is the next lab step ([dev/running-the-lab.md](dev/running-the-lab.md),
+"Installing from the packages"; checks in
+[spikes/phase-6-findings.md](spikes/phase-6-findings.md)). Left in Phase 6:
+decision 2, HTTPS boot (a spike first).
 
 ## Open questions and things to verify
 

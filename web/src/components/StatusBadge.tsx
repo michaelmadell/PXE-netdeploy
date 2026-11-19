@@ -11,11 +11,11 @@ const styles = {
 export type Status = keyof typeof styles;
 
 /** Status shown as a dot plus text, so meaning never depends on colour alone. */
-export function StatusBadge({ status }: { status: Status }) {
+export function StatusBadge({ status, label }: { status: Status; label?: string }) {
   return (
     <span className="inline-flex items-center gap-2 text-sm">
       <span className={cn("size-2 rounded-full", styles[status])} aria-hidden />
-      {status}
+      {label ?? status}
     </span>
   );
 }

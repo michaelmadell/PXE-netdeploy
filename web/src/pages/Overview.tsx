@@ -15,6 +15,8 @@ export function Overview() {
     refetchInterval: 5_000,
   });
 
+  const warnings = health.data?.warnings ?? [];
+
   return (
     <section className="max-w-3xl">
       <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
@@ -30,8 +32,27 @@ export function Overview() {
       {health.data && (
         <>
           <p className="mt-2 text-muted-foreground">
-            Server status: <StatusBadge status={health.data.status} />
+            Server status:{" "}
+            {warnings.length > 0 && health.data.status === "ok" ? (
+              // Warnings don't fail a service, but they need attention: say so
+              // here rather than only at the bottom of the page.
+              <StatusBadge status="degraded" label={`ok, ${warnings.length === 1 ? "1 thing" : `${warnings.length} things`} to check`} />
+            ) : (
+              <StatusBadge status={health.data.status} />
+            )}
           </p>
+          {warnings.length > 0 && (
+            <section aria-labelledby="things-to-check" className="mt-4 rounded-md border border-warning/50 bg-warning/10 p-4">
+              <h2 id="things-to-check" className="text-base font-semibold tracking-tight">
+                Things to check
+              </h2>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                {warnings.map((w) => (
+                  <li key={w.code}>{w.message}</li>
+                ))}
+              </ul>
+            </section>
+          )}
           <table className="mt-6 w-full text-left text-sm">
             <thead className="text-muted-foreground">
               <tr className="border-b">
@@ -53,16 +74,6 @@ export function Overview() {
             </tbody>
           </table>
           <Readiness />
-          {(health.data.warnings?.length ?? 0) > 0 && (
-            <>
-              <h2 className="mt-8 text-base font-semibold tracking-tight">Things to check</h2>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-                {health.data.warnings!.map((w) => (
-                  <li key={w.code}>{w.message}</li>
-                ))}
-              </ul>
-            </>
-          )}
         </>
       )}
     </section>

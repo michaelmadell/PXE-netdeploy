@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"regexp"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/datalock"
@@ -18,17 +19,63 @@ const minPassword = 8
 
 var usernameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// adminCommand: netdeployd admin reset-password -user <name> (ADR 0029).
-// Offline: the server must be stopped.
+const adminUsage = `usage:
+  netdeployd admin reset-password -data <dir> -user <name>
+  netdeployd admin set-address -data <dir> <ip:port>    (e.g. 0.0.0.0:8443 for all networks)`
+
+// adminCommand: netdeployd admin reset-password (ADR 0029) and set-address
+// (ADR 0031). Offline: the server must be stopped.
 func adminCommand(args []string) error {
-	if len(args) == 0 || args[0] != "reset-password" {
-		return errors.New("usage: netdeployd admin reset-password -data <dir> -user <name>")
+	if len(args) == 0 {
+		return errors.New(adminUsage)
 	}
+	switch args[0] {
+	case "reset-password":
+		return resetPassword(args[1:])
+	case "set-address":
+		return setAddress(args[1:])
+	}
+	return errors.New(adminUsage)
+}
+
+// setAddress stores where the admin web UI and API listen.
+func setAddress(args []string) error {
+	fs := flag.NewFlagSet("admin set-address", flag.ContinueOnError)
+	dataDir := fs.String("data", "./data", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New(adminUsage)
+	}
+	addr, err := netip.ParseAddrPort(fs.Arg(0))
+	if err != nil || !addr.Addr().Is4() || addr.Port() == 0 {
+		return fmt.Errorf("admin set-address: %q: want an IPv4 address and port, e.g. 127.0.0.1:8443 or 0.0.0.0:8443", fs.Arg(0))
+	}
+	lock, err := datalock.Acquire(*dataDir)
+	if err != nil {
+		return fmt.Errorf("%w (stop the server first)", err)
+	}
+	defer lock.Release()
+	ctx := context.Background()
+	st, err := store.Open(ctx, *dataDir, store.Options{})
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := settings.SetAdminAddress(ctx, st, addr); err != nil {
+		return err
+	}
+	fmt.Printf("Admin address set to %s; it applies when the server starts.\n", addr)
+	return nil
+}
+
+func resetPassword(args []string) error {
 	fs := flag.NewFlagSet("admin reset-password", flag.ContinueOnError)
 	dataDir := fs.String("data", "./data", "data directory")
 	user := fs.String("user", "", "account to reset; created if it doesn't exist")
 	passFile := fs.String("password-file", "", "read the new password from this file instead of asking")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if !usernameRE.MatchString(*user) {

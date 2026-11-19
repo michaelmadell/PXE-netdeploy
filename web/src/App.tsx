@@ -139,6 +139,11 @@ function Shell({ user }: { user: Schemas["User"] }) {
           <Button size="sm" variant="ghost" className="-ml-3 mt-1" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
             <LogOut aria-hidden /> Sign out
           </Button>
+          {health.data?.version && (
+            <p className="mt-2 truncate text-xs text-muted-foreground" title={`netdeploy ${health.data.version}`}>
+              netdeploy {health.data.version}
+            </p>
+          )}
         </div>
       </aside>
 

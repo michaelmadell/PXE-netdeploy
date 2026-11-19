@@ -151,7 +151,7 @@ func (s *Server) health(ctx context.Context) api.Health {
 			status = api.HealthStatusDegraded
 		}
 	}
-	out := api.Health{Status: status, Services: services, Storage: storage}
+	out := api.Health{Status: status, Version: &s.version, Services: services, Storage: storage}
 	w := s.warnings()
 	if storage != nil && storage.FreeBytes < 2*storage.ReserveBytes {
 		w = append(w, warning{"storage_low", fmt.Sprintf("The content store has %s free; imports stop at %s.",
@@ -263,7 +263,7 @@ func certificateWarning(c *api.CertificateInfo, now time.Time) *warning {
 	}
 	renew := "Set a new certificate in Settings."
 	if c.Source == api.CertificateInfoSourceGenerated {
-		renew = "Set your own in Settings, or delete admin-cert.pem and admin-key.pem from the data directory and restart to generate a new one."
+		renew = "Restart netdeployd to renew it (a generated certificate is replaced at start within 30 days of expiry), or set your own in Settings."
 	}
 	day := c.NotAfter.Format("2 January 2006")
 	switch left := c.NotAfter.Sub(now); {

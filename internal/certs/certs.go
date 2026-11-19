@@ -24,18 +24,41 @@ const (
 	keyFile  = "admin-key.pem"
 )
 
+// generatedCN marks a certificate this package made, so only those are renewed.
+const generatedCN = "netdeploy admin"
+
+// renewBefore: a generated certificate this close to expiry is replaced at
+// start (ADR 0031); health warns from the same point (admin_certificate_expiring).
+const renewBefore = 30 * 24 * time.Hour
+
 // LoadOrCreateAdminTLS loads the admin certificate from dataDir, generating a
-// self-signed one (localhost, 127.0.0.1, ::1, this host's name) on first run.
-// Replace the files to use your own certificate.
+// self-signed one (localhost, 127.0.0.1, ::1, this host's name) on first run,
+// and a new one when the generated one is within 30 days of expiry (the old
+// pair is kept as *.old). Replace the files to use your own certificate;
+// that one is never renewed.
 func LoadOrCreateAdminTLS(dataDir string) (*tls.Config, error) {
+	return loadOrCreate(dataDir, time.Now())
+}
+
+func loadOrCreate(dataDir string, now time.Time) (*tls.Config, error) {
 	certPath := filepath.Join(dataDir, certFile)
 	keyPath := filepath.Join(dataDir, keyFile)
 
 	if _, err := os.Stat(certPath); errors.Is(err, os.ErrNotExist) {
-		if err := generate(certPath, keyPath); err != nil {
+		if err := generate(certPath, keyPath, now); err != nil {
 			return nil, fmt.Errorf("generate admin certificate: %w", err)
 		}
 		slog.Info("generated self-signed admin certificate", "path", certPath)
+	} else if c := readCert(certPath); c != nil && c.Subject.CommonName == generatedCN && c.NotAfter.Sub(now) < renewBefore {
+		for _, p := range []string{certPath, keyPath} {
+			if err := os.Rename(p, p+".old"); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("renew admin certificate: %w", err)
+			}
+		}
+		if err := generate(certPath, keyPath, now); err != nil {
+			return nil, fmt.Errorf("renew admin certificate: %w", err)
+		}
+		slog.Info("renewed the generated admin certificate", "path", certPath, "old_expiry", c.NotAfter)
 	}
 
 	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
@@ -45,7 +68,28 @@ func LoadOrCreateAdminTLS(dataDir string) (*tls.Config, error) {
 	return &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}, nil
 }
 
-func generate(certPath, keyPath string) error {
+// readCert parses the first certificate in a PEM file; nil if it can't.
+func readCert(path string) *x509.Certificate {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	blk, _ := pem.Decode(b)
+	if blk == nil {
+		return nil
+	}
+	c, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+func generate(certPath, keyPath string, now time.Time) error {
+	return generateNamed(certPath, keyPath, now, generatedCN)
+}
+
+func generateNamed(certPath, keyPath string, now time.Time, cn string) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return err
@@ -62,9 +106,9 @@ func generate(certPath, keyPath string) error {
 
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "netdeploy admin"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().AddDate(2, 0, 0),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.AddDate(2, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

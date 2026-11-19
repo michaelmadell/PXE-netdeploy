@@ -21,9 +21,18 @@ var ErrLocked = errors.New("datalock: the data directory is in use by another ne
 type Lock struct{ f *os.File }
 
 // Acquire takes the lock without waiting. ErrLocked if it's held.
+// A data directory it creates is private to this account (ADR 0031): mode
+// 700 on Linux, and on Windows an access list of SYSTEM, Administrators and
+// this account, not inherited from the parent.
 func Acquire(dataDir string) (*Lock, error) {
+	_, statErr := os.Stat(dataDir)
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
+	}
+	if errors.Is(statErr, os.ErrNotExist) {
+		if err := makePrivate(dataDir); err != nil {
+			return nil, fmt.Errorf("datalock: make %s private: %w", dataDir, err)
+		}
 	}
 	f, err := os.OpenFile(filepath.Join(dataDir, FileName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

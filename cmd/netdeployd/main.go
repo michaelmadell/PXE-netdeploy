@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -45,6 +47,7 @@ var commands = map[string]func(args []string) error{
 	"admin":   adminCommand,
 	"backup":  backupCommand,
 	"restore": restoreCommand,
+	"service": serviceCommand,
 }
 
 func backupConfig(b settings.Backup) backup.Config {
@@ -88,28 +91,85 @@ func main() {
 	flag.BoolVar(&o.dev, "dev", false, "development only: session cookie without Secure, Origin may match X-Forwarded-Host (the Vite proxy)")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
+	logFile := flag.String("log-file", "", "write the log to this file instead of standard output (the Windows service does)")
 	flag.Parse()
+	if o.wimlibPath == "" {
+		o.wimlibPath = bundledWimlib()
+	}
 
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
 		fmt.Fprintf(os.Stderr, "invalid -log-level %q\n", *logLevel)
 		os.Exit(2)
 	}
+	out := io.Writer(os.Stdout)
+	if *logFile != "" {
+		f, err := openLog(*logFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		defer f.Close()
+		out = f
+	}
 	hopts := &slog.HandlerOptions{Level: level}
-	var h slog.Handler = slog.NewTextHandler(os.Stdout, hopts)
+	var h slog.Handler = slog.NewTextHandler(out, hopts)
 	if *logFormat == "json" {
-		h = slog.NewJSONHandler(os.Stdout, hopts)
+		h = slog.NewJSONHandler(out, hopts)
 	}
 	slog.SetDefault(slog.New(h))
+	slog.Info("netdeployd starting", "version", version)
 
-	if err := run(o); err != nil {
+	// Under the Windows Service Control Manager: it starts and stops run.
+	if handled, err := runService(o); handled {
+		if err != nil {
+			slog.Error("fatal", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(context.Background(), o); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(o options) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+// openLog appends to path, first moving a file over 64 MiB to path.1.
+func openLog(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("-log-file: %w", err)
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 64<<20 {
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("-log-file: %w", err)
+	}
+	return f, nil
+}
+
+// bundledWimlib is the wimlib the Windows installer ships next to the
+// server (<program>\wimlib\wimlib-imagex.exe, ADR 0031), if it's there;
+// otherwise "" (look on PATH).
+func bundledWimlib() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	name := "wimlib-imagex"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	p := filepath.Join(filepath.Dir(exe), "wimlib", name)
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
+}
+
+func run(parent context.Context, o options) error {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var override netip.AddrPort

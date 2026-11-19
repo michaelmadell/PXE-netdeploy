@@ -20,7 +20,7 @@ func TestCertificateWarning(t *testing.T) {
 		t.Errorf("10 days: %+v", w)
 	}
 	if w := certificateWarning(cert(-1, api.CertificateInfoSourceGenerated), now); w == nil ||
-		!strings.Contains(w.Message, "expired") || !strings.Contains(w.Message, "admin-cert.pem") {
+		!strings.Contains(w.Message, "expired") || !strings.Contains(w.Message, "Restart netdeployd") {
 		t.Errorf("expired: %+v", w)
 	}
 	if certificateWarning(nil, now) != nil {

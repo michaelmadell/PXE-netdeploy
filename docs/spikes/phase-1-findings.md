@@ -39,8 +39,8 @@ Mark every result **tested** (with the date and setup) or **untested**.
 | 4 | WinPE on third-party-CA VM | **Refused, expected** (tested 2026-11-05) | Secure Boot violation. The `MicrosoftUEFICertificateAuthority` template trusts only Microsoft UEFI CA 2011 and removes Windows Production PCA 2011, so no Windows boot manager can boot. Our docs had this wrong ("+ third-party CA"); fixed. The both-CAs configuration of real PCs needs physical hardware (task 7) |
 | 5 | 2023-signed boot manager | **nd-win: boots** (tested 2026-11-05); nd-shim: expected refused (only the third-party CA) | `bootmgfw_EX.efi` (Windows UEFI CA 2023) booted to the WinPE command prompt under Secure Boot |
 | 6 | Transfer tuning | **Hyper-V done** (tested 2026-11-05) | 1456/1: 28.5 s; 1456/8: 8.2 s; 8192/8: 2.4 s; 8192/16: 2.1 s; 16384/16: fails. Defaults decided after I210 runs |
-| 7 | I210, stock WinPE | | |
-| 8 | I210, driver injected | | |
+| 7 | I210, stock WinPE | **Pass** (tested 2026-11-18, Phase 6) | A physical machine with an Intel I210 booted and deployed with **no I210 driver in the boot image**: WinPE from the Windows 11 26H2 media has an inbox driver for it, in both the Setup image (boot.wim index 2) and plain WinPE (index 1). Secure Boot, 2023 boot manager, TFTP at the 8192/8 defaults, agent over HTTPS. See [phase-6-findings.md](phase-6-findings.md) |
+| 8 | I210, driver injected | **Not needed** (2026-11-18) | Task 7 passed without one. Driver injection itself works (Phase 4: wimlib staging and `drvload`; DISM) |
 | 9 | HTTP Boot ISO (optional) | | |
 | 10 | Linux host | **Pass** (tested 2026-11-05) | Ubuntu VM on the lab switch (`10.77.0.2`) served nd-win: same Secure Boot boot to WinPE as from Windows |
 
@@ -141,6 +141,27 @@ until the I210 runs in tasks 7–8):
 | `BootImage.tftp.blockSize` / `windowSize` | 16384 / 16 | The BCD only *requests*; the server caps decide, and change without a rebuild. A BCD asking 16384/16 capped to 8192/8 boots (tested) |
 
 ## I210
+
+Tested 2026-11-18 (Phase 6): a physical machine with an Intel I210, cabled to
+the host's USB Ethernet adapter, which the `NetDeployLab` Hyper-V switch was
+made External on (host still `10.77.0.1`). Secure Boot on, the 2023-signed
+boot manager, the boot image built from the 26H2 media's boot.wim index 2
+(the Setup image) with no driver groups. Firmware PXE, TFTP at the server
+defaults (8192/8), WinPE and the agent's network all worked; the deployment
+finished, and the 7.6 GB `install.wim` downloaded over HTTPS in about
+75 s, which is line rate for 1 Gbit/s.
+
+So, at least with recent media, **WinPE doesn't need the I210 driver**: the
+user also booted plain WinPE (index 1) on this machine and it had network
+too. The original assumption (the brief's "WinPE can't use without an
+injected driver") came from older WinPE builds.
+
+TFTP: the defaults (8192 blocks, window 8, 1 s timeout) booted the physical
+machine without trouble and stay the defaults. boot.wim loaded in roughly
+**12–15 s** (the user's estimate, not timed from the log): about 45 MB/s,
+a third of the 1 Gbit/s link, against about 240 MB/s on Hyper-V. Good
+enough; if it ever matters, 8192/16 was about 15 % faster on Hyper-V and is
+worth trying on hardware before anything larger (16384 lost fragments).
 
 ## HTTP Boot
 

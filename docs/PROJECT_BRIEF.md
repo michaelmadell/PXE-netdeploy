@@ -35,9 +35,12 @@ HTTP and HTTPS content, and identity modes (none, local accounts, AD, Entra).
   on both (PowerShell 7 + `just`).
 - **Deployment hosts:** both Windows and Linux. Anything Windows-only (DISM,
   bcdedit, DPAPI) needs a Linux counterpart or a clear capability flag.
-- **Target hardware includes devices with an Intel I210 NIC** that WinPE can't
-  use without an injected driver. This is why boot image building is core, not
-  optional.
+- **Target hardware includes devices with an Intel I210 NIC.** We assumed
+  WinPE couldn't use it without an injected driver, which made boot image
+  building core. Tested 2026-11-18: WinPE from the Windows 11 26H2 media
+  (both boot.wim indexes) has an inbox driver and deploys an I210 machine
+  as it is. Boot image
+  building stays core for other NICs and storage controllers (PERC, RST VMD).
 - **The developer wants guidance through design work**, especially the API spec,
   plus thorough documentation as the project goes.
 
@@ -120,8 +123,8 @@ Boot on Hyper-V from netdeployd's own full-mode DHCP and TFTP, with both the
 2011- and 2023-signed boot managers, served from a Windows host and from a
 Linux host. `internal/dhcp` and `internal/tftp` (own server, ADR 0012) exist as
 spike code behind flags. Results: [spikes/phase-1-findings.md](spikes/phase-1-findings.md).
-Still open from Phase 1: physical I210 hardware (tasks 7–8, waiting for
-hardware) and HTTP Boot (task 9, optional).
+Still open from Phase 1: HTTP Boot (task 9, optional). The physical I210
+runs (tasks 7–8) passed on 2026-11-18, in Phase 6.
 
 **Done (Phase 2, 2026-11-06):** the core server. Settings stored in SQLite
 and applied atomically (`GET/PUT /settings`); DHCP full and proxy modes with
@@ -189,7 +192,7 @@ against the binary; its lab checks are in
 | ~~Whether Hyper-V's Secure Boot templates trust the Windows UEFI CA 2023~~ | Answered: `MicrosoftWindows` does; `MicrosoftUEFICertificateAuthority` has no Windows CA at all |
 | ~~Where recent Win11 media keeps the 2023-signed boot manager (`EFI_EX`)~~ | Answered: `Windows\Boot\EFI_EX\bootmgfw_EX.efi` inside boot.wim |
 | UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Phase 1 task 9 (optional, not done): QEMU/OVMF or real hardware |
-| Final TFTP blksize/windowsize defaults; WinPE I210 driver need | Phase 1 tasks 7–8 on physical hardware |
+| ~~Final TFTP blksize/windowsize defaults; WinPE I210 driver need~~ | Answered 2026-11-18: a physical I210 machine boots and deploys with the 8192/8 defaults and no I210 driver (26H2 WinPE, either index, has one inbox); boot.wim over TFTP in about 12–15 s on 1 Gbit/s. [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | ~~Proxy DHCP mode against real firmware~~ | Answered for Hyper-V (2026-11-06): boots; the firmware uses the proxy offer's boot file and skips :4011. [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | ~~Option 97 byte order~~ | Answered: first three fields little-endian; `smbiosUuid` equals the VM's `BIOSGUID` |
 | Proxy :4011 boot server path and `listenOn67: false` with real firmware | Firmware that does boot server discovery (physical hardware) |

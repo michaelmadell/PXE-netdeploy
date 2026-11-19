@@ -2371,7 +2371,11 @@ export interface components {
             /**
              * @description Go template for the computer name, e.g. `LAB-{{ .Client.Serial | last 6 }}`.
              *     Fields: `.Client.Serial`, `.Client.MAC`, `.Client.SMBIOSUUID`,
-             *     `.Client.Hostname`, `.Variables` (profile, then client, values). Functions:
+             *     `.Client.Hostname`, `.Variables` (profile, then client, values). A serial
+             *     the firmware never set (empty, filler such as `Undefined` or
+             *     `To Be Filled By O.E.M.`, or one character repeated) is replaced by the
+             *     MAC without colons, e.g. `00155dc87909`; check-in doesn't store such
+             *     serials. Functions:
              *     `first n`, `last n`, `upper`, `lower`. Rendered names must be 1-15
              *     characters, letters/digits/hyphens, not all digits, no hyphen at either end; violations refuse the
              *     deployment when it is armed or started. Null lets Windows generate a name.
@@ -2655,9 +2659,9 @@ export interface components {
             /**
              * @description Server-side TFTP limits, applied to every client (firmware PXE, Boot
              *     Manager). Negotiated options are capped to these, which protects clients
-             *     from a BCD that asks for more than the network can carry. Defaults are
-             *     provisional until the physical I210 runs (Phase 1 tasks 7–8); see the
-             *     Phase 1 findings, "Chosen defaults".
+             *     from a BCD that asks for more than the network can carry. The defaults
+             *     boot Hyper-V and a physical Intel I210 machine (2026-11-18); see the
+             *     Phase 1 findings, "Chosen defaults" and "I210".
              */
             tftp?: {
                 /**

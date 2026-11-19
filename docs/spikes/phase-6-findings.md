@@ -40,13 +40,13 @@ boot manager):
 | Run | Result |
 |---|---|
 | HTTPS on the lab interface, boot image rebuilt with `https://10.77.0.1`; armed deployment: profile `1`, Windows 11 Pro from Win 11 26H2, local accounts, the `Lab: first logon` template, `site=Lab`, computer name `LAB-1-05` | **Worked.** Ran 14:17 to 14:20, 3 minutes end to end, including the 7.6 GB `install.wim` download over TLS. No noticeable difference from the HTTP runs: TLS costs nothing visible on the lab's internal switch |
+| Physical machine with an **Intel I210**, cabled to a USB Ethernet adapter that `NetDeployLab` was made an External switch on (host still `10.77.0.1`); same HTTPS boot image, **no I210 driver** in it | **Worked.** Network boot under Secure Boot, TFTP at the defaults, the agent over HTTPS, deployment finished. The 7.6 GB `install.wim` took **about 75 s**, line rate for 1 Gbit/s: slower than Hyper-V only because of the link. boot.wim over TFTP took roughly 12–15 s. Plain WinPE (boot.wim index 1) also had network. Also closes Phase 1 tasks 7–8 (WinPE's inbox driver covers the I210) |
 
 **Not yet tested in the lab:**
 
 | Check | How |
 |---|---|
 | `secrets_key_not_exported` | Appears if the key was never exported |
-| Download and apply times separately, HTTP against HTTPS | From the deployment logs; the total above suggests the download isn't the bottleneck on Hyper-V |
 | Clock set back | Hyper-V's RTC follows the host, so on physical hardware: set the firmware clock before the CA's start and deploy; the agent should still connect (unit-tested only) |
 | `agent_over_http` | A profile whose boot image keeps `http://10.77.0.1` while HTTPS is on |
 | DER download | Settings → Admin → DER; opens as a certificate in Windows |
@@ -93,13 +93,19 @@ with the code 201 and the cookie stored by curl; `/clients` with the cookie
 `/users` 403 `not_for_api_tokens`, on health the full document; the request
 log names `cookie:labadmin` and `token:labadmin/smoke`.
 
-**Not yet tested:**
+**Lab, 2026-11-18** (the user, against `C:\netdeploy\data`): these
+**worked**:
 
 | Check | How |
 |---|---|
 | Upgrade of the lab server | Start on `C:\netdeploy\data`: migration 0014, a setup code in the log; create the account in the UI |
 | The web UI end to end | Setup page, sign-in, sign-out, Accounts page (add, set password, delete, tokens); `/events` and uploads with the cookie |
 | Kicked out at once | Two browsers signed in as the same account; change the password in one: the other shows the sign-in page within a second. Same for deleting the account and for signing out in another tab |
-| `just dev` over the LAN | `-dev` and the Vite proxy's `X-Forwarded-Host` |
 | `netdeployd admin reset-password` | Server stopped; then sign in with the new password |
+
+**Not yet tested:**
+
+| Check | How |
+|---|---|
+| `just dev` over the LAN | `-dev` and the Vite proxy's `X-Forwarded-Host` |
 | Lab scripts with a token | `running-the-lab.md` now sets `Authorization` for `Invoke-RestMethod` |

@@ -109,7 +109,7 @@ bundling it (ADR 0022), versioning shown in health and the UI.
 
 | Item | Status |
 |---|---|
-| Phase 1 tasks 7–8: physical I210 device and timing runs | Waiting for hardware; may change the TFTP defaults and whether WinPE needs the I210 driver |
+| ~~Phase 1 tasks 7–8: physical I210 device and timing runs~~ | Done 2026-11-18: deployed over HTTPS with the default TFTP settings and no I210 driver (inbox in 26H2 WinPE, both indexes); boot.wim over TFTP in about 12–15 s |
 | Proxy DHCP :4011 boot server path, `listenOn67: false` | Untested with real firmware |
 | Prompt timeout's `BootNext` preferring an existing partition | Unit-tested; not watched in the lab |
 | Stale firmware boot entries from before 2026-11-12 | Only removed by hand |

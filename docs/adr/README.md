@@ -34,5 +34,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0027](0027-unattend-templates.md) | Unattend templates | accepted |
 | [0028](0028-content-https.md) | Content HTTPS: an internal CA, sealed, trusted only by the agent | accepted |
 | [0029](0029-admin-authentication.md) | Admin authentication: local accounts, session cookies, API tokens | accepted |
+| [0030](0030-linux-hosts.md) | Linux hosts: a service account with two capabilities | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

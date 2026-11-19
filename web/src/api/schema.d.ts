@@ -1667,7 +1667,14 @@ export interface components {
              *     export`; without it they can't be restored on other hardware, ADR 0021),
              *     `admin_certificate_expiring` (the admin certificate expires within 30
              *     days, or has expired), `content_ca_expiring` (the content CA expires
-             *     within a year, or has expired; ADR 0028).
+             *     within a year, or has expired; ADR 0028), `missing_privileges` (the
+             *     server lacks a privilege a configured service needs: binding ports
+             *     below 1024, raw ICMP, or elevation for DISM; the message says which
+             *     and how to grant it; ADR 0030), `dhcp_ping_unavailable` (full-mode
+             *     DHCP has the ping check on but no ICMP socket can be opened, so
+             *     addresses are offered unchecked), `data_dir_permissions` (Linux:
+             *     the data directory or a key file in it can be read by other users,
+             *     or isn't owned by the server's account).
              */
             warnings?: {
                 code: string;
@@ -1767,6 +1774,24 @@ export interface components {
             contentHttps?: boolean;
             /** @description Windows hosts: whether the server runs elevated (DISM needs it). Always false on Linux. */
             elevated?: boolean;
+            /**
+             * @description What this process may do (ADR 0030). Linux: from its effective
+             *     capabilities (`CAP_NET_BIND_SERVICE`, `CAP_NET_RAW`) or root, and
+             *     `net.ipv4.ip_unprivileged_port_start`. Windows: elevation.
+             */
+            privileges?: {
+                /** @description May bind ports below 1024 (DHCP 67, TFTP 69, HTTP 80, HTTPS 443). */
+                lowPorts: boolean;
+                /**
+                 * @description How the DHCP ping check sends echo requests: `raw` (raw socket),
+                 *     `datagram` (Linux's unprivileged ICMP socket, allowed by
+                 *     `net.ipv4.ping_group_range`), or `none` (the check is skipped).
+                 * @enum {string}
+                 */
+                icmp: "raw" | "datagram" | "none";
+                /** @description Privileges to grant, e.g. `CAP_NET_RAW`; empty when nothing is missing. */
+                missing?: string[];
+            };
             /** @description The WinPE agent bundled with this server (ADR 0022). */
             agent?: {
                 version: string;
@@ -2624,7 +2649,13 @@ export interface components {
             protocol: "udp" | "tcp";
             port: number;
             message: string;
-            /** @description Process holding the port, when the OS can tell us (e.g. `svchost.exe (SharedAccess)`, `WDSServer`). */
+            /**
+             * @description Process holding the port, when the OS can tell us (ADR 0030): name and
+             *     PID, e.g. `dnsmasq (pid 812)` or `svchost.exe (pid 4120)`. From
+             *     `/proc` on Linux (processes of other accounts need `CAP_SYS_PTRACE`
+             *     and are otherwise left out) and the TCP/UDP owner tables on Windows.
+             *     Null when it can't be found.
+             */
             ownerProcess?: string | null;
         };
         /**

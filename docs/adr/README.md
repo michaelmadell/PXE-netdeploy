@@ -35,5 +35,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0028](0028-content-https.md) | Content HTTPS: an internal CA, sealed, trusted only by the agent | accepted |
 | [0029](0029-admin-authentication.md) | Admin authentication: local accounts, session cookies, API tokens | accepted |
 | [0030](0030-linux-hosts.md) | Linux hosts: a service account with two capabilities | accepted |
+| [0031](0031-packaging.md) | Packaging: an Inno Setup installer and a .deb | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

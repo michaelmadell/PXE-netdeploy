@@ -1645,6 +1645,12 @@ export interface components {
             /** @enum {string} */
             status: "ok" | "degraded" | "down";
             /**
+             * @description The server's version (a release tag such as `0.6.0`, or
+             *     `0.6.0-3-gabc1234` between releases; ADR 0031). Only for a signed-in
+             *     caller, like everything but the statuses.
+             */
+            version?: string;
+            /**
              * @description Keyed by service: `store` (the database), `storage` (the content
              *     store), `admin`, `dhcp`, `tftp`, `content`. `storage`
              *     is `error` when the content store is unusable or a stored file is
@@ -1673,8 +1679,11 @@ export interface components {
              *     and how to grant it; ADR 0030), `dhcp_ping_unavailable` (full-mode
              *     DHCP has the ping check on but no ICMP socket can be opened, so
              *     addresses are offered unchecked), `data_dir_permissions` (Linux:
-             *     the data directory or a key file in it can be read by other users,
-             *     or isn't owned by the server's account).
+             *     the data directory, the database or a key file in it can be read by
+             *     other users, or isn't owned by the server's account; Windows: its
+             *     access list lets Everyone, Authenticated Users, Users or Interactive
+             *     read it, which matters because the secrets key is protected with
+             *     machine-scope DPAPI; ADR 0030, 0031).
              */
             warnings?: {
                 code: string;

@@ -181,9 +181,16 @@ the Cowork VM):
 
 | Check | How |
 |---|---|
-| The installer, fresh install | Run it elevated on a host without netdeployd running: pages, finish page with the setup code, service Running/Automatic, access list, firewall rule, wimlib and DISM in capabilities |
-| The installer, upgrade and uninstall | A second build over the first (no questions, service restarted); uninstall with and without moving the data |
-| The service under the SCM | Stop/start from services.msc; kill the process and watch the recovery action restart it |
-| The `.deb` in CI | `scripts/deb-smoke.sh`: install, capabilities from the unit, reconfigure to 127.0.0.1:9443, purge moves the data, reinstall starts fresh |
-| The `.deb` on `nd-linux` | Replace the hand-made unit: `sudo systemctl disable --now netdeploy`, remove `/etc/systemd/system/netdeploy.service`, install the `.deb` (it keeps `/var/lib/netdeploy`) |
+| The `.deb` in CI | `scripts/deb-smoke.sh`: install, capabilities from the unit, reconfigure to 127.0.0.1:9443, purge moves the data, reinstall starts fresh. First run (2026-11-19) failed on the test's own check, below; fixed, to rerun |
+| The service's recovery actions | Kill `netdeployd.exe` and watch the SCM restart it |
 | The release workflow | Push a `v*` tag: wimlib download and hash check, ISCC from Chocolatey, the GitHub release |
+
+**Lab, 2026-11-19** (the user): **the packages work**: the Windows
+installer and the `.deb`.
+
+**First CI run, 2026-11-19:** the `.deb` installed and the service started,
+but `deb-smoke.sh` failed "admin not on all networks": given `0.0.0.0:8443`,
+Go listens dual-stack (the log says `https://[::]:8443`) and `ss` prints
+`*:8443`, not `0.0.0.0:8443`. The check now accepts `*`, `[::]` and
+`0.0.0.0`. The Windows job was cancelled by the matrix's fail-fast, not
+broken; CI now runs with `fail-fast: false`.

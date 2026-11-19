@@ -22,7 +22,9 @@ grep -q "setup code" /tmp/deb-install.log || fail "postinst didn't print the set
 systemctl is-active --quiet netdeploy || fail "service not active"
 [ "$(sudo stat -c '%a %U' $data)" = "700 netdeploy" ] || fail "data directory $(sudo stat -c '%a %U' $data)"
 wait_up
-ss -ltn | grep -q '0.0.0.0:8443' || fail "admin not on all networks (the debconf default)"
+# All networks: Go listens dual-stack, so ss shows *:8443 or [::]:8443 (or 0.0.0.0:8443).
+ss -ltnH 'sport = :8443' | awk '{print $4}' | grep -Eq '^(\*|0\.0\.0\.0|\[::\]):8443$' ||
+  fail "admin not on all networks (the debconf default): $(ss -ltnH 'sport = :8443' | awk '{print $4}')"
 
 code="$(sudo sed -n 2p $data/setup-code.txt)"
 curl -sk -c "$jar" -H 'Content-Type: application/json' -H "Origin: $origin" \
@@ -44,8 +46,10 @@ echo "--- reconfigure: this computer only, port 9443"
 echo "netdeploy netdeploy/admin-access select this computer only" | sudo debconf-set-selections
 echo "netdeploy netdeploy/admin-port string 9443" | sudo debconf-set-selections
 sudo DEBIAN_FRONTEND=noninteractive dpkg-reconfigure netdeploy >/dev/null
-for _ in $(seq 1 50); do ss -ltn | grep -q '127.0.0.1:9443' && break; sleep 0.2; done
-ss -ltn | grep -q '127.0.0.1:9443' || fail "admin not moved to 127.0.0.1:9443"
+for _ in $(seq 1 50); do ss -ltnH 'sport = :9443' | grep -q '127.0.0.1:9443' && break; sleep 0.2; done
+ss -ltnH 'sport = :9443' | awk '{print $4}' | grep -qx '127.0.0.1:9443' ||
+  fail "admin not moved to 127.0.0.1:9443: $(ss -ltnH | awk '{print $4}' | grep -E ':(8443|9443)$')"
+ss -ltnH 'sport = :8443' | grep -q . && fail "still listening on 8443 after the move"
 
 echo "--- purge"
 sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y netdeploy >/tmp/deb-purge.log 2>&1 || { cat /tmp/deb-purge.log; fail "purge"; }

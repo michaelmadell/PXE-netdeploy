@@ -50,7 +50,7 @@ func (s *Server) ReplaceSettings(ctx context.Context, req api.ReplaceSettingsReq
 	case errors.As(err, &berr):
 		fields := make([]fieldError, len(berr.Failures))
 		for i, f := range berr.Failures {
-			fields[i] = fieldError{f.Field, fmt.Sprintf("%s %s/%d on %s: %s", f.Service, f.Protocol, f.Port, f.Interface, f.Message)}
+			fields[i] = fieldError{f.Field, fmt.Sprintf("%s %s/%d on %s: %s", f.Service, f.Protocol, f.Port, f.Interface, f.Detail())}
 		}
 		slog.Warn("settings not applied: bind failed", "err", err)
 		return api.ReplaceSettings422ApplicationProblemPlusJSONResponse(newProblem(http.StatusUnprocessableEntity,

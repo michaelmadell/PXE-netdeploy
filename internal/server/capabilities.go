@@ -28,6 +28,13 @@ func (s *Server) GetCapabilities(ctx context.Context, _ api.GetCapabilitiesReque
 	defer s.caps.mu.Unlock()
 	if s.caps.at.IsZero() || time.Since(s.caps.at) > capsTTL {
 		s.caps.caps = probeCapabilities(ctx, s.version, s.boot, "")
+		p := s.privileges()
+		missing := append([]string{}, p.Missing...)
+		s.caps.caps.Privileges = &struct {
+			Icmp     api.CapabilitiesPrivilegesIcmp `json:"icmp"`
+			LowPorts bool                           `json:"lowPorts"`
+			Missing  *[]string                      `json:"missing,omitempty"`
+		}{Icmp: api.CapabilitiesPrivilegesIcmp(p.ICMP), LowPorts: p.LowPorts, Missing: &missing}
 		s.caps.at = time.Now()
 	}
 	return api.GetCapabilities200JSONResponse(s.caps.caps), nil

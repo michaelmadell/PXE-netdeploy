@@ -13,6 +13,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
+	"github.com/michaelmadell/pxe-netdeploy/internal/hostcheck"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
@@ -47,6 +48,8 @@ type Server struct {
 	caps     capsCache
 	agent    agentState
 	auth     authState
+	dataDir  string
+	privs    func() hostcheck.Privileges
 }
 
 // Deps are the Server's dependencies. Any may be nil in tests of operations
@@ -67,8 +70,12 @@ type Deps struct {
 	// account exists.
 	Setup *SetupCode
 	// Dev relaxes the session cookie and Origin check for `just dev`.
-	Dev  bool
-	Host settings.HostLister // nil: settings.SystemHost
+	Dev bool
+	// DataDir is checked for permissions (Linux, ADR 0030); "" skips it.
+	DataDir string
+	// Privileges replaces the host probe in tests; nil probes once.
+	Privileges func() hostcheck.Privileges
+	Host       settings.HostLister // nil: settings.SystemHost
 }
 
 // New returns a Server.
@@ -78,7 +85,7 @@ func New(version string, d Deps) *Server {
 	}
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
 		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot,
-		ca: d.CA, host: d.Host, auth: authState{dev: d.Dev, setup: d.Setup}}
+		ca: d.CA, host: d.Host, auth: authState{dev: d.Dev, setup: d.Setup}, dataDir: d.DataDir, privs: d.Privileges}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
@@ -167,7 +174,11 @@ func serviceHealth(st netsvc.Status) api.ServiceHealth {
 		msgs := make([]string, len(st.Failures))
 		for i, f := range st.Failures {
 			fs[i] = api.BindFailure{Interface: f.Interface, Message: f.Message, Port: f.Port, Protocol: api.BindFailureProtocol(f.Protocol)}
-			msgs[i] = f.Message
+			if f.Owner != "" {
+				owner := f.Owner
+				fs[i].OwnerProcess = &owner
+			}
+			msgs[i] = f.Detail()
 		}
 		detail := strings.Join(msgs, "; ")
 		return api.ServiceHealth{Status: api.ServiceHealthStatusError, Detail: &detail, BindFailures: &fs}
@@ -233,6 +244,11 @@ func (s *Server) warnings() []warning {
 			w = append(w, *cw)
 		}
 	}
+	var dd []string
+	if s.dataDir != "" {
+		dd = hostcheck.DataDir(s.dataDir)
+	}
+	w = append(w, hostWarnings(cfg, s.privileges(), dd)...)
 	if len(cfg.Interfaces) > 0 && cfg.BootPrompt.DefaultProfileID == "" {
 		w = append(w, warning{"no_default_profile", "No default profile: clients without a profile of their own are not answered."})
 	}

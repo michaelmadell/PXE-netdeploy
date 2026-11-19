@@ -68,6 +68,7 @@ type options struct {
 }
 
 func main() {
+	privateFiles()
 	// Offline commands: netdeployd <command> [flags]. Without one, serve.
 	if len(os.Args) > 1 {
 		if cmd, ok := commands[os.Args[1]]; ok {
@@ -249,7 +250,7 @@ func run(o options) error {
 		slog.Warn("-dev: the session cookie isn't Secure; for development only")
 	}
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
-		Vault: vault, Backup: backups, Boot: boot, CA: ca, Setup: setup, Dev: o.dev})
+		Vault: vault, Backup: backups, Boot: boot, CA: ca, Setup: setup, Dev: o.dev, DataDir: o.dataDir})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}

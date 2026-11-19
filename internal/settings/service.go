@@ -141,7 +141,7 @@ func (s *Service) Start(ctx context.Context) error {
 	failures, err := s.opts.Network.Start(ctx, plan)
 	for _, f := range failures {
 		s.log.Error("listener not started", "service", f.Service, "interface", f.Interface,
-			"proto", f.Protocol, "port", f.Port, "err", f.Message)
+			"proto", f.Protocol, "port", f.Port, "err", f.Message, "owner", f.Owner)
 	}
 	if err != nil && s.opts.AdminOverride.IsValid() {
 		return err

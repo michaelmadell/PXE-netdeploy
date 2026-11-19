@@ -16,8 +16,10 @@ type Pinger interface {
 	Ping(ctx context.Context, ip net.IP, timeout time.Duration) (bool, error)
 }
 
-// icmpPinger sends one ICMP echo over a raw socket. That needs root on Linux
-// and administrator on Windows (to verify on Windows), as port 67 does.
+// icmpPinger sends one ICMP echo: over a raw socket when the process may
+// open one (root or CAP_NET_RAW on Linux, elevated on Windows), else over
+// Linux's unprivileged ICMP datagram socket when net.ipv4.ping_group_range
+// allows it (ADR 0030).
 type icmpPinger struct{}
 
 const (
@@ -25,8 +27,38 @@ const (
 	icmpEchoReply = 0
 )
 
-func (icmpPinger) Ping(ctx context.Context, ip net.IP, timeout time.Duration) (bool, error) {
+// ICMP modes (Capabilities.privileges.icmp).
+const (
+	ICMPRaw      = "raw"
+	ICMPDatagram = "datagram"
+	ICMPNone     = "none"
+)
+
+// listenICMP opens the best ICMP socket this process may: raw, then
+// datagram. err is the raw socket's error when neither opens.
+func listenICMP() (net.PacketConn, string, error) {
 	c, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	if err == nil {
+		return c, ICMPRaw, nil
+	}
+	if d, derr := listenDatagramICMP(); derr == nil {
+		return d, ICMPDatagram, nil
+	}
+	return nil, ICMPNone, err
+}
+
+// ProbeICMP reports which ICMP socket the ping check can use.
+func ProbeICMP() string {
+	c, mode, err := listenICMP()
+	if err != nil {
+		return ICMPNone
+	}
+	c.Close()
+	return mode
+}
+
+func (icmpPinger) Ping(ctx context.Context, ip net.IP, timeout time.Duration) (bool, error) {
+	c, mode, err := listenICMP()
 	if err != nil {
 		return false, err
 	}
@@ -37,7 +69,11 @@ func (icmpPinger) Ping(ctx context.Context, ip net.IP, timeout time.Duration) (b
 		return false, err
 	}
 	id, seq := binary.BigEndian.Uint16(idb[:2]), binary.BigEndian.Uint16(idb[2:])
-	if _, err := c.WriteTo(echoRequest(id, seq), &net.IPAddr{IP: ip}); err != nil {
+	var to net.Addr = &net.IPAddr{IP: ip}
+	if mode == ICMPDatagram {
+		to = &net.UDPAddr{IP: ip}
+	}
+	if _, err := c.WriteTo(echoRequest(id, seq), to); err != nil {
 		return false, err
 	}
 
@@ -50,7 +86,8 @@ func (icmpPinger) Ping(ctx context.Context, ip net.IP, timeout time.Duration) (b
 	}
 	buf := make([]byte, 1500)
 	for {
-		// The net package strips the IPv4 header from raw ICMP reads.
+		// The net package strips the IPv4 header from raw ICMP reads; a
+		// datagram socket never had one.
 		n, peer, err := c.ReadFrom(buf)
 		if err != nil {
 			var ne net.Error
@@ -59,13 +96,21 @@ func (icmpPinger) Ping(ctx context.Context, ip net.IP, timeout time.Duration) (b
 			}
 			return false, err
 		}
-		pa, ok := peer.(*net.IPAddr)
-		if !ok || !pa.IP.Equal(ip) || n < 8 {
+		var from net.IP
+		switch pa := peer.(type) {
+		case *net.IPAddr:
+			from = pa.IP
+		case *net.UDPAddr:
+			from = pa.IP
+		}
+		if !from.Equal(ip) || n < 8 || buf[0] != icmpEchoReply || binary.BigEndian.Uint16(buf[6:]) != seq {
 			continue
 		}
-		if buf[0] == icmpEchoReply && binary.BigEndian.Uint16(buf[4:]) == id && binary.BigEndian.Uint16(buf[6:]) == seq {
-			return true, nil
+		// A datagram socket's kernel replaces the identifier with its own.
+		if mode == ICMPRaw && binary.BigEndian.Uint16(buf[4:]) != id {
+			continue
 		}
+		return true, nil
 	}
 }
 

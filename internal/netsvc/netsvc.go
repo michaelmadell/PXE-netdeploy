@@ -24,6 +24,7 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
+	"github.com/michaelmadell/pxe-netdeploy/internal/portowner"
 	"github.com/michaelmadell/pxe-netdeploy/internal/tftp"
 )
 
@@ -94,6 +95,17 @@ type BindFailure struct {
 	Port      int
 	Message   string
 	Field     string // from the plan, e.g. "interfaces[1].services.tftp"
+	// Owner is the process holding the port, "name (pid N)", when the OS
+	// says (ADR 0030); "" otherwise.
+	Owner string
+}
+
+// Detail is the message with the port's owner, when known.
+func (f BindFailure) Detail() string {
+	if f.Owner != "" {
+		return f.Message + " (in use by " + f.Owner + ")"
+	}
+	return f.Message
 }
 
 // BindError reports every listener a Plan could not start.
@@ -102,7 +114,7 @@ type BindError struct{ Failures []BindFailure }
 func (e *BindError) Error() string {
 	msgs := make([]string, len(e.Failures))
 	for i, f := range e.Failures {
-		msgs[i] = fmt.Sprintf("%s %s/%d on %s: %s", f.Service, f.Protocol, f.Port, f.Interface, f.Message)
+		msgs[i] = fmt.Sprintf("%s %s/%d on %s: %s", f.Service, f.Protocol, f.Port, f.Interface, f.Detail())
 	}
 	return "netsvc: " + strings.Join(msgs, "; ")
 }
@@ -297,6 +309,7 @@ func (m *Manager) prepare(plan Plan) (*prepared, error) {
 	fail := func(svc, iface, proto string, port uint16, field string, err error) {
 		p.failures = append(p.failures, BindFailure{
 			Service: svc, Interface: iface, Protocol: proto, Port: int(port), Message: err.Error(), Field: field,
+			Owner: portowner.Lookup(proto, int(port)),
 		})
 	}
 

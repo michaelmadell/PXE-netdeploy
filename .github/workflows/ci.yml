@@ -19,8 +19,14 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm, cache-dependency-path: web/pnpm-lock.yaml }
       - uses: extractions/setup-just@v3
+      # Linux hosts need these from the distribution (ADR 0030); the wimlib
+      # test and the smoke test below use them.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y wimtools cabextract
       - run: pnpm --dir web install --frozen-lockfile
       - run: just check-drift
       - run: just lint
       - run: just test
       - run: just build
+      - if: runner.os == 'Linux'
+        run: bash scripts/linux-smoke.sh dist/netdeployd-linux-amd64

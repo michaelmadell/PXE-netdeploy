@@ -17,13 +17,20 @@ func TestChecksum(t *testing.T) {
 	}
 }
 
-// TestICMPPinger needs raw sockets (root on Linux, an elevated shell on
-// Windows); it is skipped when the socket can't be opened.
+// TestICMPPinger needs a raw socket (root or CAP_NET_RAW on Linux, an
+// elevated shell on Windows) or, on Linux, the datagram ICMP socket
+// (net.ipv4.ping_group_range, open on most distributions and CI); it is
+// skipped when neither opens.
 func TestICMPPinger(t *testing.T) {
 	ctx := context.Background()
+	mode := ProbeICMP()
+	t.Logf("ICMP socket: %s", mode)
 	alive, err := icmpPinger{}.Ping(ctx, net.IPv4(127, 0, 0, 1), time.Second)
 	if err != nil {
-		t.Skipf("raw ICMP unavailable here: %v", err)
+		if mode != ICMPNone {
+			t.Fatalf("%s socket opened for the probe but the ping failed: %v", mode, err)
+		}
+		t.Skipf("no ICMP socket here: %v", err)
 	}
 	if !alive {
 		t.Error("127.0.0.1 didn't answer")

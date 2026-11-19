@@ -18,6 +18,7 @@ import { lazy, Suspense } from "react";
 import { NavLink, Route, Routes } from "react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, type Schemas } from "@/api/client";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/misc";
 import { useServerEvents } from "@/lib/events";
@@ -130,6 +131,8 @@ function Shell({ user }: { user: Schemas["User"] }) {
           </ul>
         </nav>
         <div className="mt-auto border-t border-sidebar-border px-4 py-3">
+          <ThemeToggle />
+          <hr className="-mx-4 my-3 border-sidebar-border" />
           <p className="truncate text-sm font-medium" title={user.username}>
             {user.username}
           </p>

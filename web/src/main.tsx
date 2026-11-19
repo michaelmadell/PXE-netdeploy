@@ -5,12 +5,9 @@ import { BrowserRouter } from "react-router";
 import { queryClient } from "./api/query";
 import { App } from "./App";
 import "./index.css";
+import { initTheme } from "./lib/theme";
 
-// Follow the OS light/dark preference (shadcn/ui uses the .dark class).
-const dark = window.matchMedia("(prefers-color-scheme: dark)");
-const applyTheme = () => document.documentElement.classList.toggle("dark", dark.matches);
-applyTheme();
-dark.addEventListener("change", applyTheme);
+initTheme();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

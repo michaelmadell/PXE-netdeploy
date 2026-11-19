@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* shadcn/ui expects class-based dark mode; main.tsx sets .dark from the OS preference. */
+/* shadcn/ui expects class-based dark mode; lib/theme.ts sets .dark (light, dark, or the OS preference). */
 @custom-variant dark (&:is(.dark *));
 
 /*
@@ -12,62 +12,62 @@
 */
 :root {
   --radius: 0.5rem;
-  --background: oklch(0.985 0.002 230);
-  --foreground: oklch(0.22 0.01 240);
-  --card: oklch(1 0 0);
+  --background: oklch(95.213% 0.00011 271.152);
+  --foreground: oklch(0% 0 0);
+  --card: oklch(100% 0.00011 271.152 / 0.771);
   --card-foreground: var(--foreground);
   --popover: oklch(1 0 0);
   --popover-foreground: var(--foreground);
-  --primary: oklch(0.47 0.075 215);
-  --primary-foreground: oklch(0.985 0 0);
+  --primary: oklch(0% 0 0);
+  --primary-foreground: oklch(100% 0.00011 271.152);
   --secondary: oklch(0.95 0.005 230);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(0.95 0.005 230);
+  --muted: oklch(86.995% 0.0001 271.152 / 0.825);
   --muted-foreground: oklch(0.5 0.015 240);
-  --accent: oklch(0.94 0.015 215);
+  --accent: oklch(77.311% 0.00009 271.152 / 0.72);
   --accent-foreground: var(--foreground);
-  --destructive: oklch(0.55 0.2 27);
-  --border: oklch(0.9 0.006 230);
-  --input: oklch(0.9 0.006 230);
-  --ring: oklch(0.47 0.075 215);
-  --success: oklch(0.55 0.13 150);
-  --warning: oklch(0.68 0.14 75);
-  --sidebar: oklch(0.965 0.004 230);
+  --destructive: oklch(54.239% 0.22258 29.223);
+  --border: oklch(74.443% 0.00008 271.152);
+  --input: var(--border);
+  --ring: oklch(48.906% 0.00006 271.152);
+  --success: oklch(71.829% 0.23741 142.519);
+  --warning: oklch(73.343% 0.15372 73.22);
+  --sidebar: var(--card);
   --sidebar-foreground: var(--foreground);
-  --sidebar-accent: oklch(0.92 0.01 220);
+  --sidebar-accent: oklch(81.406% 0.00009 271.152 / 0.555);
   --sidebar-border: var(--border);
   /* Code editor (components/CodeEditor.tsx). */
-  --cm-tag: oklch(0.45 0.12 250);
-  --cm-attr: oklch(0.5 0.12 300);
-  --cm-value: oklch(0.48 0.11 150);
+  --cm-tag: oklch(54.055% 0.16414 252.501);
+  --cm-attr: oklch(50.015% 0.29417 284.081);
+  --cm-value: oklch(64.243% 0.19595 145.903);
   --cm-comment: oklch(0.55 0.01 240);
   --cm-action: oklch(0.52 0.15 45);
 }
 
 .dark {
-  --background: oklch(0.19 0.008 240);
-  --foreground: oklch(0.94 0.004 230);
-  --card: oklch(0.23 0.009 240);
+  --background: black;
+  --foreground: white;
+  --card: #151515;
   --card-foreground: var(--foreground);
-  --popover: oklch(0.23 0.009 240);
+  --popover: var(--card);
   --popover-foreground: var(--foreground);
-  --primary: oklch(0.72 0.08 210);
-  --primary-foreground: oklch(0.19 0.008 240);
-  --secondary: oklch(0.27 0.01 240);
+  --primary: oklch(100% 0.00011 271.152);
+  --primary-foreground: black;
+  --secondary: oklch(73.481% 0.00008 271.152);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(0.27 0.01 240);
-  --muted-foreground: oklch(0.7 0.012 235);
-  --accent: oklch(0.3 0.02 220);
+  --muted: oklch(50.676% 0.00006 271.152 / 0.533);
+  --muted-foreground: oklch(77.577% 0.00189 248.909);
+  --accent: oklch(65.335% 0.00007 271.152);
   --accent-foreground: var(--foreground);
-  --destructive: oklch(0.65 0.19 25);
-  --border: oklch(0.32 0.01 240);
-  --input: oklch(0.32 0.01 240);
-  --ring: oklch(0.72 0.08 210);
-  --success: oklch(0.72 0.14 150);
-  --warning: oklch(0.8 0.14 80);
-  --sidebar: oklch(0.21 0.008 240);
+  --destructive: oklch(62.862% 0.25702 29.345);
+  --border: oklch(34.458% 0.00004 271.152);
+  --input: var(--border);
+  --ring: oklch(100% 0.00011 271.152);
+  --success: oklch(86.881% 0.29145 141.923);
+  --warning: oklch(78.741% 0.17146 69.116);
+  --sidebar: var(--card);
   --sidebar-foreground: var(--foreground);
-  --sidebar-accent: oklch(0.29 0.015 225);
+  --sidebar-accent: oklch(65.335% 0.00007 271.152 / 0.268);
   --sidebar-border: var(--border);
   --cm-tag: oklch(0.75 0.1 245);
   --cm-attr: oklch(0.76 0.1 305);

@@ -31,6 +31,18 @@ func TestRenderName(t *testing.T) {
 			t.Errorf("%s: %q %v", c.pattern, got, err)
 		}
 	}
+	// No real serial: the MAC without colons instead.
+	for _, serial := range []string{"", "Undefined", " To Be Filled By O.E.M. ", "Default string", "0000000000", "System Serial Number"} {
+		nd := NameData{Client: NameClient{Serial: serial, MAC: "00:15:5d:c8:79:09"}}
+		if got, err := RenderName(`Lab-{{ .Client.Serial | last 6 }}`, nd); err != nil || got != "Lab-c87909" {
+			t.Errorf("serial %q: %q %v", serial, got, err)
+		}
+	}
+	for _, real := range []string{"2445-9723-3519-7592-0227-8071-05", "CZC1234XYZ", "5CG0"} {
+		if PlaceholderSerial(real) {
+			t.Errorf("%q taken for a placeholder", real)
+		}
+	}
 	if _, err := RenderName(`12345`, d); !errors.Is(err, ErrInvalidName) {
 		t.Errorf("all digits: %v", err)
 	}

@@ -60,6 +60,11 @@ func RenderName(pattern string, d NameData) (string, error) {
 	if d.Variables == nil {
 		d.Variables = map[string]string{}
 	}
+	// Firmware that leaves the serial unset reports filler such as
+	// "Undefined" ("LAB-ined"); the MAC without colons names it instead.
+	if PlaceholderSerial(d.Client.Serial) {
+		d.Client.Serial = strings.ReplaceAll(strings.ReplaceAll(d.Client.MAC, ":", ""), "-", "")
+	}
 	// A field the client doesn't have would silently render as nothing
 	// ("LAB-"): render once with a marker in the empty fields to catch it.
 	const marker = "\x00"
@@ -111,4 +116,23 @@ func CheckName(name string) error {
 		return fmt.Errorf("%w: %q can't start or end with a hyphen (it is also the DNS host name)", ErrInvalidName, name)
 	}
 	return nil
+}
+
+// placeholderSerials is filler firmware reports when the maker never set a
+// serial (SMBIOS), compared ignoring case and surrounding spaces.
+var placeholderSerials = map[string]bool{
+	"undefined": true, "default string": true, "to be filled by o.e.m.": true, "to be filled by oem": true,
+	"system serial number": true, "chassis serial number": true, "serial number": true, "not specified": true,
+	"not applicable": true, "not available": true, "n/a": true, "na": true, "none": true, "null": true,
+	"invalid": true, "unknown": true, "oem": true, "0123456789": true, "123456789": true, "1234567890": true,
+}
+
+// PlaceholderSerial reports a serial that isn't one: empty, firmware filler
+// text, or one character repeated ("00000000", "XXXXXXXX", "        ").
+func PlaceholderSerial(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" || placeholderSerials[s] {
+		return true
+	}
+	return strings.Count(s, s[:1]) == len(s)
 }

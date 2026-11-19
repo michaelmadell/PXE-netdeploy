@@ -22,6 +22,9 @@ const (
 	BootImageUpdated  = "bootImage.updated"
 	ProfileUpdated    = "profile.updated"
 	DeploymentUpdated = "deployment.updated"
+	// SessionEnded goes only to the streams of the session or token that
+	// ended (ADR 0029).
+	SessionEnded = "session.ended"
 )
 
 // Event is one notification. Data is marshalled as the Event's `data`.

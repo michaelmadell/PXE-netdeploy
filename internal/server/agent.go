@@ -242,7 +242,11 @@ func (s *Server) AgentCheckIn(ctx context.Context, req api.AgentCheckInRequestOb
 		mac = c.MAC
 	}
 	ipStr := ip.String()
-	sg := store.Sighting{MAC: mac, SMBIOSUUID: b.SmbiosUuid, Serial: b.Serial}
+	serial := b.Serial
+	if serial != nil && unattend.PlaceholderSerial(*serial) {
+		serial = nil // "Undefined" and the like: no serial at all
+	}
+	sg := store.Sighting{MAC: mac, SMBIOSUUID: b.SmbiosUuid, Serial: serial}
 	if ip.IsValid() {
 		sg.IP = &ipStr
 	}

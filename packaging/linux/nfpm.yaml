@@ -1,0 +1,48 @@
+# The Ubuntu/Debian package (ADR 0031). scripts/package.ps1 fills in
+# ${NETDEPLOY_DEB_VERSION}, ${NETDEPLOY_ARCH} (amd64|arm64) and ${NETDEPLOY_BIN}.
+name: netdeploy
+arch: ${NETDEPLOY_ARCH}
+platform: linux
+version: ${NETDEPLOY_DEB_VERSION}
+version_schema: none
+section: net
+priority: optional
+maintainer: Michael Madell <netdeploy@users.noreply.github.com>
+description: |
+  Network deployment server for Windows 11 under Secure Boot.
+  PXE (built-in DHCP: off, proxy or full), TFTP, HTTP and HTTPS content,
+  boot images built with wimlib, and a WinPE agent that applies images,
+  drivers and unattend files. One binary with the web UI built in.
+homepage: https://github.com/michaelmadell/pxe-netdeploy
+license: TBD
+depends:
+  - wimtools
+  - debconf (>= 0.5) | debconf-2.0
+  - systemd
+recommends:
+  - cabextract
+contents:
+  - src: ${NETDEPLOY_BIN}
+    dst: /usr/bin/netdeployd
+    file_info: { mode: 0755 }
+  - src: packaging/linux/netdeploy.service
+    dst: /usr/lib/systemd/system/netdeploy.service
+    file_info: { mode: 0644 }
+  - src: packaging/linux/netdeploy.sysusers
+    dst: /usr/lib/sysusers.d/netdeploy.conf
+    file_info: { mode: 0644 }
+  - src: packaging/linux/netdeploy.default
+    dst: /etc/default/netdeploy
+    type: config|noreplace
+    file_info: { mode: 0644 }
+  - src: packaging/linux/copyright
+    dst: /usr/share/doc/netdeploy/copyright
+    file_info: { mode: 0644 }
+scripts:
+  postinstall: packaging/linux/postinst
+  preremove: packaging/linux/prerm
+  postremove: packaging/linux/postrm
+deb:
+  scripts:
+    config: packaging/linux/config
+    templates: packaging/linux/templates

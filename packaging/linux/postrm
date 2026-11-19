@@ -1,0 +1,29 @@
+#!/bin/sh
+# ADR 0031: purge never deletes the data (one Windows image is ~20 GB, and the
+# secrets key is in it): it is moved aside so a reinstall starts fresh.
+set -e
+data=/var/lib/netdeploy
+
+case "$1" in
+remove)
+	systemctl daemon-reload 2>/dev/null || true
+	;;
+purge)
+	systemctl daemon-reload 2>/dev/null || true
+	if [ -d "$data" ]; then
+		kept="$data.purged-$(date -u +%Y%m%dT%H%M%SZ)"
+		mv "$data" "$kept"
+		echo "netdeploy: the data (images, settings, secrets key) was moved to $kept, not deleted."
+		echo "netdeploy: to use it again: install netdeploy, sudo systemctl stop netdeploy,"
+		echo "netdeploy:   sudo rm -rf $data && sudo mv $kept $data, sudo systemctl start netdeploy."
+		echo "netdeploy: to free the space: sudo rm -rf $kept"
+	fi
+	# The netdeploy account stays (Debian keeps system accounts): files left
+	# behind keep a known owner.
+	if [ -e /usr/share/debconf/confmodule ]; then
+		. /usr/share/debconf/confmodule
+		db_purge || true
+	fi
+	;;
+esac
+exit 0

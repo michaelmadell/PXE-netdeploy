@@ -1,0 +1,50 @@
+# Releases (ADR 0031): a v* tag builds the Windows installer and the .deb
+# packages and attaches them to a GitHub release. Unsigned for now.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  WIMLIB_VERSION: "1.14.5"
+  # The unmodified binaries we bundle; update with WIMLIB_VERSION.
+  WIMLIB_IMAGEX_SHA256: "34c0c4165591ad1f592837ed99d08273c58d6ed3fe0ed6360cf34e7b0739b353"
+  LIBWIM_SHA256: "ba853ee1e3fc5f5798581f02e8e066ba07a0a2375f0bf444fe981431fd508495"
+
+jobs:
+  packages:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: pnpm/action-setup@v4
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: web/pnpm-lock.yaml }
+      - uses: extractions/setup-just@v3
+      - name: Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: wimlib (bundled in the installer)
+        shell: pwsh
+        run: |
+          $zip = "wimlib-$env:WIMLIB_VERSION-windows-x86_64-bin.zip"
+          Invoke-WebRequest "https://wimlib.net/downloads/$zip" -OutFile $zip
+          Expand-Archive $zip .tmp/wimlib -Force
+          foreach ($f in @(@('wimlib-imagex.exe', $env:WIMLIB_IMAGEX_SHA256), @('libwim-15.dll', $env:LIBWIM_SHA256))) {
+            $h = (Get-FileHash ".tmp/wimlib/$($f[0])" -Algorithm SHA256).Hash.ToLower()
+            if ($h -ne $f[1]) { throw "$($f[0]): SHA-256 $h, expected $($f[1])" }
+          }
+      - run: pnpm --dir web install --frozen-lockfile
+      - run: just test
+      - run: just package -RequireInstaller
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/netdeploy-*-setup.exe
+            dist/netdeploy_*.deb
+          generate_release_notes: true

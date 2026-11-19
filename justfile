@@ -48,6 +48,10 @@ dev-web:
 build:
     ./scripts/build.ps1
 
+# Release packages into ./dist: Windows installer (needs Inno Setup) and .deb files (ADR 0031). Example: just package -SkipBuild
+package *args:
+    ./scripts/package.ps1 {{args}}
+
 # Fail if generated code is out of date with the spec (used in CI)
 check-drift: gen
     git diff --exit-code -- internal/api web/src/api/schema.d.ts go.mod go.sum

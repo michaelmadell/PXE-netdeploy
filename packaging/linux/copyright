@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: netdeploy
+Source: https://github.com/michaelmadell/pxe-netdeploy
+
+Files: *
+Copyright: 2026 Michael Madell
+License: TBD
+ The project's licence has not been chosen yet; see the repository.

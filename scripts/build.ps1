@@ -7,8 +7,8 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 
-$version = (git describe --tags --always --dirty 2>$null)
-if (-not $version) { $version = 'dev' }
+# From git tags: see scripts/version.ps1 (ADR 0031).
+$version = (& ./scripts/version.ps1).Version
 Write-Host "Version $version" -ForegroundColor Cyan
 
 pnpm --dir web build

@@ -1,0 +1,2 @@
+# The account netdeploy runs as (ADR 0030).
+u netdeploy - "netdeploy server" /var/lib/netdeploy /usr/sbin/nologin

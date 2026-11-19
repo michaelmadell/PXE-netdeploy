@@ -1,0 +1,13 @@
+wimlib-imagex.exe and libwim-15.dll in this folder are unmodified binaries
+of wimlib, from the Windows release at https://wimlib.net/ .
+
+netdeploy runs wimlib-imagex as a separate program to build boot images.
+
+Licences: wimlib-imagex is distributed under the GNU General Public
+License, version 3 or later (COPYING.GPLv3.txt); libwim may be used under
+that licence or the GNU Lesser General Public License, version 2.1 or later
+(COPYING.LGPL.txt). See COPYING.txt.
+
+Source code: the same version's source is at https://wimlib.net/downloads/
+(wimlib-<version>.tar.gz); the version is in README-wimlib.txt and is
+printed by "wimlib-imagex --version".

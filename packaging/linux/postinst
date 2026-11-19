@@ -1,0 +1,62 @@
+#!/bin/sh
+# ADR 0031: account, data directory, admin address, service.
+set -e
+. /usr/share/debconf/confmodule
+
+data=/var/lib/netdeploy
+
+admin_address() {
+	db_get netdeploy/admin-access
+	case "$RET" in
+	"this computer only") ip=127.0.0.1 ;;
+	*) ip=0.0.0.0 ;;
+	esac
+	db_get netdeploy/admin-port
+	port="$RET"
+	case "$port" in
+	'' | *[!0-9]*) port=8443 ;;
+	esac
+	if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then port=8443; fi
+	echo "$ip:$port"
+}
+
+case "$1" in
+configure | reconfigure)
+	systemd-sysusers netdeploy.conf
+	install -d -o netdeploy -g netdeploy -m 700 "$data"
+
+	# The admin address: on a fresh install, and when reconfigured.
+	if [ -z "$2" ] || [ "$1" = reconfigure ] || [ -n "$DEBCONF_RECONFIGURE" ]; then
+		systemctl stop netdeploy.service 2>/dev/null || true
+		runuser -u netdeploy -- /usr/bin/netdeployd admin set-address -data "$data" "$(admin_address)"
+	fi
+
+	systemctl daemon-reload || true
+	if [ -z "$2" ]; then
+		systemctl enable netdeploy.service || true
+	fi
+	if [ -d /run/systemd/system ]; then
+		systemctl restart netdeploy.service || true
+	fi
+
+	# Where to go next: the setup code while no account exists.
+	i=0
+	while [ $i -lt 10 ] && [ ! -e "$data/setup-code.txt" ] && [ -z "$2" ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	addr="$(admin_address)"
+	port="${addr##*:}"
+	host="$(hostname -f 2>/dev/null || hostname)"
+	case "$addr" in 127.0.0.1:*) host=localhost ;; esac
+	if [ -e "$data/setup-code.txt" ]; then
+		echo "netdeploy: open https://$host:$port and create the first account with setup code $(sed -n 2p "$data/setup-code.txt")"
+		echo "netdeploy: (also in $data/setup-code.txt; readable with sudo)"
+	else
+		echo "netdeploy: running; admin web UI at https://$host:$port (status: systemctl status netdeploy)"
+	fi
+	;;
+esac
+
+db_stop || true
+exit 0

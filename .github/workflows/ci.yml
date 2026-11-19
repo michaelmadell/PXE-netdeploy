@@ -12,6 +12,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 } # tags, for the version (git describe)
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
       - uses: pnpm/action-setup@v4
@@ -30,3 +31,9 @@ jobs:
       - run: just build
       - if: runner.os == 'Linux'
         run: bash scripts/linux-smoke.sh dist/netdeployd-linux-amd64
+      # The .deb (ADR 0031): install, reconfigure, purge, reinstall as root
+      # with systemd, on the throwaway runner.
+      - if: runner.os == 'Linux'
+        run: just package -SkipBuild
+      - if: runner.os == 'Linux'
+        run: bash scripts/deb-smoke.sh dist/netdeploy_*_amd64.deb

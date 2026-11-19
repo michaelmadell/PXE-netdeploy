@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+case "$1" in
+remove)
+	systemctl disable --now netdeploy.service 2>/dev/null || true
+	;;
+esac
+exit 0

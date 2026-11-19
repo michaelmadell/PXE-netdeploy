@@ -5,3 +5,4 @@
 # Generated files: collapse in diffs, still reviewable on demand
 internal/api/api.gen.go linguist-generated=true
 web/src/api/schema.d.ts linguist-generated=true
+*.iss text eol=crlf

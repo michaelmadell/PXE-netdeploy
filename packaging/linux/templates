@@ -1,0 +1,17 @@
+Template: netdeploy/admin-access
+Type: select
+Choices: all networks, this computer only
+Default: all networks
+Description: Where should the admin web UI listen?
+ netdeploy's admin web UI and API need a signed-in account (the first one is
+ created with a setup code shown after installation).
+ .
+ "all networks" listens on every address of this machine; "this computer
+ only" listens on 127.0.0.1, reachable from elsewhere through an SSH tunnel.
+ You can change it later in Settings, or with dpkg-reconfigure netdeploy.
+
+Template: netdeploy/admin-port
+Type: string
+Default: 8443
+Description: Admin web UI port:
+ The HTTPS port for the admin web UI and API.

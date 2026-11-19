@@ -1,0 +1,14 @@
+# Extra flags for netdeployd (see `netdeployd -h`). This file is kept on
+# upgrade. Restart after changing it: sudo systemctl restart netdeploy
+#
+# The admin address lives in the stored settings (Settings in the web UI, or
+# with the server stopped: sudo -u netdeploy netdeployd admin set-address
+# -data /var/lib/netdeploy 0.0.0.0:8443; `dpkg-reconfigure netdeploy` does that).
+#
+# A content store on another volume needs write access there too, because the
+# unit makes the rest of the file system read-only:
+#   sudo install -d -o netdeploy -g netdeploy -m 700 /srv/netdeploy-content
+#   sudo systemctl edit netdeploy     # add:  [Service]
+#                                     #       ReadWritePaths=/srv/netdeploy-content
+#   NETDEPLOY_ARGS="-content /srv/netdeploy-content"
+NETDEPLOY_ARGS=""

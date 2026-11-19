@@ -109,3 +109,48 @@ log names `cookie:labadmin` and `token:labadmin/smoke`.
 |---|---|
 | `just dev` over the LAN | `-dev` and the Vite proxy's `X-Forwarded-Host` |
 | Lab scripts with a token | `running-the-lab.md` now sets `Authorization` for `Invoke-RestMethod` |
+
+## Linux host (decision 4, ADR 0030)
+
+**Automated, 2026-11-19:**
+
+- Windows lab host: `go test -count=1 ./...`, `just lint`, `just build`.
+  `TestWimlibSetupImage` with the real wimlib-imagex 1.14.5: a synthetic
+  two-image boot.wim (boot index 2) exported at index 2, updated with
+  `config.json` and `winpeshl.ini`, exported again: one bootable image, still
+  the Setup image, with the added files and the 2023 boot manager.
+  `TestICMPPinger` used a raw socket (unelevated shell).
+- **On a Linux kernel** (the Cowork Linux VM on the lab host: Ubuntu 22.04,
+  kernel 6.8, an ordinary user, no capabilities, `ping_group_range` closed):
+  test binaries cross-compiled with `GOOS=linux CGO_ENABLED=0` for `hostcheck`,
+  `portowner`, `dhcp`, `netsvc`, `server`, `settings`, `store`, `bootimage`,
+  `contentca` all passed. The probe reported `lowPorts: false`, `icmp: none`,
+  missing `CAP_NET_BIND_SERVICE` and `CAP_NET_RAW`, as expected for that
+  user. `TestLookupOwnSockets` found the test's own TCP and UDP sockets
+  through `/proc`; `TestLookupProc` a fake `/proc` with dnsmasq on UDP 67.
+- **The Linux binary** on that VM (`scripts/linux-smoke.sh` with
+  `NETDEPLOY_SMOKE_NO_TOOLS=1`: no wimtools or cabextract there): data
+  directory `0700`, `setup-code.txt` `0600` and in the log, setup, token,
+  `hostOs: linux`, DISM unavailable with its reason, `privileges` as above,
+  health `ok` with no `data_dir_permissions`. **Passed.**
+
+**Lab VM, 2026-11-19** (the user: `nd-linux`, Ubuntu, `netdeploy` service
+account with the two capabilities, systemd unit from `running-the-lab.md`):
+
+| Check | Result |
+|---|---|
+| Capabilities | **As expected**: `lowPorts: true`, ICMP raw, nothing missing |
+| Port owner | **Worked**: the `422` named the process holding the port |
+| `data_dir_permissions` | **Worked in the API** (the directory at `755` named with its mode and the fix). The Overview listed it only under "Things to check" at the bottom, with the status still "ok", so it looked missing. Changed: the status reads "ok, N things to check" in the warning colour and the list sits under it |
+| File modes | SQLite created `netdeploy.db` `644` (and `admin-cert.pem` `644`): readable by anyone once the directory is opened. Changed: the server sets umask `077` at start, the check covers the database, the lab unit has `UMask=0077` |
+| Lab setup | A stuck host adapter on `NetDeployLab` ("media disconnected" while Internal) and `eth1` unmanaged by networkd delayed the run; the service's first start failed with `203/EXEC` (systemd couldn't run the binary) |
+
+**Not yet run:**
+
+| Check | How |
+|---|---|
+| CI on Ubuntu | Push: wimtools and cabextract installed, `TestWimlibSetupImage` with the distribution's wimlib, the datagram ICMP socket (`ping_group_range` open on the runners), `scripts/linux-smoke.sh` with the tool checks |
+| The lab VM end to end | `running-the-lab.md`, "A Linux host": Ubuntu 24.04 VM, service account with the two capabilities, ISO import, wimlib build of index 2, HTTPS, deploy `nd-client-01` |
+| `missing_privileges` in the lab | The unit without its two capability lines |
+| The fixes above | Overview's status with warnings; a fresh data directory has `netdeploy.db` `600` |
+| Windows `ownerProcess` on a real conflict | E.g. HTTP 80 held by `http.sys` (expect `System (pid 4)`) |

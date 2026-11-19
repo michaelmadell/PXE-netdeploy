@@ -91,6 +91,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0027 | Unattend templates: whole-document Go templates over the built-in's data, auto XML-escaping, previews never decrypt (`********`), checks per identity mode on save and when arming, one built-in template in code (`builtin`), copied into each deployment. |
 | 0028 | Content HTTPS: one internal CA (RSA-3072, ten years) made when HTTPS is first enabled, its key sealed with the secrets key and in backups; an in-memory server certificate for the HTTPS addresses and boot images' https hosts; `serverUrls` all http or all https; the agent trusts only the CA, at the later of its clock and the CA's start; CA fingerprint is a build input. Custom certificate and CA rotation deferred. |
 | 0029 | Admin authentication: named local accounts (full admin, argon2id) with session cookies for the UI (`__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`, 8 h idle, 7 days max, Origin check) and `ndt_` bearer tokens for automation (hashed, shown once, can't manage accounts or tokens); first account from a setup code in the log and `setup-code.txt`; offline `admin reset-password`; health without auth is status only. |
+| 0030 | Linux hosts: a non-root service account with `CAP_NET_BIND_SERVICE` and `CAP_NET_RAW`; privileges reported in capabilities and health (`missing_privileges`) instead of only bind failures; ping check falls back to Linux's unprivileged ICMP socket (`dhcp_ping_unavailable` otherwise); `ownerProcess` from `/proc` and the Windows owner tables; data directory permission checks; CI on Ubuntu with wimtools. iPXE and non-Windows OSs moved to a phase of their own. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -179,8 +180,10 @@ tenant) and the SMB install method (only if needed). Results:
 from [plan/phase-6-handover.md](plan/phase-6-handover.md): what Phase 5
 established, the decisions to make, and what carries over. Decision 1,
 content HTTPS (ADR 0028), is built and lab-tested (2026-11-18). Decision 3,
-admin authentication (ADR 0029), is built, unit-tested and smoke-tested
-against the binary; its lab checks are in
+admin authentication (ADR 0029), is built and lab-tested. Decision 4, now
+the Linux host only (ADR 0030; iPXE and non-Windows OSs are a phase of their
+own), is built and tested on a Linux kernel; the lab run is in
+[dev/running-the-lab.md](dev/running-the-lab.md) and its checks in
 [spikes/phase-6-findings.md](spikes/phase-6-findings.md).
 
 ## Open questions and things to verify
@@ -198,7 +201,7 @@ against the binary; its lab checks are in
 | Proxy :4011 boot server path and `listenOn67: false` with real firmware | Firmware that does boot server discovery (physical hardware) |
 | ~~ICMP ping check with raw sockets on Windows~~ | Answered: works from an elevated shell (`TestICMPPinger` passes on the Windows host) |
 | ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
-| iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | Phase 6 |
+| iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | The non-Windows phase (moved out of Phase 6, ADR 0030) |
 | ~~The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator~~ | Done (Phase 2 step 2): `server.RequestValidator`, 400 with per-field `errors[]` |
 | Raw Go error text appears in problem `detail` fields | |
 | ~~Real DISM and wimlib builds of the Win11 boot.wim; the 2023 boot manager with the `Fonts_EX` set; wimlib-added files without security descriptors in WinPE~~ | Answered 2026-11-08: both build and boot on `nd-win`; the agent starts ([spikes/phase-4-findings.md](spikes/phase-4-findings.md)) |

@@ -153,8 +153,9 @@ Notes:
 Each interface with `services.http` (default port 80) gets a content listener
 on its address. It serves only `/content/boot/{path}` (the requesting
 client's boot content, chosen as for TFTP) and the agent API; the admin API
-answers `404` there. HTTPS is planned for Phase 6 (`services.https: true` is
-refused). If port 80 is taken on the host (IIS, for example), set `httpPort`.
+answers `404` there. `services.https` adds the same over TLS (ADR 0028). If
+port 80 is taken on the host (IIS, for example), set `httpPort`; the `422`
+names the process holding it (ADR 0030).
 
 Check from `nd-linux`:
 
@@ -715,3 +716,163 @@ images built before this change show `stale` (`recipe`) and
 `canAddOsDrivers` empty until rebuilt; changing `sourceIndex` from 1 to 2 marks it stale
 (`source-index`).
 
+
+## A Linux host (Phase 6, ADR 0030)
+
+Runs the whole server in an Ubuntu VM on `NetDeployLab` as a non-root service
+account with two capabilities, and deploys `nd-client-01` from it. The VM is
+a second netdeploy server with its own data: images, boot images and
+profiles are made again there.
+
+**Only one DHCP server on the lab switch.** Stop the Windows host's
+netdeployd (or set its interface's DHCP to `off`) for as long as the Linux
+server serves `NetDeployLab`, and start it again afterwards.
+
+### 1. The VM (Hyper-V host, elevated PowerShell)
+
+If `nd-linux` from Phases 1–2 still exists, reuse it: skip to step 3, but
+first `sudo systemctl disable --now dnsmasq` there (the proxy-mode test's
+DHCP server) and check `eth1` is still `10.77.0.2/24`.
+
+Otherwise download Ubuntu Server 24.04 LTS (`ubuntu-24.04.x-live-server-amd64.iso`),
+then:
+
+```powershell
+$iso = 'D:\ISOs\ubuntu-24.04.3-live-server-amd64.iso'   # your path
+New-VM -Name nd-linux -Generation 2 -MemoryStartupBytes 4GB -SwitchName 'Default Switch' `
+  -NewVHDPath 'C:\Hyper-V\nd-linux.vhdx' -NewVHDSizeBytes 80GB
+Set-VMProcessor nd-linux -Count 2
+Set-VMFirmware nd-linux -SecureBootTemplate MicrosoftUEFICertificateAuthority   # Linux needs the third-party CA
+Add-VMNetworkAdapter -VMName nd-linux -SwitchName NetDeployLab -Name lab
+Add-VMDvdDrive -VMName nd-linux -Path $iso
+Set-VMFirmware nd-linux -FirstBootDevice (Get-VMDvdDrive nd-linux)
+Get-VMNetworkAdapter nd-linux | Format-Table Name, SwitchName, MacAddress, DhcpGuard
+Start-VM nd-linux; vmconnect localhost nd-linux
+```
+
+80 GB leaves room for one Windows ISO (~9 GB), its extracted content and
+boot images. `DhcpGuard` must stay `Off` on the `lab` adapter (the default),
+or the VM's DHCP offers are dropped.
+
+In the installer: the default (Default Switch) adapter on DHCP, the
+`NetDeployLab` adapter left unconfigured (it gets an address below), **Install
+OpenSSH server** ticked, and a user of your choice (`labuser` below). After
+the reboot, remove the ISO: `Get-VMDvdDrive nd-linux | Set-VMDvdDrive -Path $null`.
+
+### 2. The lab address (in the VM)
+
+Find the lab adapter by its MAC from step 1 (Hyper-V shows `00155D...`, Linux
+`00:15:5d:...`):
+
+```bash
+ip -br link            # e.g. eth0 (Default Switch), eth1 (NetDeployLab)
+ip -br -4 addr show eth0   # the address to reach the VM from the host
+sudo tee /etc/netplan/60-netdeploy-lab.yaml >/dev/null <<'YAML'
+network:
+  version: 2
+  ethernets:
+    eth1:
+      dhcp4: false
+      addresses: [10.77.0.2/24]
+YAML
+sudo chmod 600 /etc/netplan/60-netdeploy-lab.yaml
+sudo netplan apply
+ping -c1 10.77.0.1     # the Windows host on the lab switch
+```
+
+Replace `eth1` with the name `ip -br link` showed.
+
+### 3. Packages and the binary
+
+```bash
+sudo apt update && sudo apt install -y wimtools cabextract
+wimlib-imagex --version | head -1
+```
+
+On the Windows host, build and copy the Linux binary (`just build` writes
+`dist\netdeployd-linux-amd64`, with the UI and agents inside):
+
+```powershell
+scp dist\netdeployd-linux-amd64 labuser@<VM eth0 address>:netdeployd
+```
+
+### 4. The service account and unit (in the VM)
+
+Packaging (decision 5) will ship these; for now, by hand:
+
+```bash
+sudo useradd --system --home-dir /var/lib/netdeploy --shell /usr/sbin/nologin netdeploy
+sudo install -d -o netdeploy -g netdeploy -m 700 /var/lib/netdeploy
+sudo install -m 755 ~/netdeployd /usr/local/bin/netdeployd
+sudo tee /etc/systemd/system/netdeploy.service >/dev/null <<'UNIT'
+[Unit]
+Description=netdeploy (lab)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=netdeploy
+Group=netdeploy
+# Admin UI on every address of the VM: lab only. Normally a management address.
+ExecStart=/usr/local/bin/netdeployd -data /var/lib/netdeploy -admin-addr 0.0.0.0:8443
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=yes
+UMask=0077
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now netdeploy
+journalctl -u netdeploy -n 30 --no-pager | grep -E 'setup_code|error'
+```
+
+The server sets its own umask to `077` (the unit's `UMask=` is a second
+line of defence), so everything it creates is private. A data directory
+from a build before 2026-11-19 has a world-readable `netdeploy.db`: health
+warns `data_dir_permissions` until you `sudo chmod 600
+/var/lib/netdeploy/netdeploy.db*`.
+
+The log line `no admin account yet ... setup_code=XXXXX-XXXXX` has the code
+(also in `/var/lib/netdeploy/setup-code.txt`, readable only by `netdeploy`:
+`sudo cat` it).
+
+Ubuntu's `ufw` is off by default. If it's on:
+`sudo ufw allow in on eth1 proto udp to any port 67,69,4011`,
+`sudo ufw allow in on eth1 proto tcp to any port 80,443` and
+`sudo ufw allow in on eth0 proto tcp to any port 8443`.
+
+### 5. Set it up and deploy (from the Windows host's browser)
+
+Stop the Windows host's netdeployd first (see the top of this section).
+
+1. Open `https://<VM eth0 address>:8443`, accept the self-signed
+   certificate, create the account with the setup code.
+2. **Settings → Network:** add interface `eth1`, DHCP **full** with pool
+   `10.77.0.100`–`10.77.0.199`, mask `255.255.255.0`, ping check on; TFTP,
+   HTTP and **HTTPS** on. Save. Overview's health should have **no**
+   `missing_privileges`, `dhcp_ping_unavailable` or `data_dir_permissions`
+   warnings; `GET /api/v1/system/capabilities` shows
+   `"privileges":{"icmp":"raw","lowPorts":true,"missing":[]}` and wimlib
+   available.
+3. **Images:** upload `Win 11 26H2.iso`; wait for the import.
+4. **Boot images:** new, from that image (index 2 by default), server address
+   `https://10.77.0.2` (suggested); build. This is the check that the
+   distribution's wimlib exports and updates the Setup image like the Windows
+   build (`canAddOsDrivers: true`).
+5. **Profiles:** one with that boot image, Windows 11 Pro; make it the default.
+6. Boot `nd-client-01` from the network (arm a deployment, or use the boot
+   prompt). It should deploy as from the Windows host.
+
+### 6. Linux-specific checks
+
+| Check | How | Expect |
+|---|---|---|
+| Port owner | `sudo -u netdeploy python3 -m http.server 8080 --bind 10.77.0.2 &`, then set the interface's HTTP port to 8080 and save | `422` naming `python3 (pid N)`; stop it with `kill %1` |
+| Data directory | `sudo chmod 755 /var/lib/netdeploy`; Overview within 5 s | Status "ok, N things to check" and `data_dir_permissions` at the top; `sudo chmod 700 /var/lib/netdeploy` clears it |
+| No capabilities | Comment out the two capability lines, `sudo systemctl daemon-reload && sudo systemctl restart netdeploy` | `missing_privileges` naming DHCP 67, TFTP 69, HTTP 80, HTTPS 443; `dhcp_ping_unavailable` unless the datagram socket is allowed (`sysctl net.ipv4.ping_group_range`). Put the lines back afterwards |
+
+When finished: `sudo systemctl stop netdeploy` in the VM (or shut it down),
+then start the Windows host's netdeployd again.

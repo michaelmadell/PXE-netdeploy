@@ -85,6 +85,10 @@ stays. The agent API already has its own tokens (ADR 0025).
 
 ### 4. Linux host and iPXE paths
 
+> 2026-11-19: narrowed to the Linux host (ADR 0030). iPXE with the signed
+> shim, ISO9660 media and non-Windows install flows move to a phase of their
+> own.
+
 DHCP/TFTP on Linux were proven in Phase 1; Phase 6 makes the whole server
 run there: wimlib-only builds, the 0600 secrets key (ADR 0021), plain
 ISO9660 media (refused until now, ADR 0018), raw-socket ping. iPXE with
@@ -113,7 +117,7 @@ bundling it (ADR 0022), versioning shown in health and the UI.
 | Proxy DHCP :4011 boot server path, `listenOn67: false` | Untested with real firmware |
 | Prompt timeout's `BootNext` preferring an existing partition | Unit-tested; not watched in the lab |
 | Stale firmware boot entries from before 2026-11-12 | Only removed by hand |
-| `ownerProcess` in bind failures | Always empty |
+| ~~`ownerProcess` in bind failures~~ | Filled from `/proc` (Linux) and the TCP/UDP owner tables (Windows), ADR 0030 |
 | `cloudsoda/go-smb2` | Pinned by commit; NTLM tested, Kerberos not |
 | Backups don't include `secrets.key` by design | The UI and health say to run `netdeployd key export` once |
 | Raw Go error text in problem `detail` fields | Open |

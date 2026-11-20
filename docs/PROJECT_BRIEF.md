@@ -14,6 +14,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 | What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | What Phase 2 lab runs measured | [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | What Phase 6 measured | [spikes/phase-6-findings.md](spikes/phase-6-findings.md) |
+| What Phase 7 measured | [spikes/phase-7-findings.md](spikes/phase-7-findings.md) |
 | Setup and dev workflow | [dev/getting-started.md](dev/getting-started.md) |
 | Test lab | [dev/test-environments.md](dev/test-environments.md) |
 
@@ -195,6 +196,11 @@ from netdeployd's own DHCP answer (2026-11-20). **Phase 6 is done.**
 **Phase 7: non-Windows operating systems.** Start from
 [plan/phase-7-handover.md](plan/phase-7-handover.md), with a spike: booting
 a Secure Boot Linux installer through the signed iPXE chain.
+Decision 1 spike in progress (2026-11-20): on OVMF with Secure Boot, iPXE's
+`shim` command with Ubuntu's own shim boots the Ubuntu 26.04.1 kernel, and
+an autoinstall started from NoCloud with progress on Subiquity's webhook;
+the NUC runs and the end of the install are still to do
+([spikes/phase-7-findings.md](spikes/phase-7-findings.md), "Still to do").
 
 ## Open questions and things to verify
 

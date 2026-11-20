@@ -73,6 +73,10 @@ staleness that follows a CA change.
 
 ### 2. HTTPS boot (UEFI HTTP Boot over TLS) and the HTTP Boot ISO
 
+> 2026-11-20: built (ADR 0032). The NUC's firmware runs EFI programs only,
+> so HTTP(S) Boot goes through the signed iPXE shim, iPXE and wimboot rather
+> than a RAM-disk ISO. The ISO is kept for later.
+
 Phase 1 task 9 (HTTP Boot of a RAM-disk ISO) was never run; `produceHttpBootIso`
 is refused. Firmware must trust the CA (`/settings/content-ca` as DER for
 enrolment). Spike first on QEMU/OVMF or real hardware.

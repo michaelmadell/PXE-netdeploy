@@ -1,6 +1,8 @@
 # 2. Windows boots without a shim
 
-Status: accepted
+Status: accepted. Narrowed by [0032](0032-https-boot-ipxe.md) (2026-11-20):
+this applies to PXE. HTTP(S) Boot clients, which firmware can't hand to the
+Windows boot manager directly, go through the signed iPXE shim and wimboot.
 
 ## Context
 Many machines, notably Secured-core PCs, trust only the Microsoft Windows CA and

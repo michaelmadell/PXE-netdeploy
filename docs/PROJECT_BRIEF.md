@@ -93,6 +93,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0029 | Admin authentication: named local accounts (full admin, argon2id) with session cookies for the UI (`__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`, 8 h idle, 7 days max, Origin check) and `ndt_` bearer tokens for automation (hashed, shown once, can't manage accounts or tokens); first account from a setup code in the log and `setup-code.txt`; offline `admin reset-password`; health without auth is status only. |
 | 0030 | Linux hosts: a non-root service account with `CAP_NET_BIND_SERVICE` and `CAP_NET_RAW`; privileges reported in capabilities and health (`missing_privileges`) instead of only bind failures; ping check falls back to Linux's unprivileged ICMP socket (`dhcp_ping_unavailable` otherwise); `ownerProcess` from `/proc` and the Windows owner tables; data directory permission checks; CI on Ubuntu with wimtools. iPXE and non-Windows OSs moved to a phase of their own. |
 | 0031 | Packaging: an Inno Setup installer (LocalSystem service, private data folder, admin address and firewall asked at install, wimlib bundled, uninstall moves data aside) and a `.deb` (sysusers account, hardened unit with two capabilities, debconf admin address, purge moves data aside); versions from git tags; the generated admin certificate renewed at start; a `v*` tag publishes a GitHub release. Unsigned for now. |
+| 0032 | HTTP(S) Boot through the signed iPXE chain: Microsoft-signed shim (ipxe-16.1, 2011 + 2023 CAs) → iPXE-signed `ipxe.efi` → a generated script → wimboot → the same bootmgfw/BCD/boot.wim as PXE, served from `/content/boot/ipxe/<arch>/`. DHCP answers `HTTPClient` with the `https://` URL when the interface serves HTTPS. Bundled with pinned hashes. Narrows ADR 0002 to PXE. The RAM-disk ISO is kept for later. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -187,8 +188,10 @@ own), is built and lab-tested on `nd-linux`. Decision 5, packaging (ADR 0031),
 is built: the installer and `.deb`s build with `just package`; installing
 them is the next lab step ([dev/running-the-lab.md](dev/running-the-lab.md),
 "Installing from the packages"; checks in
-[spikes/phase-6-findings.md](spikes/phase-6-findings.md)). Left in Phase 6:
-decision 2, HTTPS boot (a spike first).
+[spikes/phase-6-findings.md](spikes/phase-6-findings.md)). Decision 2, HTTPS
+boot (ADR 0032), is built after a spike that booted WinPE over HTTPS on an
+Intel NUC through the iPXE chain. Its lab run is next ("HTTP(S) Boot" in the
+lab guide). After that, Phase 6 is done: write the Phase 7 handover.
 
 ## Open questions and things to verify
 
@@ -198,14 +201,14 @@ decision 2, HTTPS boot (a spike first).
 | ~~DHCP broadcast reception on Windows with a socket bound to the interface IP~~ | Answered: works |
 | ~~Whether Hyper-V's Secure Boot templates trust the Windows UEFI CA 2023~~ | Answered: `MicrosoftWindows` does; `MicrosoftUEFICertificateAuthority` has no Windows CA at all |
 | ~~Where recent Win11 media keeps the 2023-signed boot manager (`EFI_EX`)~~ | Answered: `Windows\Boot\EFI_EX\bootmgfw_EX.efi` inside boot.wim |
-| UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim | Phase 1 task 9 (optional, not done): QEMU/OVMF or real hardware |
+| ~~UEFI HTTP Boot of a RAM-disk ISO containing bootmgr + BCD + boot.wim~~ | Answered 2026-11-20: works on OVMF, but the NUC's firmware runs EFI programs only. HTTP(S) Boot goes through iPXE instead (ADR 0032); the ISO is kept for later |
 | ~~Final TFTP blksize/windowsize defaults; WinPE I210 driver need~~ | Answered 2026-11-18: a physical I210 machine boots and deploys with the 8192/8 defaults and no I210 driver (26H2 WinPE, either index, has one inbox); boot.wim over TFTP in about 12–15 s on 1 Gbit/s. [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | ~~Proxy DHCP mode against real firmware~~ | Answered for Hyper-V (2026-11-06): boots; the firmware uses the proxy offer's boot file and skips :4011. [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | ~~Option 97 byte order~~ | Answered: first three fields little-endian; `smbiosUuid` equals the VM's `BIOSGUID` |
 | Proxy :4011 boot server path and `listenOn67: false` with real firmware | Firmware that does boot server discovery (physical hardware) |
 | ~~ICMP ping check with raw sockets on Windows~~ | Answered: works from an elevated shell (`TestICMPPinger` passes on the Windows host) |
 | ~~TFTP `windowsize` support in the chosen Go TFTP library~~ | Answered: not in `pin/tftp/v3`; own server, ADR 0012 |
-| iPXE's Microsoft-signed shim (signed Nov 2025) for the non-Windows path | The non-Windows phase (moved out of Phase 6, ADR 0030) |
+| iPXE's Microsoft-signed shim for the non-Windows path | The non-Windows phase (moved out of Phase 6, ADR 0030). Windows HTTP(S) Boot already uses it (ADR 0032) |
 | ~~The generated code checks that parameters have the right type but not ranges, patterns or enums, so add the kin-openapi request validator~~ | Done (Phase 2 step 2): `server.RequestValidator`, 400 with per-field `errors[]` |
 | Raw Go error text appears in problem `detail` fields | |
 | ~~Real DISM and wimlib builds of the Win11 boot.wim; the 2023 boot manager with the `Fonts_EX` set; wimlib-added files without security descriptors in WinPE~~ | Answered 2026-11-08: both build and boot on `nd-win`; the agent starts ([spikes/phase-4-findings.md](spikes/phase-4-findings.md)) |

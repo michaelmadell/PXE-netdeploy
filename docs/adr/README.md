@@ -6,7 +6,7 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | accepted |
-| [0002](0002-separate-windows-boot-path.md) | Windows boots without a shim | accepted |
+| [0002](0002-separate-windows-boot-path.md) | Windows boots without a shim (PXE; narrowed by 0032) | accepted |
 | [0003](0003-go-for-server-and-agent.md) | Go for the server and the WinPE agent | accepted |
 | [0004](0004-spec-first-openapi-3.0.md) | Spec-first API with OpenAPI 3.0.3 | accepted |
 | [0005](0005-boot-image-builders.md) | Two boot image builders: DISM and wimlib | accepted |
@@ -36,5 +36,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0029](0029-admin-authentication.md) | Admin authentication: local accounts, session cookies, API tokens | accepted |
 | [0030](0030-linux-hosts.md) | Linux hosts: a service account with two capabilities | accepted |
 | [0031](0031-packaging.md) | Packaging: an Inno Setup installer and a .deb | accepted |
+| [0032](0032-https-boot-ipxe.md) | HTTP(S) Boot through the signed iPXE shim and wimboot | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

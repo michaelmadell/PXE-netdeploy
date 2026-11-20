@@ -150,7 +150,6 @@ account with the two capabilities, systemd unit from `running-the-lab.md`):
 
 | Check | How |
 |---|---|
-| CI on Ubuntu | Push: wimtools and cabextract installed, `TestWimlibSetupImage` with the distribution's wimlib, the datagram ICMP socket (`ping_group_range` open on the runners), `scripts/linux-smoke.sh` with the tool checks |
 | Windows `ownerProcess` on a real conflict | E.g. HTTP 80 held by `http.sys` (expect `System (pid 4)`) |
 
 ## Packaging (decision 5, ADR 0031)
@@ -181,7 +180,6 @@ the Cowork VM):
 
 | Check | How |
 |---|---|
-| The `.deb` in CI | `scripts/deb-smoke.sh`: install, capabilities from the unit, reconfigure to 127.0.0.1:9443, purge moves the data, reinstall starts fresh. First run (2026-11-19) failed on the test's own check, below; fixed, to rerun |
 | The service's recovery actions | Kill `netdeployd.exe` and watch the SCM restart it |
 | The release workflow | Push a `v*` tag: wimlib download and hash check, ISCC from Chocolatey, the GitHub release |
 
@@ -194,3 +192,161 @@ Go listens dual-stack (the log says `https://[::]:8443`) and `ss` prints
 `*:8443`, not `0.0.0.0:8443`. The check now accepts `*`, `[::]` and
 `0.0.0.0`. The Windows job was cancelled by the matrix's fail-fast, not
 broken; CI now runs with `fail-fast: false`.
+
+**CI, 2026-11-19, after the fix: passes on Ubuntu and Windows.** On Ubuntu
+that covers the Linux host checks (wimtools and cabextract,
+`TestWimlibSetupImage` with the distribution's wimlib, the datagram ICMP
+socket, `scripts/linux-smoke.sh` with the tool checks) and the `.deb`
+cycle in `scripts/deb-smoke.sh` (install as root with systemd, the unit's
+capabilities, reconfigure to 127.0.0.1:9443, purge moving the data aside,
+a fresh reinstall).
+
+## HTTPS boot spike (decision 2), stages 1–2: QEMU/OVMF
+
+**2026-11-19**, on the Windows lab host: QEMU 10 (winget), Debian's OVMF
+2025.02 (`OVMF_CODE_4M.fd`, no Secure Boot), QEMU's user-mode network (the
+host is `10.0.2.2`), the boot URL from its DHCP (`bootfile=`). A throwaway
+spike tool (`.tmp/httpboot-spike`, not committed) fetched the default
+profile's built boot image from the server's HTTP content listener, packed
+it, and served it over HTTP and HTTPS (its own RSA-3072 CA, RSA-2048 server
+certificate), logging every request and TLS ClientHello.
+
+| Run | Result |
+|---|---|
+| QEMU's bundled OVMF (Windows build) | No network boot at all: no network stack in that build |
+| Debian OVMF, no RNG device | Still none: since the PixieFAIL fixes the EDK II network stack needs an RNG and isn't loaded without one ([RHEL-58631](https://issues.redhat.com/browse/RHEL-58631)). `-device virtio-rng-pci` fixes it; `romfile=` keeps iPXE out so the firmware's own virtio-net driver and HTTP Boot are tested |
+| FAT32 image **without a partition table** (`.img`, `application/vnd.efi-img`) | Downloaded (713 MiB in 41 s), then "Invalid Parameter": not recognised, not even as a local disk |
+| **MBR disk, one EFI System Partition, FAT32** (`EFI/BOOT/BOOTX64.EFI` = the boot manager, the BCD at `EFI/Microsoft/Boot/BCD`, `Boot/boot.wim`, `Boot/boot.sdi`, fonts) over **HTTP** | **Worked.** `HEAD` then `GET` (`UefiHttpBoot/1.0`, 713 MiB in 45 s), RAM disk, the boot manager, **our BCD unchanged** (it names the boot device, not TFTP), boot.wim, Windows PE, the netdeploy agent. (The agent found no network adapter: WinPE has no virtio-net driver; a QEMU artefact.) Under WHPX the VM stopped in the Windows kernel ("Unexpected VP exit code 4"); TCG (`-cpu max`) ran through |
+| Same over **HTTPS**, the CA given to OVMF (`-fw_cfg name=etc/edk2/https/cacerts`, an `EFI_SIGNATURE_LIST`) | First **failed**: the firmware offers **TLS 1.2 at most, RSA and DHE key exchange only, no ECDHE** (`DHE-RSA-AES-GCM/CBC`, `RSA-AES-GCM`, `RSA-AES-CBC-SHA256/SHA`); Go has no DHE and leaves RSA key exchange out of its defaults since 1.22: "no cipher suite supported by both". With `TLS_RSA_WITH_AES_128_GCM_SHA256` and `..._256_GCM_SHA384` added: **worked**, `TLS_RSA_WITH_AES_128_GCM_SHA256`, 713 MiB in 45 s (as fast as HTTP) |
+| HTTPS **without** the CA | Handshake abandoned after the certificate (`EOF`), nothing downloaded: the firmware verifies |
+| ISO, Windows-media layout (IMAPI2: UDF + Joliet), El Torito `efisys_noprompt.bin` (cdboot) | Downloaded, then "No mapping": cdboot can't use a CD that exists only as a firmware RAM disk |
+| ISO whose El Torito image is the whole ESP | The boot manager started from the El Torito partition, then "BCD missing" (`0xc000000f`): on a CD it takes **the whole disc** as its boot device and reads its file system, not the partition |
+| **ISO, Windows-media layout, El Torito = a small FAT image holding our boot manager as `BOOTX64.EFI`** (BCD at `\EFI\Microsoft\Boot\BCD`, `\Boot\boot.wim`, `\Boot\boot.sdi` in the disc's UDF file system; 632 MB) | **Worked** to the Windows kernel (then WHPX's usual stop, as with the disk image) |
+| Same layout, **plain ISO 9660 only** (go-diskfs: no UDF, no Joliet) | "BCD missing": go-diskfs had truncated `MICROSOFT` to `MICROSOF` (level-1 names) |
+| The same disc with that one directory record patched to `MICROSOFT` | **Worked** to the Windows kernel: the boot manager reads plain ISO 9660 (names matched ignoring case, `;1` versions fine); it needs names longer than 8 characters, not UDF |
+
+Consequences for building it:
+
+- The image is an **MBR + ESP disk image**, not a superfloppy; an ISO only
+  if real firmware needs it.
+- The content HTTPS listener must **add the two RSA-GCM suites** (at least
+  for HTTP Boot requests), or firmware can't connect. RSA key exchange has
+  no forward secrecy; it is what firmware speaks.
+- The image is about the size of boot.wim plus 10 %, held in RAM twice by
+  the client (the RAM disk, then boot.wim): 4 GB was enough.
+
+- The image is an **ISO** in that last layout (the most widely supported
+  RAM-disk format; the disk image works in OVMF only), built in Go: plain
+  ISO 9660 with names up to 31 characters is enough (IMAPI2 is
+  Windows-only and far too slow with a large boot image; go-diskfs
+  truncates names to 8.3).
+
+## HTTPS boot spike, stage 3: Intel NUC (i5-1335U, I210 + I219), 2026-11-20
+
+The user, with the spike server on the lab host (`https://10.77.0.1:8444`),
+the spike CA (`ca.der`) enrolled in the NUC's setup, the URL typed into its
+HTTPS Boot setting (its HTTP Boot is HTTPS only).
+
+| Run | Result |
+|---|---|
+| TLS | **TLS 1.3**, `TLS_AES_128_GCM_SHA256`, ECDHE offered: unlike QEMU's OVMF, this firmware needs nothing beyond Go's defaults. The enrolled CA was accepted |
+| `netdeploy.img` (MBR + ESP), three times | Downloaded (713 MiB in 27–30 s), then back to setup |
+| `netdeploy2.iso` (the layout that works in QEMU) | Downloaded (632 MB in 24 s), then back to setup |
+| `bootmgfw.efi` alone | **Started** (Secure Boot on): black screen, as expected with no BCD to read over HTTP |
+| `netdeploy2.iso` with **Secure Boot off** | Back to setup again |
+
+**Conclusion:** this firmware's HTTPS Boot runs EFI programs only; it doesn't
+boot RAM-disk images (ISO or disk), whatever Secure Boot is set to. The
+boot manager can't fetch its BCD and boot.wim over HTTP itself (it needs
+PXE/TFTP), so on such firmware WinPE can only be HTTPS-booted through a
+signed intermediate loader that does the RAM disk (shim + iPXE `sanboot`,
+the non-Windows phase), not through firmware alone.
+
+## HTTPS boot spike, stage 4: iPXE shim chain on the NUC, 2026-11-20
+
+Same NUC, same spike server and CA, Secure Boot **on**. The URL is
+`https://10.77.0.1:8444/ipxe-shim.efi`. Files served flat from one directory:
+
+| File | Signed by | Source |
+|---|---|---|
+| `ipxe-shim.efi` | Microsoft Corporation UEFI CA 2011 (third-party CA) | iPXE v2.0.0 `ipxeboot.tar.gz`, `x86_64-sb/shimx64.efi` |
+| `ipxe.efi` | iPXE Secure Boot CA (production, "Automatic Code Signing G1A") | same archive, `x86_64-sb/ipxe.efi` |
+| `wimboot` | Microsoft Corporation UEFI CA 2011 | wimboot v2.9.0 |
+| `autoexec.ipxe` | — | ours: `kernel wimboot gui`, `initrd` bootmgfw.efi, BCD, boot.sdi, boot.wim, `boot` |
+| `bootmgfw.efi`, `BCD`, `boot.sdi`, `boot.wim` | — | the existing boot image, unchanged |
+
+**Result: WinPE booted** (the user: "Boots perfect, and slightly faster").
+
+What the server log shows:
+
+1. The firmware (`UefiHttpBoot/1.0`, TLS 1.3) sends HEAD + GET for `ipxe-shim.efi` (1 MB in 44 ms).
+2. The shim then fetches `revocations_sku.efi`, `revocations_sbat.efi` and `shim_certificate_0.efi` from the same directory. Returning 404 is fine; these are optional.
+3. The shim then fetches `ipxe.efi` over the firmware's HTTP stack.
+4. iPXE 2.0.0 opens **one** TLS 1.2 connection (`ECDHE_RSA_AES_128_GCM_SHA256`; it offers no TLS 1.3) and fetches `autoexec.ipxe` from its own directory. It trusts the CA held in the firmware's `TlsCaCertificate` variable, so no certificate needs embedding.
+5. On the same keep-alive connection it fetches `wimboot`, `bootmgfw.efi`, `BCD` and `boot.sdi`, then `boot.wim` (599 MB in 17.6 s, ~34 MB/s, compared with the 632 MB ISO in 24 s).
+6. wimboot hands the files to the boot manager in RAM. Our BCD (paths relative to `bootDevice()`) works unchanged.
+
+**Consequences for decision 2:**
+
+- No RAM-disk image needs building or storing. The HTTPS URL serves the same files as PXE, plus the shim, `ipxe.efi`, wimboot and a generated script.
+- This works on firmware that only runs EFI programs (the NUC). It should also work on OVMF, which still needs the RSA-GCM suites for its own TLS 1.2 fetch of the shim.
+- It requires the firmware to trust Microsoft's **third-party** UEFI CA. Machines locked to the Windows CA only (some Secured-core PCs) need that option enabled, or need plain PXE.
+- Under Secure Boot, only the precompiled signed `ipxe.efi`/`snponly.efi` can be used, not a custom build. The boot.ipxe.org bundle is test-signed only.
+- iPXE's TLS is 1.2 with ECDHE or RSA suites, so Go's defaults suffice for that part.
+
+**Signatures checked afterwards** (Authenticode certificate tables):
+
+| File | Signed by |
+|---|---|
+| iPXE v2.0.0 archive's `shimx64.efi` / `shimaa64.efi` (stage 4) | Microsoft UEFI CA **2011 only** |
+| `ipxe/shim` ipxe-16.1 `ipxe-shimx64.efi` / `ipxe-shimaa64.efi` | Microsoft UEFI CA 2011 **and 2023** |
+| wimboot v2.9.0 `wimboot` / `wimboot.arm64` | Microsoft UEFI CA 2011 and 2023 |
+| iPXE v2.0.0 `x86_64-sb/ipxe.efi`, `arm64-sb/ipxe.efi` | iPXE Secure Boot CA (production, G1A) |
+
+Firmware trusting only the 2023 CAs refuses the archive's shim, so ADR 0032
+bundles the ipxe-16.1 shims. Both builds have the same SBAT data
+(`shim,4`, `shim.ipxe,1`); only their signatures differ.
+
+**Re-test on the NUC.** Its DB holds Microsoft UEFI CA 2011 and 2023, Windows
+UEFI CA 2023, Windows Production PCA 2011, Option ROM UEFI CA 2023 and an
+ASUS key.
+
+- The first boot with the ipxe-16.1 shim (08:57) got a firmware **"Secure
+  Boot Violation"** box. It came after the whole chain had loaded: the log
+  shows the shim fetching `ipxe.efi`, then iPXE fetching every file through
+  `boot.wim`. So the firmware refused wimboot or `bootmgfw.efi` when they
+  were started, not the shim.
+- It couldn't be reproduced. Boots at 09:23 and 09:27 with the 2011-only
+  shim, and at 09:26 and 09:28 with the dual-signed shim, all worked.
+- The one difference in the log: the 08:47 and 08:57 boots had the shim
+  ask for `revocations_sku.efi` and `revocations_sbat.efi`, and every boot
+  since asks only for `shim_certificate_0.efi`. Something persistent changed
+  at that boot, most likely the shim writing its revocation state
+  (`SbatLevel`) on its first run. The violation is put down to that one-time
+  update.
+
+Still to try: a boot with the 2011 CA removed from DB, to prove the
+2023-only case.
+
+## HTTPS boot, built (decision 2, ADR 0032)
+
+Built 2026-11-20:
+
+- `internal/ipxe` reads `<dir>/<arch>/{ipxe-shim.efi, ipxe.efi, wimboot}` at
+  start and generates `autoexec.ipxe` per architecture.
+- Content listeners serve the chain at `/content/boot/ipxe/<arch>/` for every
+  client, ahead of the client's tree.
+- `boot.Profiles` answers HTTP Boot architectures with the shim's path and
+  the same tree as PXE. DHCP turns that into
+  `https://<addr>[:port]/content/boot/...` (or `http://`), or no answer with
+  the reason.
+- `capabilities.httpBoot` and the `http_boot_unavailable` health warning.
+- Content TLS now always adds the two RSA-GCM suites (tested with an RSA-kx
+  client).
+- `scripts/fetch-ipxe.ps1` (`just fetch-ipxe`) pins every hash. Both packages
+  ship the chain: `{app}\ipxe`, and `/usr/lib/netdeploy/ipxe`, whose
+  directories are 0755 because globs are used rather than a tree. `deb-smoke`
+  checks that capabilities list both architectures.
+
+Lab run: pending ("HTTP(S) Boot" in the lab guide).
+

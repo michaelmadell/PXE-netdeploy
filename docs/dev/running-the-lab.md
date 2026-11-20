@@ -11,6 +11,7 @@ Since Phase 2 step 2, network services come from the stored settings
 | `-log`, `-log-level` | Logging |
 | `-agent-dir` | Where a server built without `-tags agent` finds `agent-windows-<arch>.exe` (default `dist`, after `just build`) |
 | `-wimlib` | Path to `wimlib-imagex`; default: `wimlib\wimlib-imagex.exe` next to the server (the Windows installer puts it there), else PATH |
+| `-ipxe-dir` | The signed iPXE chain for HTTP(S) Boot (`<arch>/ipxe-shim.efi`, `ipxe.efi`, `wimboot`; ADR 0032). Default: `ipxe` next to the server (Windows installer), `/usr/lib/netdeploy/ipxe` (.deb), else `dist\ipxe` (`just fetch-ipxe` in a checkout) |
 | `-log-file` | Write the log to a file instead of standard output (the Windows service uses `<data>\logs\netdeployd.log`; moved to `.1` past 64 MiB at start) |
 
 Offline commands (server stopped): `key export|import`, `backup`, `restore`,
@@ -174,6 +175,46 @@ curl -s -o /dev/null -w '%{http_code}\n' http://10.77.0.1/api/v1/settings   # 40
 Status: tested on Linux loopback (2026-11-06: 200 MB at ~1 GB/s, byte-for-byte
 identical; `Range` 206; admin path 404) and across the lab switch from
 `nd-linux` (2026-11-06: all three checks as expected).
+
+## HTTP(S) Boot (Phase 6, ADR 0032)
+
+HTTP Boot clients get Microsoft-signed shim → iPXE-signed `ipxe.efi` →
+a generated `autoexec.ipxe` → Microsoft-signed `wimboot` → the same
+`bootmgfw.efi`, BCD and boot.wim a PXE client gets. The files are served
+from `/content/boot/ipxe/<arch>/` on every content listener.
+
+In a checkout, run `just fetch-ipxe` once: it downloads the chain into
+`dist\ipxe` and checks it against pinned SHA-256s. The packages ship it.
+`GET /system/capabilities` → `httpBoot` lists what was loaded. With
+`architectures.httpBoot` on and the chain missing, health warns
+`http_boot_unavailable`.
+
+The firmware needs:
+
+- Secure Boot trusting Microsoft's **third-party** UEFI CA. The 2023 one is
+  enough: the shim and wimboot carry both signatures. BIOS options are
+  named "Microsoft UEFI CA 2023", "Enable MS UEFI CA Key", or similar.
+- For HTTPS, the content CA enrolled: Settings → Content HTTPS → "DER (for firmware)",
+  then import it in the BIOS's HTTPS Boot certificate setting. iPXE
+  reads the same certificate from the firmware, so nothing else is needed.
+
+With our DHCP (full or proxy) on the interface, nothing needs typing in.
+The answer is `https://<interface address>[:httpsPort]/content/boot/ipxe/x64/ipxe-shim.efi`
+when the interface serves HTTPS, else the `http://` URL. Without our DHCP,
+type that URL into the firmware's HTTP Boot setting. The client then gets
+the default profile's boot image.
+
+Watch the log: `content served` lines for `ipxe/x64/ipxe-shim.efi`, then
+`ipxe.efi` and `autoexec.ipxe`, then the boot image's files with
+`ua` iPXE. The shim also asks for `revocations_sku.efi`,
+`revocations_sbat.efi` and `shim_certificate_0.efi`; the 404s for those are
+expected.
+
+Status: on the Intel NUC with Secure Boot on (spike, 2026-11-20), the chain
+booted WinPE over HTTPS with both the iPXE v2.0.0 shim and the dual-signed
+ipxe-16.1 shim. The first ipxe-16.1 boot once ended in a firmware "Secure
+Boot Violation" that didn't recur; if you see one, boot again. The server's
+own answer still needs a lab run.
 
 ## Proxy mode against real firmware (Phase 2 step 3)
 

@@ -73,7 +73,7 @@ staleness that follows a CA change.
 
 ### 2. HTTPS boot (UEFI HTTP Boot over TLS) and the HTTP Boot ISO
 
-> 2026-11-20: built (ADR 0032). The NUC's firmware runs EFI programs only,
+> 2026-11-20: built (ADR 0032) and lab-tested on the NUC over DHCP and HTTPS. The NUC's firmware runs EFI programs only,
 > so HTTP(S) Boot goes through the signed iPXE shim, iPXE and wimboot rather
 > than a RAM-disk ISO. The ISO is kept for later.
 

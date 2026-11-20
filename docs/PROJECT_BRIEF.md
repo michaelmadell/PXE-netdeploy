@@ -10,7 +10,7 @@ each decision lives in the ADRs, and the *what* in the spec.
 | Components, boot flows, roadmap | [architecture.md](architecture.md) |
 | Why each decision was made | [adr/](adr/README.md) |
 | The API (source of truth) | [../api/openapi.yaml](../api/openapi.yaml) |
-| What to build next | [plan/phase-6-handover.md](plan/phase-6-handover.md) |
+| What to build next | [plan/phase-7-handover.md](plan/phase-7-handover.md) |
 | What Phase 1 measured | [spikes/phase-1-findings.md](spikes/phase-1-findings.md) |
 | What Phase 2 lab runs measured | [spikes/phase-2-findings.md](spikes/phase-2-findings.md) |
 | What Phase 6 measured | [spikes/phase-6-findings.md](spikes/phase-6-findings.md) |
@@ -178,20 +178,23 @@ tenant) and the SMB install method (only if needed). Results:
 
 ## Next step
 
-**Phase 6: Linux and iPXE paths, content HTTPS, auth, packaging.** Start
+**Done (Phase 6, 2026-11-18 to 2026-11-20): Linux and iPXE paths, content HTTPS, auth, packaging.** Started
 from [plan/phase-6-handover.md](plan/phase-6-handover.md): what Phase 5
 established, the decisions to make, and what carries over. Decision 1,
 content HTTPS (ADR 0028), is built and lab-tested (2026-11-18). Decision 3,
 admin authentication (ADR 0029), is built and lab-tested. Decision 4, now
 the Linux host only (ADR 0030; iPXE and non-Windows OSs are a phase of their
 own), is built and lab-tested on `nd-linux`. Decision 5, packaging (ADR 0031),
-is built: the installer and `.deb`s build with `just package`; installing
-them is the next lab step ([dev/running-the-lab.md](dev/running-the-lab.md),
-"Installing from the packages"; checks in
-[spikes/phase-6-findings.md](spikes/phase-6-findings.md)). Decision 2, HTTPS
+is built and lab-tested: the installer and `.deb`s from `just package`
+work, and CI installs, purges and reinstalls the `.deb`. Results:
+[spikes/phase-6-findings.md](spikes/phase-6-findings.md). Decision 2, HTTPS
 boot (ADR 0032), is built after a spike that booted WinPE over HTTPS on an
-Intel NUC through the iPXE chain. Its lab run is next ("HTTP(S) Boot" in the
-lab guide). After that, Phase 6 is done: write the Phase 7 handover.
+Intel NUC through the iPXE chain, and lab-tested: the NUC HTTPS-booted
+from netdeployd's own DHCP answer (2026-11-20). **Phase 6 is done.**
+
+**Phase 7: non-Windows operating systems.** Start from
+[plan/phase-7-handover.md](plan/phase-7-handover.md), with a spike: booting
+a Secure Boot Linux installer through the signed iPXE chain.
 
 ## Open questions and things to verify
 

@@ -348,5 +348,18 @@ Built 2026-11-20:
   directories are 0755 because globs are used rather than a tree. `deb-smoke`
   checks that capabilities list both architectures.
 
-Lab run: pending ("HTTP(S) Boot" in the lab guide).
+**Lab, 2026-11-20** (the user, the NUC): **worked.** netdeployd answered
+the NUC's HTTPS Boot request over its own DHCP, with no URL typed in. The
+NUC trusted the content CA, enrolled as DER, and loaded the bundled
+dual-signed shim → `ipxe.efi` → wimboot → the default profile's boot
+image to WinPE, with Secure Boot on.
+
+**Not yet run:**
+
+| Check | How |
+|---|---|
+| 2023-only DB | Untick the Microsoft UEFI CA 2011 in the BIOS and boot again |
+| Proxy-mode answer | The same boot with DHCP `proxy` and another DHCP server |
+| OVMF against netdeployd | The RSA-GCM suites end to end (unit-tested; proven in the spike) |
+| arm64 | No lab machine |
 

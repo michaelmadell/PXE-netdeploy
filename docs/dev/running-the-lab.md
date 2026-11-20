@@ -213,8 +213,9 @@ expected.
 Status: on the Intel NUC with Secure Boot on (spike, 2026-11-20), the chain
 booted WinPE over HTTPS with both the iPXE v2.0.0 shim and the dual-signed
 ipxe-16.1 shim. The first ipxe-16.1 boot once ended in a firmware "Secure
-Boot Violation" that didn't recur; if you see one, boot again. The server's
-own answer still needs a lab run.
+Boot Violation" that didn't recur; if you see one, boot again. netdeployd
+itself booted the NUC to WinPE on 2026-11-20 from its full-mode DHCP answer,
+over HTTPS with the content CA enrolled.
 
 ## Proxy mode against real firmware (Phase 2 step 3)
 

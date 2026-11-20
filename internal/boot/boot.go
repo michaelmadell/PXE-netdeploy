@@ -27,6 +27,18 @@ const (
 // HTTP reports whether a is a UEFI HTTP Boot architecture.
 func (a Arch) HTTP() bool { return a == ArchUEFIX64HTTP || a == ArchUEFIArm64HTTP }
 
+// ImageArch is the boot image architecture (the API's Architecture) a
+// client of arch boots: "x64", "arm64", or "" for BIOS.
+func (a Arch) ImageArch() string {
+	switch a {
+	case ArchUEFIX64, ArchUEFIX64HTTP:
+		return "x64"
+	case ArchUEFIArm64, ArchUEFIArm64HTTP:
+		return "arm64"
+	}
+	return ""
+}
+
 // Request is a network boot request that passed the DHCP filters.
 type Request struct {
 	Interface string
@@ -36,7 +48,10 @@ type Request struct {
 
 // Answer is what to send a client: a TFTP path for PXE, a URL for HTTP Boot,
 // and the content TFTP and HTTP serve that client from (its boot image's
-// tree, ADR 0015; nil means the server's default).
+// tree, ADR 0015; nil means the server's default). For an HTTP Boot client
+// a Booter may give File, a path under the content listener's boot prefix,
+// instead of URL: DHCP makes the URL from the interface's listener
+// (ADR 0032).
 type Answer struct {
 	File string
 	URL  string

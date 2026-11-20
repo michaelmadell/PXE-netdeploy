@@ -14,6 +14,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/hostcheck"
+	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
@@ -50,6 +51,7 @@ type Server struct {
 	auth     authState
 	dataDir  string
 	privs    func() hostcheck.Privileges
+	ipxe     *ipxe.Bundle
 }
 
 // Deps are the Server's dependencies. Any may be nil in tests of operations
@@ -66,6 +68,7 @@ type Deps struct {
 	Backup   *backup.Service
 	Boot     *bootimage.Service
 	CA       *contentca.Authority // content HTTPS (ADR 0028); nil: none
+	IPXE     *ipxe.Bundle         // HTTP(S) Boot chain (ADR 0032); nil: none
 	// Setup is the first-account setup code (ADR 0029); nil once an
 	// account exists.
 	Setup *SetupCode
@@ -85,7 +88,7 @@ func New(version string, d Deps) *Server {
 	}
 	return &Server{version: version, started: time.Now(), settings: d.Settings, network: d.Network,
 		store: d.Store, events: d.Events, content: d.Content, jobs: d.Jobs, uploads: d.Uploads, vault: d.Vault, backup: d.Backup, boot: d.Boot,
-		ca: d.CA, host: d.Host, auth: authState{dev: d.Dev, setup: d.Setup}, dataDir: d.DataDir, privs: d.Privileges}
+		ca: d.CA, host: d.Host, auth: authState{dev: d.Dev, setup: d.Setup}, dataDir: d.DataDir, privs: d.Privileges, ipxe: d.IPXE}
 }
 
 // GetHealth reports per-service health from the running listeners, plus
@@ -249,6 +252,7 @@ func (s *Server) warnings() []warning {
 		dd = hostcheck.DataDir(s.dataDir)
 	}
 	w = append(w, hostWarnings(cfg, s.privileges(), dd)...)
+	w = append(w, httpBootWarnings(cfg, s.ipxe, s.ca != nil && s.ca.CA() != nil)...)
 	if len(cfg.Interfaces) > 0 && cfg.BootPrompt.DefaultProfileID == "" {
 		w = append(w, warning{"no_default_profile", "No default profile: clients without a profile of their own are not answered."})
 	}

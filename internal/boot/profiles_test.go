@@ -156,10 +156,10 @@ func TestProfilesDecision(t *testing.T) {
 		arch      Arch
 		want      string
 	}{
-		"unbuilt":    {unbuilt.ID, ArchUEFIX64, "never been built"},
-		"wrong arch": {arm.ID, ArchUEFIX64, "is arm64, the client is uefi-x64"},
-		"http boot":  {ownBI.ID, ArchUEFIX64HTTP, "HTTP Boot"},
-		"bios":       {ownBI.ID, ArchBIOS, "no boot images for bios"},
+		"unbuilt":              {unbuilt.ID, ArchUEFIX64, "never been built"},
+		"wrong arch":           {arm.ID, ArchUEFIX64, "is arm64, the client is uefi-x64"},
+		"http boot wrong arch": {arm.ID, ArchUEFIX64HTTP, "is arm64, the client is uefi-x64-http"},
+		"bios":                 {ownBI.ID, ArchBIOS, "no boot images for bios"},
 	} {
 		p := f.profile(t, name, c.bootImage)
 		cl, _ := f.st.ClientByMAC(f.ctx, x64.MAC)
@@ -178,6 +178,11 @@ func TestProfilesDecision(t *testing.T) {
 	}
 	if a, ok, _ := b.Default(f.ctx, ArchUEFIX64); !ok || marker(t, a) != "default-pe" {
 		t.Errorf("Default: %+v", a)
+	}
+	// HTTP Boot: the iPXE shim, with the same tree as PXE (ADR 0032).
+	a, ok, why = b.Boot(f.ctx, Request{MAC: "00:15:5d:00:00:99", Arch: ArchUEFIX64HTTP})
+	if !ok || a.File != "ipxe/x64/ipxe-shim.efi" || a.URL != "" || marker(t, a) != "default-pe" {
+		t.Errorf("HTTP Boot: %+v %q", a, why)
 	}
 }
 

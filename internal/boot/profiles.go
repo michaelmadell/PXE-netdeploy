@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 
+	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 )
 
@@ -90,15 +91,19 @@ func (p *Profiles) answer(ctx context.Context, arch Arch, bootImageID, profileID
 	if bi.TreeID == nil {
 		return Answer{}, false, fmt.Sprintf("%s %s: boot image %q has never been built", source, profileID, bi.Name)
 	}
-	want := map[Arch]string{ArchUEFIX64: "x64", ArchUEFIArm64: "arm64"}[arch]
+	want := arch.ImageArch()
 	switch {
-	case arch.HTTP():
-		return Answer{}, false, "HTTP Boot isn't supported yet (no HTTP Boot ISOs)"
 	case want == "":
 		return Answer{}, false, "no boot images for " + string(arch) + " clients"
 	case want != bi.Architecture:
 		return Answer{}, false, fmt.Sprintf("%s %s: boot image %q is %s, the client is %s", source, profileID, bi.Name, bi.Architecture, arch)
 	}
-	return Answer{File: PXEBootFile, Root: p.Tree(*bi.TreeID), TreeID: *bi.TreeID,
+	file := PXEBootFile
+	if arch.HTTP() {
+		// The signed iPXE chain, which then fetches this tree's files
+		// (ADR 0032).
+		file = ipxe.ShimPath(want)
+	}
+	return Answer{File: file, Root: p.Tree(*bi.TreeID), TreeID: *bi.TreeID,
 		BootImageID: bi.ID, ProfileID: profileID, Source: source}, true, ""
 }

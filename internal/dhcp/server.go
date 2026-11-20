@@ -95,6 +95,14 @@ type Config struct {
 	Booter       boot.Booter
 	BootFileUEFI string
 	HTTPBootURL  string
+	// HTTPBootBase turns a Booter's File for an HTTP Boot client into its
+	// URL: the interface's content listener and boot prefix, e.g.
+	// "https://10.77.0.1/content/boot/" (ADR 0032). Empty: such clients get
+	// no answer, and HTTPBootOff says why. HTTPBootArch reports whether the
+	// iPXE set exists for a boot image architecture; nil: all do.
+	HTTPBootBase string
+	HTTPBootOff  string
+	HTTPBootArch func(arch string) bool
 	// PXEClientClass adds vendor class "PXEClient" (option 60) to full-mode
 	// PXE replies. Off by default: UEFI firmware takes siaddr + file without
 	// it. Proxy replies always carry it, as the PXE spec requires.
@@ -458,7 +466,30 @@ func (s *Server) boot(ctx context.Context, req *dhcpv4.DHCPv4, c client, ip net.
 	}
 	s.sighting(ctx, mac, ip, arch, c.uuid)
 	ans, ok, reason := s.booter.Boot(ctx, boot.Request{Interface: s.cfg.Interface, MAC: mac, Arch: arch})
+	if ok && arch.HTTP() && ans.URL == "" {
+		ans, ok, reason = s.httpBootURL(ans, arch)
+	}
 	return ans, arch, ok, reason
+}
+
+// httpBootURL makes an HTTP Boot client's URL from the Booter's File
+// (ADR 0032).
+func (s *Server) httpBootURL(ans boot.Answer, arch boot.Arch) (boot.Answer, bool, string) {
+	switch {
+	case s.cfg.HTTPBootBase == "":
+		why := s.cfg.HTTPBootOff
+		if why == "" {
+			why = "no content listener for HTTP Boot on this interface"
+		}
+		return boot.Answer{}, false, why
+	case s.cfg.HTTPBootArch != nil && !s.cfg.HTTPBootArch(arch.ImageArch()):
+		return boot.Answer{}, false, "no iPXE set for " + arch.ImageArch() + " (see capabilities.httpBoot)"
+	case ans.File == "":
+		return boot.Answer{}, false, "no HTTP Boot file"
+	}
+	ans.URL = s.cfg.HTTPBootBase + ans.File
+	ans.File = ""
+	return ans, true, ""
 }
 
 // sighting records the client (ADR 0013: clients are created at first

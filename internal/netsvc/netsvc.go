@@ -660,7 +660,8 @@ func newHTTPUnit(desc string, ln net.Listener, useTLS bool, log *slog.Logger) *h
 			MinVersion: tls.VersionTLS12,
 			// HTTP/1.1 only: firmware HTTPS boot speaks nothing else, and
 			// one large download per connection gains nothing from HTTP/2.
-			NextProtos: []string{"http/1.1"},
+			NextProtos:   []string{"http/1.1"},
+			CipherSuites: ContentCipherSuites(),
 			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				return (*u.getCert.Load())(hello)
 			},
@@ -695,4 +696,18 @@ func (u *httpUnit) stop() {
 		u.srv.Close()
 	}
 	<-u.done
+}
+
+// ContentCipherSuites are the TLS 1.2 suites the content listeners offer:
+// Go's secure suites plus RSA key exchange with AES-GCM, the strongest that
+// OVMF's HTTPS Boot offers (ADR 0032). TLS 1.3 suites aren't configurable
+// and are always offered.
+func ContentCipherSuites() []uint16 {
+	ids := []uint16{tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384}
+	for _, c := range tls.CipherSuites() {
+		if len(c.SupportedVersions) > 0 && c.SupportedVersions[0] <= tls.VersionTLS12 {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
 }

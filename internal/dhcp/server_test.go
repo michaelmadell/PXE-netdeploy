@@ -1,6 +1,7 @@
 package dhcp
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/iana"
+
+	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 )
 
 var (
@@ -146,6 +149,45 @@ func TestHTTPBootClient(t *testing.T) {
 	offer := s.Handle(discover(t, mac(3), httpClient...))
 	if offer.BootFileName != url || offer.ClassIdentifier() != "HTTPClient" {
 		t.Errorf("file=%q class=%q", offer.BootFileName, offer.ClassIdentifier())
+	}
+}
+
+// fileBooter answers every client with a File, as boot.Profiles does.
+type fileBooter struct{ file string }
+
+func (f fileBooter) Boot(context.Context, boot.Request) (boot.Answer, bool, string) {
+	return boot.Answer{File: f.file}, true, ""
+}
+
+// TestHTTPBootURL: a Booter's File becomes the URL on the interface's content
+// listener; with no listener or no iPXE set for the arch, no boot answer
+// (ADR 0032). PXE clients still get the File.
+func TestHTTPBootURL(t *testing.T) {
+	httpClient := []dhcpv4.Modifier{
+		dhcpv4.WithOption(dhcpv4.OptClassIdentifier("HTTPClient:Arch:00016:UNDI:003001")),
+		dhcpv4.WithOption(dhcpv4.OptClientArch(iana.EFI_X86_64_HTTP)),
+	}
+	base := func(c *Config) {
+		c.Booter = fileBooter{"ipxe/x64/ipxe-shim.efi"}
+		c.HTTPBootBase = "https://10.77.0.1/content/boot/"
+	}
+	s, _ := testServer(t, base)
+	offer := s.Handle(discover(t, mac(3), httpClient...))
+	if offer.BootFileName != "https://10.77.0.1/content/boot/ipxe/x64/ipxe-shim.efi" || offer.ClassIdentifier() != "HTTPClient" {
+		t.Errorf("file=%q class=%q", offer.BootFileName, offer.ClassIdentifier())
+	}
+	if pxe := s.Handle(discover(t, mac(4), pxeClient(iana.EFI_X86_64)...)); pxe.BootFileName != "ipxe/x64/ipxe-shim.efi" {
+		t.Errorf("PXE client: %q", pxe.BootFileName)
+	}
+	for name, mod := range map[string]func(*Config){
+		"no listener": func(c *Config) { base(c); c.HTTPBootBase = ""; c.HTTPBootOff = "no content listener" },
+		"no set":      func(c *Config) { base(c); c.HTTPBootArch = func(string) bool { return false } },
+	} {
+		s, _ := testServer(t, mod)
+		offer := s.Handle(discover(t, mac(3), httpClient...))
+		if offer == nil || offer.YourIPAddr == nil || offer.BootFileName != "" {
+			t.Errorf("%s: want an address and no boot file, got %+v", name, offer)
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
 	"github.com/michaelmadell/pxe-netdeploy/internal/bootimage"
 	"github.com/michaelmadell/pxe-netdeploy/internal/drivers/archive"
+	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 )
 
 // capsTTL bounds how stale GET /system/capabilities can be: tools are
@@ -28,6 +29,7 @@ func (s *Server) GetCapabilities(ctx context.Context, _ api.GetCapabilitiesReque
 	defer s.caps.mu.Unlock()
 	if s.caps.at.IsZero() || time.Since(s.caps.at) > capsTTL {
 		s.caps.caps = probeCapabilities(ctx, s.version, s.boot, "")
+		s.caps.caps.HttpBoot = httpBootCaps(s.ipxe)
 		p := s.privileges()
 		missing := append([]string{}, p.Missing...)
 		s.caps.caps.Privileges = &struct {
@@ -96,4 +98,46 @@ func probeCapabilities(ctx context.Context, version string, boot *bootimage.Serv
 	}
 	c.CabLzx = lzx
 	return c
+}
+
+// httpBootCaps describes the iPXE chain read at start (ADR 0032).
+func httpBootCaps(b *ipxe.Bundle) *httpBootCapsT {
+	out := &httpBootCapsT{Architectures: []api.Architecture{}}
+	files := []httpBootFileT{}
+	for _, a := range b.Archs() {
+		out.Architectures = append(out.Architectures, api.Architecture(a))
+	}
+	for _, f := range b.Files() {
+		files = append(files, httpBootFileT{Architecture: api.Architecture(f.Arch),
+			Name: api.CapabilitiesHttpBootFilesName(f.Name), Sha256: f.SHA256, Size: int64(len(f.Data))})
+	}
+	out.Files = &files
+	out.Available = len(out.Architectures) > 0
+	if b != nil && b.Path != "" {
+		p := b.Path
+		out.Path = &p
+	}
+	reason := "no iPXE directory (the packages install one; -ipxe-dir names one)"
+	if b != nil {
+		reason = b.Reason
+	}
+	if !out.Available && reason != "" {
+		out.Reason = &reason
+	}
+	return out
+}
+
+type httpBootCapsT = struct {
+	Architectures []api.Architecture `json:"architectures"`
+	Available     bool               `json:"available"`
+	Files         *[]httpBootFileT   `json:"files,omitempty"`
+	Path          *string            `json:"path,omitempty"`
+	Reason        *string            `json:"reason,omitempty"`
+}
+
+type httpBootFileT = struct {
+	Architecture api.Architecture                  `json:"architecture"`
+	Name         api.CapabilitiesHttpBootFilesName `json:"name"`
+	Sha256       string                            `json:"sha256"`
+	Size         int64                             `json:"size"`
 }

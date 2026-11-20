@@ -8,6 +8,7 @@ import (
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
 	"github.com/michaelmadell/pxe-netdeploy/internal/hostcheck"
+	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
 )
 
@@ -56,4 +57,48 @@ func hostWarnings(cfg settings.Config, p hostcheck.Privileges, dataDirProblems [
 		w = append(w, warning{"data_dir_permissions", "The data directory isn't private to the server's account: " + strings.Join(dataDirProblems, "; ") + "."})
 	}
 	return w
+}
+
+// httpBootWarnings: http_boot_unavailable when architectures.httpBoot is on
+// but HTTP Boot clients can't be answered (ADR 0032): no iPXE set for an
+// enabled architecture, or an interface with DHCP serving no content.
+func httpBootWarnings(cfg settings.Config, b *ipxe.Bundle, haveCA bool) []warning {
+	a := cfg.Architectures
+	if !a.HTTPBoot || !(a.UEFIX64 || a.UEFIArm64) {
+		return nil
+	}
+	var problems, ifaces []string
+	for _, in := range cfg.Interfaces {
+		if in.DHCP.Mode != settings.DHCPFull && in.DHCP.Mode != settings.DHCPProxy {
+			continue
+		}
+		if !in.Services.HTTP && !(in.Services.HTTPS && haveCA) {
+			ifaces = append(ifaces, in.Name)
+		}
+	}
+	if len(cfg.Interfaces) == 0 {
+		return nil
+	}
+	var missing []string
+	if a.UEFIX64 && !b.Has("x64") {
+		missing = append(missing, "x64")
+	}
+	if a.UEFIArm64 && !b.Has("arm64") {
+		missing = append(missing, "arm64")
+	}
+	if len(missing) > 0 {
+		where := "no iPXE directory"
+		if b != nil {
+			where = b.Path
+		}
+		problems = append(problems, fmt.Sprintf("no signed iPXE set for %s in %s (reinstall, or point -ipxe-dir at one)", strings.Join(missing, " and "), where))
+	}
+	if len(ifaces) > 0 {
+		problems = append(problems, "DHCP runs on "+strings.Join(ifaces, ", ")+" but no content is served there over HTTP or HTTPS")
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return []warning{{"http_boot_unavailable", "HTTP Boot is on, but its clients can't all be answered: " + strings.Join(problems, "; ") +
+		". Turn architectures.httpBoot off if no machine uses it."}}
 }

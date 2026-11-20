@@ -23,6 +23,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/contentca"
 	"github.com/michaelmadell/pxe-netdeploy/internal/dhcp"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
+	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 	"github.com/michaelmadell/pxe-netdeploy/internal/tftp"
@@ -43,6 +44,9 @@ type Options struct {
 	// ContentCA issues the HTTPS content listeners' certificate (ADR 0028).
 	// Nil: interfaces with services.https get no HTTPS listener.
 	ContentCA *contentca.Authority
+	// IPXE is the signed iPXE chain served to HTTP(S) Boot clients
+	// (ADR 0032). Nil or empty: they get no boot answer.
+	IPXE *ipxe.Bundle
 	// Agent serves /api/v1/agent/ on content listeners (ADR 0009). Nil: 404.
 	Agent http.Handler
 	// Events receives client sightings and lease changes from DHCP.
@@ -345,6 +349,8 @@ func (s *Service) dhcpConfig(cfg Config, in Interface, primary netip.Prefix) dhc
 		Events:      s.opts.Events,
 		Logger:      s.opts.Logger,
 	}
+	c.HTTPBootBase, c.HTTPBootOff = s.httpBootBase(in, primary.Addr())
+	c.HTTPBootArch = s.opts.IPXE.Has
 	if in.DHCP.Mode == DHCPProxy {
 		c.Mode = dhcp.ModeProxy
 		return c
@@ -365,6 +371,32 @@ func (s *Service) dhcpConfig(cfg Config, in Interface, primary netip.Prefix) dhc
 	return c
 }
 
+// httpBootBase is where HTTP Boot clients on in fetch the iPXE chain
+// (ADR 0032): its HTTPS content listener when it has one, else its HTTP
+// one. "" and the reason when there's neither or no iPXE set.
+func (s *Service) httpBootBase(in Interface, ip netip.Addr) (string, string) {
+	if len(s.opts.IPXE.Archs()) == 0 {
+		why := "no iPXE set"
+		if s.opts.IPXE != nil && s.opts.IPXE.Reason != "" {
+			why = s.opts.IPXE.Reason
+		}
+		return "", "HTTP Boot unavailable: " + why
+	}
+	host := func(port, def int) string {
+		if port == def {
+			return ip.String()
+		}
+		return netip.AddrPortFrom(ip, uint16(port)).String()
+	}
+	switch {
+	case in.Services.HTTPS && s.opts.ContentCA != nil && s.opts.ContentCA.CA() != nil:
+		return "https://" + host(in.Services.HTTPSPort, 443) + content.BootPrefix, ""
+	case in.Services.HTTP:
+		return "http://" + host(in.Services.HTTPPort, 80) + content.BootPrefix, ""
+	}
+	return "", "HTTP Boot unavailable: the interface serves no content over HTTP or HTTPS"
+}
+
 // contentHandler returns iface's content handler, creating it once and
 // reusing it across settings changes.
 func (s *Service) contentHandler(iface string) *content.Handler {
@@ -375,12 +407,16 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 	}
 	h, ok := s.content[iface]
 	if !ok {
-		h = content.New(content.Config{
+		cfg := content.Config{
 			DefaultRoot: s.defaultRoot(),
 			ClientRoot:  s.clientRoot(iface),
 			Agent:       s.opts.Agent,
 			Logger:      s.opts.Logger,
-		})
+		}
+		if s.opts.IPXE != nil {
+			cfg.Shared, cfg.SharedDir = s.opts.IPXE, ipxe.Dir
+		}
+		h = content.New(cfg)
 		s.content[iface] = h
 	}
 	return h

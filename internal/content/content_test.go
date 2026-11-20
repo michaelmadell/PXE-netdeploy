@@ -162,3 +162,29 @@ func TestNoBootContent(t *testing.T) {
 		t.Errorf("no content configured: %d", w.Code)
 	}
 }
+
+// TestSharedDir: ipxe/ comes from the shared set for every client, even one
+// with no boot content; other paths still come from the client's content
+// (ADR 0032).
+func TestSharedDir(t *testing.T) {
+	shared := t.TempDir()
+	write(t, shared, "ipxe/x64/ipxe.efi", "loader")
+	def := t.TempDir()
+	write(t, def, "ipxe/x64/ipxe.efi", "from-the-tree")
+	write(t, def, "Boot/BCD", "default-bcd")
+	h := New(Config{DefaultRoot: cas.DirFS(def), Shared: cas.DirFS(shared), SharedDir: "ipxe",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if w := get(h, "GET", "/content/boot/ipxe/x64/ipxe.efi", "10.77.0.150"); w.Code != 200 || w.Body.String() != "loader" {
+		t.Errorf("shared file: %d %q", w.Code, w.Body)
+	}
+	if w := get(h, "GET", "/content/boot/ipxe/x64/wimboot", "10.77.0.150"); w.Code != http.StatusNotFound {
+		t.Errorf("missing shared file: %d (mustn't fall through to the tree)", w.Code)
+	}
+	if w := get(h, "GET", "/content/boot/Boot/BCD", "10.77.0.150"); w.Code != 200 || w.Body.String() != "default-bcd" {
+		t.Errorf("tree file: %d %q", w.Code, w.Body)
+	}
+	none := New(Config{Shared: cas.DirFS(shared), SharedDir: "ipxe", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if w := get(none, "GET", "/content/boot/ipxe/x64/ipxe.efi", "10.77.0.150"); w.Code != 200 {
+		t.Errorf("shared file with no boot content: %d", w.Code)
+	}
+}

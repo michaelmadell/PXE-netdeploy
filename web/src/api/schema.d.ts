@@ -399,7 +399,8 @@ export interface paths {
          *     the source image (a ready `windows` image of the same architecture),
          *     `sourceIndex`, the driver groups, `agentVersion` and `bootmgr`.
          *     `optionalComponents` and `produceHttpBootIso: true` are refused with
-         *     `422` (`code: not_implemented`) for now (ADR 0022). `serverUrls` must all
+         *     `422` (`code: not_implemented`) for now (ADR 0022; HTTP Boot clients
+         *     boot through iPXE instead, ADR 0032). `serverUrls` must all
          *     use one scheme: mixing `http://` and `https://` is refused with `422`
          *     (`code: mixed_server_urls`, ADR 0028).
          */
@@ -1683,7 +1684,11 @@ export interface components {
              *     other users, or isn't owned by the server's account; Windows: its
              *     access list lets Everyone, Authenticated Users, Users or Interactive
              *     read it, which matters because the secrets key is protected with
-             *     machine-scope DPAPI; ADR 0030, 0031).
+             *     machine-scope DPAPI; ADR 0030, 0031), `http_boot_unavailable`
+             *     (`architectures.httpBoot` is on but HTTP Boot clients can't be
+             *     answered: the iPXE bundle is missing or lacks an enabled
+             *     architecture, or no interface with DHCP serves content over HTTP or
+             *     HTTPS; ADR 0032).
              */
             warnings?: {
                 code: string;
@@ -1811,6 +1816,28 @@ export interface components {
             adk?: {
                 installed?: boolean;
                 version?: string | null;
+            };
+            /**
+             * @description The signed iPXE chain HTTP(S) Boot clients get (ADR 0032): read at start
+             *     from `ipxe/<arch>/` next to the executable, or `-ipxe-dir`.
+             */
+            httpBoot?: {
+                /** @description At least one architecture has a complete set. */
+                available: boolean;
+                /** @description Architectures with all three files (`ipxe-shim.efi`, `ipxe.efi`, `wimboot`). */
+                architectures: components["schemas"]["Architecture"][];
+                /** @description The directory read. */
+                path?: string;
+                /** @description Why unavailable, if not available. */
+                reason?: string;
+                files?: {
+                    architecture: components["schemas"]["Architecture"];
+                    /** @enum {string} */
+                    name: "ipxe-shim.efi" | "ipxe.efi" | "wimboot";
+                    /** Format: int64 */
+                    size: number;
+                    sha256: string;
+                }[];
             };
             /**
              * @description Whether LZX-compressed CABs (common for Microsoft Update Catalog drivers) can
@@ -2148,8 +2175,10 @@ export interface components {
             /**
              * @description Also build a small bootable ISO (bootmgr + BCD + boot.wim) for UEFI HTTP
              *     Boot, which the firmware loads as a RAM disk. Firmware support varies.
-             *     Not implemented yet (Phase 1 task 9): `true` is refused with `422`
-             *     (`code: not_implemented`).
+             *     Not implemented: `true` is refused with `422` (`code:
+             *     not_implemented`). HTTP(S) Boot clients get the signed iPXE chain
+             *     instead (ADR 0032); the ISO is kept for firmware that trusts only
+             *     the Windows CA.
              * @default false
              */
             produceHttpBootIso: boolean;
@@ -2833,7 +2862,14 @@ export interface components {
                 /** @default true */
                 uefiArm64: boolean;
                 /**
-                 * @description Answer UEFI HTTP Boot (HTTPClient) requests.
+                 * @description Answer UEFI HTTP Boot (HTTPClient) requests (ADR 0032): the URL of the
+                 *     signed iPXE shim on the interface's content listener, `https://` when
+                 *     the interface serves HTTPS, else `http://`. The shim loads iPXE,
+                 *     which boots the same boot image a PXE client would get, through
+                 *     wimboot. Needs firmware that trusts Microsoft's third-party UEFI CA
+                 *     (2011 or 2023) and, for HTTPS, the content CA enrolled
+                 *     (`/settings/content-ca`). Applies to `uefiX64` and `uefiArm64`
+                 *     clients only if those are on too.
                  * @default true
                  */
                 httpBoot: boolean;
@@ -2948,6 +2984,9 @@ export interface components {
                  * @description Content and the agent API over HTTPS, with a certificate from the internal
                  *     content CA (ADR 0028). Independent of `http`: plain HTTP is still needed
                  *     for HTTP Boot without TLS and for boot images with `http://` server URLs.
+                 *     With HTTPS on, DHCP gives HTTP Boot clients the `https://` URL (ADR 0032).
+                 *     Offers the RSA key-exchange GCM suites as well as the defaults, for
+                 *     firmware TLS stacks that have nothing else (OVMF).
                  * @default false
                  */
                 https: boolean;

@@ -31,6 +31,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/datalock"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/imports"
+	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
 	"github.com/michaelmadell/pxe-netdeploy/internal/netsvc"
 	"github.com/michaelmadell/pxe-netdeploy/internal/secrets"
@@ -67,6 +68,7 @@ type options struct {
 	adminAddr  string // empty: use Settings.admin
 	agentDir   string // agents when the binary embeds none
 	wimlibPath string // empty: wimlib-imagex from PATH
+	ipxeDir    string // the signed iPXE chain for HTTP(S) Boot (ADR 0032)
 	dev        bool   // relaxed session cookie for `just dev` (ADR 0029)
 }
 
@@ -88,6 +90,7 @@ func main() {
 	flag.StringVar(&o.adminAddr, "admin-addr", "", "recovery override for the admin listener, e.g. 127.0.0.1:8443; normally set in settings")
 	flag.StringVar(&o.agentDir, "agent-dir", "dist", "directory with agent-windows-<arch>.exe, used when this binary embeds no agents (built without -tags agent)")
 	flag.StringVar(&o.wimlibPath, "wimlib", "", "path to wimlib-imagex (default: found on PATH)")
+	flag.StringVar(&o.ipxeDir, "ipxe-dir", "", "directory with <arch>/{ipxe-shim.efi,ipxe.efi,wimboot} for HTTP(S) Boot (default: the one installed with netdeployd, else dist/ipxe)")
 	flag.BoolVar(&o.dev, "dev", false, "development only: session cookie without Secure, Origin may match X-Forwarded-Host (the Vite proxy)")
 	logFormat := flag.String("log", "text", "log format: text or json")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error")
@@ -95,6 +98,9 @@ func main() {
 	flag.Parse()
 	if o.wimlibPath == "" {
 		o.wimlibPath = bundledWimlib()
+	}
+	if o.ipxeDir == "" {
+		o.ipxeDir = bundledIPXE()
 	}
 
 	var level slog.Level
@@ -147,6 +153,26 @@ func openLog(path string) (*os.File, error) {
 		return nil, fmt.Errorf("-log-file: %w", err)
 	}
 	return f, nil
+}
+
+// bundledIPXE is the signed iPXE chain the packages install (ADR 0032):
+// <program>\ipxe on Windows, /usr/lib/netdeploy/ipxe from the .deb, or
+// dist/ipxe from scripts/fetch-ipxe.ps1 in a checkout. "" if none exists.
+func bundledIPXE() string {
+	var dirs []string
+	if exe, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Join(filepath.Dir(exe), "ipxe"))
+	}
+	if runtime.GOOS == "linux" {
+		dirs = append(dirs, "/usr/lib/netdeploy/ipxe")
+	}
+	dirs = append(dirs, filepath.Join("dist", "ipxe"))
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			return d
+		}
+	}
+	return ""
 }
 
 // bundledWimlib is the wimlib the Windows installer ships next to the
@@ -226,6 +252,16 @@ func run(parent context.Context, o options) error {
 		return err
 	}
 
+	chain, err := ipxe.Load(o.ipxeDir)
+	if err != nil {
+		return err
+	}
+	if archs := chain.Archs(); len(archs) > 0 {
+		slog.Info("HTTP Boot chain loaded", "dir", chain.Path, "architectures", strings.Join(archs, ","))
+	} else {
+		slog.Warn("HTTP Boot clients won't be answered", "reason", chain.Reason)
+	}
+
 	var handler http.Handler
 	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
@@ -237,6 +273,7 @@ func run(parent context.Context, o options) error {
 		AdminOverride:      override,
 		GeneratedAdminCert: &generated.Certificates[0],
 		ContentCA:          ca,
+		IPXE:               chain,
 		Events:             bus,
 		// The agent API is the same API handler; the content listener only
 		// forwards /api/v1/agent/ to it.
@@ -310,7 +347,7 @@ func run(parent context.Context, o options) error {
 		slog.Warn("-dev: the session cookie isn't Secure; for development only")
 	}
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
-		Vault: vault, Backup: backups, Boot: boot, CA: ca, Setup: setup, Dev: o.dev, DataDir: o.dataDir})
+		Vault: vault, Backup: backups, Boot: boot, CA: ca, IPXE: chain, Setup: setup, Dev: o.dev, DataDir: o.dataDir})
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}

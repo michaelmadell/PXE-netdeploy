@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -361,5 +362,39 @@ func TestContentHTTPS(t *testing.T) {
 	st := m.Status()["content"]
 	if len(st.Running) != 2 || !strings.Contains(strings.Join(st.Running, " "), "https://10.77.0.1:443") {
 		t.Errorf("status %+v", st)
+	}
+}
+
+// TestContentCipherSuites: an RSA-key-exchange client (OVMF's HTTPS Boot,
+// ADR 0032) can connect to an HTTPS content listener with an RSA leaf.
+func TestContentCipherSuites(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "t"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	s := newSockets()
+	plan := basePlan(t, testCert(t), tftpRoot(t))
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
+	plan.HTTP = []HTTPPlan{{Interface: "lab0", Bind: netip.MustParseAddrPort("10.77.0.1:443"), Handler: h,
+		Field: "interfaces[0].services.httpsPort", GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert, nil }}}
+	m := start(t, s, plan)
+	m.mu.Lock()
+	addr := m.http["https|10.77.0.1:443"].ln.Addr().String()
+	m.mu.Unlock()
+	for _, id := range []uint16{tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384} {
+		c := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12, CipherSuites: []uint16{id}}}}
+		resp, err := c.Get("https://" + addr + "/")
+		if err != nil {
+			t.Fatalf("%s: %v", tls.CipherSuiteName(id), err)
+		}
+		resp.Body.Close()
+		if resp.TLS.CipherSuite != id {
+			t.Errorf("negotiated %s, want %s", tls.CipherSuiteName(resp.TLS.CipherSuite), tls.CipherSuiteName(id))
+		}
 	}
 }

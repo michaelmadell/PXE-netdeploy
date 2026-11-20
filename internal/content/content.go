@@ -34,6 +34,12 @@ type Config struct {
 	// ClientRoot picks a client's content and log attributes, as for TFTP
 	// (settings.Service.clientRoot).
 	ClientRoot func(client netip.Addr) (root fs.FS, attrs []any)
+	// Shared serves paths under SharedDir ("ipxe/...") for every client,
+	// ahead of the client's own content: the signed iPXE chain HTTP(S) Boot
+	// clients start with (ADR 0032). Nil: those paths fall through to the
+	// client's content. Its files must implement io.ReadSeeker.
+	Shared    fs.FS
+	SharedDir string
 	// Agent handles AgentPrefix. Nil: 404.
 	Agent  http.Handler
 	Logger *slog.Logger
@@ -87,6 +93,9 @@ func (h *Handler) serveBoot(w http.ResponseWriter, r *http.Request) {
 		log.Warn("content request refused", "reason", "bad path")
 		notFound(w, "No such file.")
 		return
+	}
+	if h.cfg.Shared != nil && h.cfg.SharedDir != "" && strings.HasPrefix(strings.ToLower(rel), strings.ToLower(h.cfg.SharedDir)+"/") {
+		root = h.cfg.Shared
 	}
 	if root == nil {
 		log.Warn("content request refused", "reason", "no boot content configured")

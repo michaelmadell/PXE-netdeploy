@@ -27,6 +27,8 @@ AppVerName=netdeploy {#AppVersion}
 VersionInfoVersion={#FileVersion}
 AppPublisher=netdeploy
 AppPublisherURL=https://github.com/michaelmadell/pxe-netdeploy
+AppCopyright=Copyright 2026 Michael Madell. Apache License 2.0.
+LicenseFile={#Dist}\..\LICENSE
 DefaultDirName={autopf}\netdeploy
 DisableProgramGroupPage=yes
 DisableDirPage=auto
@@ -51,12 +53,16 @@ SignedUninstaller=yes
 
 [Files]
 Source: "{#Dist}\netdeployd-windows-amd64.exe"; DestDir: "{app}"; DestName: "netdeployd.exe"; Flags: ignoreversion
+Source: "{#Dist}\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "{#Dist}\..\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
 ; wimlib, unmodified (GPLv3+ program, LGPLv2.1+ library; see wimlib\SOURCE.txt).
 Source: "{#Wimlib}\wimlib-imagex.exe"; DestDir: "{app}\wimlib"; Flags: ignoreversion
 Source: "{#Wimlib}\libwim-15.dll"; DestDir: "{app}\wimlib"; Flags: ignoreversion
 Source: "{#Wimlib}\COPYING*.txt"; DestDir: "{app}\wimlib"; Flags: ignoreversion
 Source: "{#Wimlib}\README.txt"; DestDir: "{app}\wimlib"; DestName: "README-wimlib.txt"; Flags: ignoreversion
 Source: "wimlib-SOURCE.txt"; DestDir: "{app}\wimlib"; DestName: "SOURCE.txt"; Flags: ignoreversion
+; The signed iPXE chain for HTTP(S) Boot (ADR 0032; scripts/fetch-ipxe.ps1, see ipxe\SOURCE.txt).
+Source: "{#Dist}\ipxe\*"; DestDir: "{app}\ipxe"; Flags: ignoreversion recursesubdirs
 
 [Tasks]
 Name: "firewall"; Description: "Allow netdeployd through Windows Firewall (DHCP, TFTP, HTTP(S) and the admin web UI)"

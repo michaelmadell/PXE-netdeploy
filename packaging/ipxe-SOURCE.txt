@@ -1,0 +1,20 @@
+The files in this folder are unmodified, signed binaries. netdeploy serves
+them to UEFI HTTP(S) Boot clients (ADR 0032); it never runs them itself.
+
+<arch>/ipxe-shim.efi  shim, iPXE's build (signed by Microsoft UEFI CA 2011 and 2023)
+                      https://github.com/ipxe/shim/releases/tag/ipxe-16.1
+                      (ipxe-shimx64.efi, ipxe-shimaa64.efi). Licence: licences/shim-COPYRIGHT.txt.
+<arch>/ipxe.efi       iPXE v2.0.0 (signed by the iPXE Secure Boot CA)
+                      https://github.com/ipxe/ipxe/releases/tag/v2.0.0
+                      (ipxeboot.tar.gz: x86_64-sb/ipxe.efi, arm64-sb/ipxe.efi).
+                      Licence: GNU GPL v2 or later, with UBDL; licences/iPXE-*.txt.
+<arch>/wimboot        wimboot v2.9.0 (signed by Microsoft UEFI CA 2011 and 2023)
+                      https://github.com/ipxe/wimboot/releases/tag/v2.9.0
+                      (wimboot, wimboot.arm64). Licence: GNU GPL v2 or later;
+                      licences/wimboot-LICENSE.txt.
+
+Source code: each release page above links its source; the tags are
+ipxe-16.1 (github.com/ipxe/shim), v2.0.0 (github.com/ipxe/ipxe) and v2.9.0
+(github.com/ipxe/wimboot). The SHA-256 of every file is in
+scripts/fetch-ipxe.ps1 in the netdeploy source, and is reported by
+GET /api/v1/system/capabilities (httpBoot.files).

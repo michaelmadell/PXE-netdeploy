@@ -14,7 +14,7 @@ description: |
   boot images built with wimlib, and a WinPE agent that applies images,
   drivers and unattend files. One binary with the web UI built in.
 homepage: https://github.com/michaelmadell/pxe-netdeploy
-license: TBD
+license: Apache-2.0
 depends:
   - wimtools
   - debconf (>= 0.5) | debconf-2.0
@@ -34,6 +34,20 @@ contents:
   - src: packaging/linux/netdeploy.default
     dst: /etc/default/netdeploy
     type: config|noreplace
+    file_info: { mode: 0644 }
+  # The signed iPXE chain for HTTP(S) Boot (ADR 0032; scripts/fetch-ipxe.ps1).
+  # Globs, not a tree: a tree would give its directories the files' mode.
+  - src: dist/ipxe/x64/*
+    dst: /usr/lib/netdeploy/ipxe/x64/
+    file_info: { mode: 0644 }
+  - src: dist/ipxe/arm64/*
+    dst: /usr/lib/netdeploy/ipxe/arm64/
+    file_info: { mode: 0644 }
+  - src: dist/ipxe/licences/*
+    dst: /usr/lib/netdeploy/ipxe/licences/
+    file_info: { mode: 0644 }
+  - src: dist/ipxe/SOURCE.txt
+    dst: /usr/lib/netdeploy/ipxe/SOURCE.txt
     file_info: { mode: 0644 }
   - src: packaging/linux/copyright
     dst: /usr/share/doc/netdeploy/copyright

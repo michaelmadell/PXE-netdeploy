@@ -1,0 +1,13 @@
+netdeploy
+Copyright 2026 Michael Madell
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Windows installer also ships wimlib (https://wimlib.net/), unmodified,
+under its own licences (GPLv3+ for wimlib-imagex, LGPLv2.1+ for libwim);
+see wimlib\COPYING.txt and wimlib\SOURCE.txt in the installed program folder.
+
+Both packages ship the signed iPXE chain for HTTP(S) Boot, unmodified and
+under its own licences: shim (ipxe/shim, BSD-style), iPXE (GPLv2+ with UBDL)
+and wimboot (GPLv2+). See ipxe/SOURCE.txt and ipxe/licences/ in the program
+folder, or /usr/lib/netdeploy/ipxe/ on Linux.

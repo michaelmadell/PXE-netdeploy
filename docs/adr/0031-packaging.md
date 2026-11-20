@@ -94,5 +94,7 @@ code-signing certificate is in place.
 - Building the installer needs Windows (ISCC); the `.deb` builds anywhere Go
   runs. nfpm needs a newer Go than the repo's pin, so `package.ps1` sets
   `GOTOOLCHAIN=auto` for it.
-- netdeploy has no licence file yet: the `.deb`'s copyright says "TBD", and
-  open-source code-signing programmes need one.
+- Licence (decided 2026-11-19): **Apache-2.0** (`LICENSE`, `NOTICE`); the
+  installer shows it and installs it with the program, the `.deb` refers to
+  the system's copy. That is also what open-source code-signing programmes
+  ask for.

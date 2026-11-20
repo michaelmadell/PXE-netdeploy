@@ -56,3 +56,8 @@ docs/           Architecture, developer guides, and decision records (ADRs)
 - [Getting started](docs/dev/getting-started.md): setup and the add-an-endpoint workflow
 - [Test environments](docs/dev/test-environments.md): Hyper-V lab, QEMU/OVMF with custom keys
 - [Decision records](docs/adr/): why things are the way they are
+
+## Licence
+
+Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The Windows
+installer also bundles wimlib under its own licences (ADR 0031).

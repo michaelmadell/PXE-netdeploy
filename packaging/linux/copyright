@@ -4,5 +4,38 @@ Source: https://github.com/michaelmadell/pxe-netdeploy
 
 Files: *
 Copyright: 2026 Michael Madell
-License: TBD
- The project's licence has not been chosen yet; see the repository.
+License: Apache-2.0
+
+Files: usr/lib/netdeploy/ipxe/*/ipxe.efi
+Copyright: Michael Brown and the iPXE contributors
+License: GPL-2+ with UBDL
+ Unmodified signed binary of iPXE v2.0.0. See
+ /usr/lib/netdeploy/ipxe/SOURCE.txt and licences/iPXE-COPYING.*.txt there.
+
+Files: usr/lib/netdeploy/ipxe/*/wimboot
+Copyright: Michael Brown
+License: GPL-2+
+ Unmodified signed binary of wimboot v2.9.0. See
+ /usr/lib/netdeploy/ipxe/SOURCE.txt and licences/wimboot-LICENSE.txt there.
+
+Files: usr/lib/netdeploy/ipxe/*/ipxe-shim.efi
+Copyright: Red Hat, Inc. and the shim contributors
+License: BSD-2-clause
+ Unmodified signed binary of shim (ipxe/shim ipxe-16.1). See
+ /usr/lib/netdeploy/ipxe/SOURCE.txt and licences/shim-COPYRIGHT.txt there.
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+ .
+     http://www.apache.org/licenses/LICENSE-2.0
+ .
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ .
+ On Debian systems, the complete text of the Apache License, Version 2.0
+ can be found in "/usr/share/common-licenses/Apache-2.0".

@@ -39,6 +39,11 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE) { throw 'build failed' }
 }
 
+# --- The signed iPXE chain (ADR 0032), in both packages ------------------------
+if (-not (Test-Path dist/ipxe/x64/ipxe-shim.efi)) {
+    ./scripts/fetch-ipxe.ps1
+}
+
 # --- .deb ---------------------------------------------------------------------
 foreach ($arch in 'amd64', 'arm64') {
     $bin = "dist/netdeployd-linux-$arch"

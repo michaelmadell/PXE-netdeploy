@@ -44,6 +44,10 @@ dev-server: agent
 dev-web:
     pnpm --dir web dev
 
+# Download the signed iPXE chain for HTTP(S) Boot into ./dist/ipxe (pinned hashes, ADR 0032)
+fetch-ipxe:
+    ./scripts/fetch-ipxe.ps1
+
 # Release build: frontend embedded in the server, plus agents, into ./dist
 build:
     ./scripts/build.ps1

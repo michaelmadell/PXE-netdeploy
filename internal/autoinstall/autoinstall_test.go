@@ -92,7 +92,7 @@ func TestBuiltin(t *testing.T) {
 		t.Errorf("with a password:\n%s", out)
 	}
 	late := ai["late-commands"].([]any)
-	if len(late) != 2 || !strings.Contains(late[0].(string), "efibootmgr -o") || strings.Contains(out, "sudoers") {
+	if len(late) != 2 || !strings.Contains(late[0].(string), "efibootmgr -o") || !strings.Contains(late[1].(string), "content/report/") || strings.Contains(out, "sudoers") {
 		t.Errorf("late-commands: %q", late)
 	}
 
@@ -133,6 +133,10 @@ func TestCheck(t *testing.T) {
 			t.Errorf("%s: %v", name, fs)
 		}
 	}
+	if fs := codes(Check([]byte("#cloud-config\nautoinstall:\n  version: 1\n  identity: {hostname: nd-sample-01, username: sample}\n"), d)); !fs["report_missing"] || !fs["report_finish_missing"] {
+		t.Errorf("no reporting: %v", fs)
+	}
+	d.Report = ReportData{}
 	if fs := Check([]byte("#cloud-config\nautoinstall:\n  version: 1\n  interactive-sections: ['*']\n"), d); len(fs) != 0 {
 		t.Errorf("interactive: %+v", fs)
 	}

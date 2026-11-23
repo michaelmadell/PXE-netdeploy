@@ -214,6 +214,13 @@ func (s *Server) AgentIpxeStart(ctx context.Context, req api.AgentIpxeStartReque
 		log.Warn("Linux deployment can't boot", "deployment_id", d.ID, "reason", why)
 		return ipxeScript(ipxe.Failure(arch, why, false)), nil
 	}
+	// An automatic install reports from here on (ADR 0036); an interactive
+	// one can't, so it ends here rather than at the inactivity timeout.
+	if lp, err := autoinstall.ParseProfile(d.ProfileSnapshot); err == nil && lp.Automatic() {
+		s.reportProgress(ctx, d.ID, "checked-in", 2, "booting the installer")
+	} else {
+		s.finishInstall(context.WithoutCancel(ctx), d.ID, store.StatusSucceeded, "the installer started; interactive installs aren't tracked further")
+	}
 	return ipxeScript(script), nil
 }
 

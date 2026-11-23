@@ -40,5 +40,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0033](0033-reading-linux-media.md) | Reading Linux media: ISO9660, distribution families, every signer | accepted |
 | [0034](0034-linux-clients.md) | What a Linux client boots: Linux profiles, per-client iPXE scripts, the gate in iPXE | accepted |
 | [0035](0035-autoinstall.md) | Automated Linux installs: Ubuntu autoinstall templates and a per-deployment NoCloud seed | accepted |
+| [0036](0036-installer-status.md) | Linux deployment status: installer reports to the content listener | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

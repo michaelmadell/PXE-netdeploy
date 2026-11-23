@@ -146,11 +146,91 @@ func TestLinuxAutomaticProfile(t *testing.T) {
 	if _, status := seed("network-config"); status != http.StatusNotFound {
 		t.Errorf("network-config %d", status)
 	}
-	// Once the deployment ends, the seed is gone.
+	if !strings.Contains(ud, "/content/report/"+m[1]+"/events") || !strings.Contains(ud, "/content/report/"+m[1]+"/finished") {
+		t.Errorf("user-data lacks the report URLs:\n%s", ud)
+	}
+
+	// Reports move the deployment on (ADR 0036).
 	c, _ := f.st.ClientByMAC(f.ctx, nucMAC)
 	d, _ := f.st.ActiveDeployment(f.ctx, c.ID)
-	f.st.FinishDeployment(f.ctx, d.ID, store.StatusCancelled, "test")
+	if d.Stage == nil || *d.Stage != "checked-in" || d.Percent != 5 {
+		t.Errorf("after user-data: %v %d", d.Stage, d.Percent)
+	}
+	report := func(kind, body string) int {
+		status, _, _ := f.srv.LinuxReport(httptest.NewRequest("POST", "/content/report/x/"+kind, strings.NewReader(body)), m[1], kind)
+		return status
+	}
+	ev := func(typ, name, level, result string) string {
+		b, _ := json.Marshal(map[string]any{"name": name, "description": "d", "event_type": typ, "level": level, "result": result, "origin": "curtin"})
+		return string(b)
+	}
+	report("started", "")
+	report("events", ev("start", "subiquity/Install/install/curtin_install/run_curtin_step/cmd-install/stage-extract", "DEBUG", ""))
+	report("events", ev("start", "subiquity/Install/install/curtin_install/run_curtin_step/cmd-install/stage-partitioning/builtin", "DEBUG", ""))
+	report("events", ev("start", "subiquity/Install/install/postinstall", "INFO", ""))
+	d, _ = f.st.Deployment(f.ctx, d.ID)
+	if d.Stage == nil || *d.Stage != "finalizing" || d.Percent != 90 || d.Message != "final system configuration" {
+		t.Errorf("after events: %v %d %q", d.Stage, d.Percent, d.Message)
+	}
+	logs, _, _ := f.st.DeploymentLogs(f.ctx, d.ID, 0, 100)
+	if len(logs) != 2 || !strings.Contains(logs[0].Message, "started") || !strings.Contains(logs[1].Message, "postinstall") {
+		t.Errorf("logs: %+v", logs)
+	}
+	if report("events", "not json") != http.StatusBadRequest || report("nope", "") != http.StatusNotFound {
+		t.Error("bad reports accepted")
+	}
+	if report("finished", "") != http.StatusNoContent {
+		t.Error("finished refused")
+	}
+	if d, _ = f.st.Deployment(f.ctx, d.ID); d.Status != store.StatusSucceeded {
+		t.Errorf("status %s", d.Status)
+	}
+	// Once the deployment ends, the seed and the reports are gone.
 	if _, status := seed("user-data"); status != http.StatusNotFound {
-		t.Errorf("after the end: %d", status)
+		t.Errorf("seed after the end: %d", status)
+	}
+	if report("finished", "") != http.StatusNotFound {
+		t.Error("report after the end")
+	}
+}
+
+// startAuto starts a profile from the iPXE menu and returns the
+// deployment and its seed token.
+func (f *agentFixture) startAuto(t *testing.T, pid string) (store.Deployment, string) {
+	t.Helper()
+	w := f.ipxe("unlock", url.Values{"mac": {nucMAC}, "arch": {"x64"}, "password": {"correct horse"}})
+	tok := regexp.MustCompile(`param unlockToken (\S+)`).FindStringSubmatch(w.Body.String())[1]
+	w = f.ipxe("start", url.Values{"mac": {nucMAC}, "arch": {"x64"}, "unlockToken": {tok}, "profileId": {pid}})
+	m := regexp.MustCompile(`/content/seed/([A-Za-z0-9_-]+)/`).FindStringSubmatch(w.Body.String())
+	if m == nil {
+		t.Fatalf("boot script:\n%s", w.Body)
+	}
+	c, _ := f.st.ClientByMAC(f.ctx, nucMAC)
+	d, err := f.st.ActiveDeployment(f.ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, m[1]
+}
+
+func TestInstallerFailure(t *testing.T) {
+	for name, c := range map[string]struct{ kind, body string }{
+		"webhook":        {"events", `{"name":"subiquity/Install/install/curtin_install","event_type":"finish","result":"FAIL","level":"DEBUG","description":"installing system"}`},
+		"error-commands": {"failed", "boom"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newAgentFixture(t)
+			_, imid := f.addLinux("Ubuntu", "")
+			d, tok := f.startAuto(t, f.linuxAuto(t, imid, ""))
+			// A failed step that isn't the install doesn't fail it.
+			f.srv.LinuxReport(httptest.NewRequest("POST", "/x", strings.NewReader(`{"name":"subiquity/Drivers/_list_drivers","event_type":"finish","result":"FAIL","level":"DEBUG"}`)), tok, "events")
+			if d2, _ := f.st.Deployment(f.ctx, d.ID); d2.Status != store.StatusRunning {
+				t.Fatalf("failed by a side step: %s", d2.Status)
+			}
+			f.srv.LinuxReport(httptest.NewRequest("POST", "/x", strings.NewReader(c.body)), tok, c.kind)
+			if d2, _ := f.st.Deployment(f.ctx, d.ID); d2.Status != store.StatusFailed {
+				t.Errorf("status %s %q", d2.Status, d2.Message)
+			}
+		})
 	}
 }

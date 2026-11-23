@@ -24,6 +24,7 @@ type Data struct {
 	Packages             []string
 	BootOrderAfterDeploy string // disk-first or network-first
 	Image                ImageData
+	Report               ReportData
 	Client               unattend.ClientData
 	Profile              unattend.ProfileData
 	Deployment           unattend.DeploymentData
@@ -40,6 +41,16 @@ type AccountData struct {
 
 // ImageData names the distribution.
 type ImageData struct{ Distribution, Version string }
+
+// ReportData are the addresses the installer reports to (ADR 0036):
+// Subiquity's reporting webhook, and the hooks' start, finish and failure.
+type ReportData struct{ Webhook, Started, Finished, Failed string }
+
+// ReportURLs builds ReportData from a deployment's report base URL (ending
+// in /).
+func ReportURLs(base string) ReportData {
+	return ReportData{Webhook: base + "events", Started: base + "started", Finished: base + "finished", Failed: base + "failed"}
+}
 
 // Install modes.
 const (
@@ -137,11 +148,13 @@ type Input struct {
 	Arch, Hostname string
 	// PasswordHash is the account's crypt hash, unattend.Mask in previews,
 	// or empty.
-	PasswordHash           string
-	Image                  ImageData
-	Client                 unattend.ClientData
+	PasswordHash string
+	Image        ImageData
+	// ReportBase is the deployment's report URL, ending in /.
+	ReportBase              string
+	Client                  unattend.ClientData
 	ProfileID, DeploymentID string
-	Variables              map[string]string
+	Variables               map[string]string
 }
 
 // Prepare builds a template's data.
@@ -149,7 +162,7 @@ func Prepare(p Profile, in Input) Data {
 	s := p.Settings()
 	d := Data{Arch: in.Arch, Hostname: in.Hostname, Locale: s.Locale, KeyboardLayout: s.KeyboardLayout, Timezone: s.Timezone,
 		StorageLayout: s.StorageLayout, Packages: append([]string{}, s.Packages...), BootOrderAfterDeploy: p.BootOrderAfterDeploy,
-		Image: in.Image, Client: in.Client, Profile: unattend.ProfileData{ID: in.ProfileID, Name: p.Name},
+		Image: in.Image, Report: ReportURLs(in.ReportBase), Client: in.Client, Profile: unattend.ProfileData{ID: in.ProfileID, Name: p.Name},
 		Deployment: unattend.DeploymentData{ID: in.DeploymentID}, Variables: in.Variables,
 		Account: AccountData{SSHAuthorizedKeys: []string{}}}
 	if d.BootOrderAfterDeploy == "" {

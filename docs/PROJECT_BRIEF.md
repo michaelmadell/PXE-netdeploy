@@ -98,6 +98,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0033 | Reading Linux media: own ISO9660 reader (Rock Ridge, Joliet, plain), import tries UDF then ISO9660; families `ubuntu` (casper), `debian`, `redhat` (`.treeinfo`), only Ubuntu deployable until proven; `LinuxImageDetails` with shim, GRUB, kernel, initrd; every signer on `BootManager` (`signers`, `signedBy`); Ubuntu keeps its ISO (casper downloads it). |
 | 0034 | What a Linux client boots: profiles have a `kind` (`windows`, `linux`: name, description, `installImageId`, `kernelArgs`); HTTP(S) Boot clients only (PXE: no answer); `autoexec.ipxe` generated per client with the gate in iPXE (armed countdown, else a key within 30 s, `login`, password checked by `/agent/ipxe/unlock`, a menu of Linux profiles, `/agent/ipxe/start` returns shim/kernel/initrd commands); `/content/linux/<imageId>/` serves the tree and `image.iso` (plain HTTP for casper). |
 | 0035 | Automated Linux installs: unattend templates get a `format` (`unattend`, `autoinstall`) and a second built-in (`builtin-autoinstall`); autoinstall templates write YAML values (quoted strings, `raw`, `shquote`); Linux profiles' `linux` settings (`automatic`/`interactive`, account with a password secret and/or SSH keys, hostname pattern, disk layout, locale, packages); a deployment token in the kernel's `ds=nocloud;s=` URL serves `/content/seed/<token>/` (user-data rendered per request with a SHA-512 crypt hash, never the password). |
+| 0036 | Linux deployment status: the installer POSTs to `/content/report/<token>/` (Subiquity's reporting webhook, and `started`/`finished`/`failed` curl hooks in the built-in template); known steps move the existing stages and percent, `finished` marks `succeeded`, `failed` or a failed install event `failed`; INFO events in the deployment log; reports count as activity; interactive installs are `succeeded` when their boot commands are served. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -212,8 +213,9 @@ RHEL boot ISOs. Decision 3, what a Linux client boots (ADR 0034: Linux
 profiles, a per-client iPXE script with the gate, `/content/linux/`), is
 built and lab-tested on the NUC (2026-11-23). Decision 4, automated installs
 (ADR 0035: autoinstall templates, Linux install settings, a per-deployment
-NoCloud seed), is built with automated tests; decision 5 (status) next,
-then the NUC test of both.
+NoCloud seed), and decision 5, status without an agent (ADR 0036:
+installer reports to the content listener), are built with automated
+tests; the NUC test of both is next.
 
 ## Open questions and things to verify
 

@@ -1029,5 +1029,17 @@ boot prompt password.
 6. Variant: **The network** after installing: the next boot shows
    netdeploy's countdown first and, with no key, continues to the disk.
 
-Linux deployments don't report progress yet (decision 5): they stay
-`running` until they expire or you cancel them.
+### Progress (ADR 0036)
+
+7. During an automatic install, the deployment's page moves: 2% booting
+   the installer, 5% configuration fetched, 8% started, then partitioning
+   (20%), writing the system (30%), configuring (55–80%: boot packages,
+   kernel, package updates), finalizing (90–95%); its log shows the
+   installer's INFO steps (source `installer`). At the end it's
+   **succeeded** ("installed; rebooting") before the machine reboots.
+8. Failure: copy the built-in template, add a late command `false` before
+   the last one, use it in the profile and deploy: the deployment goes
+   **failed** ("the installer failed") within a minute of the late
+   commands.
+9. Interactive installs: the deployment is **succeeded** as soon as the
+   installer's boot commands are served; nothing tracks it after that.

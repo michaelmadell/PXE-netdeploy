@@ -71,7 +71,9 @@ Windows keeps its gate in WinPE (ADR 0013): a Linux client never gets there.
 - **Deployments** of Linux profiles are armed and validated as Windows ones
   (snapshot, expiry); a Linux deployment becomes `running` when its boot
   commands are served. Until decision 5 reports progress it can't finish on
-  its own and ends at its expiry; decisions 3–5 ship together.
+  its own and ends at its expiry; decisions 3–5 ship together. (Decision 5,
+  [0036](0036-installer-status.md): the installer reports progress and the
+  end; interactive installs end when their boot commands are served.)
 - **Import warns** about a 2023-only shim too ("machines without the
   Microsoft UEFI CA 2023 refuse it"), as it does for a 2011-only one.
 

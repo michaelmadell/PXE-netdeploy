@@ -131,9 +131,10 @@ func TestAgentIpxeMenuAndStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := f.st.ActiveDeployment(f.ctx, c.ID)
-	if err != nil || d.Status != store.StatusRunning || d.Origin != store.OriginBootPrompt {
-		t.Fatalf("deployment: %+v %v", d, err)
+	// An interactive install isn't tracked: it ends when it starts (ADR 0036).
+	ds, _, err := f.st.ListDeployments(f.ctx, c.ID, 10, "")
+	if err != nil || len(ds) != 1 || ds[0].Status != store.StatusSucceeded || ds[0].Origin != store.OriginBootPrompt {
+		t.Fatalf("deployment: %+v %v", ds, err)
 	}
 	// The token is single-use.
 	if w := f.ipxe("start", url.Values{"mac": {nucMAC}, "arch": {"x64"}, "unlockToken": {m[1]}, "profileId": {pid}}); !strings.Contains(w.Body.String(), "expired or was already used") {
@@ -181,7 +182,7 @@ func TestAgentIpxeArmed(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "url=http://10.77.0.1:8080/content/linux/") {
 		t.Fatalf("armed boot:\n%s", w.Body)
 	}
-	if d2, _ := f.st.Deployment(f.ctx, d.ID); d2.Status != store.StatusRunning {
+	if d2, _ := f.st.Deployment(f.ctx, d.ID); d2.Status != store.StatusSucceeded || d2.StartedAt == nil {
 		t.Errorf("status %s", d2.Status)
 	}
 	// Consumed: a second boot isn't armed.

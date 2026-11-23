@@ -95,7 +95,7 @@ func (s *Server) prepareAutoinstall(ctx context.Context, c store.Client, p store
 		hash = unattend.Mask
 	}
 	_, fs, err := renderAutoinstall(lp, spec, autoinstall.Input{Arch: arch, Hostname: name, PasswordHash: hash, Image: img, Client: cd,
-		ProfileID: p.ID, DeploymentID: "preview", Variables: vars})
+		ProfileID: p.ID, DeploymentID: "preview", Variables: vars, ReportBase: autoinstall.SampleReportBase})
 	if err != nil {
 		pr := newProblem(http.StatusUnprocessableEntity, "template_render", "Template fails to render", err.Error(), nil)
 		return &pr, nil
@@ -127,7 +127,9 @@ func (s *Server) validateAutoinstall(ctx context.Context, p store.Profile, fs []
 	if err != nil || !lp.Automatic() {
 		return fs, err
 	}
-	add := func(sev, code, format string, a ...any) { fs = append(fs, finding{sev, code, fmt.Sprintf(format, a...)}) }
+	add := func(sev, code, format string, a ...any) {
+		fs = append(fs, finding{sev, code, fmt.Sprintf(format, a...)})
+	}
 	hash := ""
 	for _, id := range lp.Secrets() {
 		sec, err := s.store.Secret(ctx, id)
@@ -162,7 +164,7 @@ func (s *Server) validateAutoinstall(ctx context.Context, p store.Profile, fs []
 		}
 	}
 	_, tfs, err := renderAutoinstall(lp, spec, autoinstall.Input{Arch: arch, Hostname: autoinstall.SampleHostname, PasswordHash: hash, Image: img,
-		Client: unattend.SampleClient, ProfileID: p.ID, DeploymentID: "preview", Variables: vars})
+		Client: unattend.SampleClient, ProfileID: p.ID, DeploymentID: "preview", Variables: vars, ReportBase: autoinstall.SampleReportBase})
 	if err != nil {
 		add("error", "template_render", "Autoinstall template %q: %v", spec.Name, err)
 		return fs, nil
@@ -279,6 +281,9 @@ func (s *Server) LinuxSeed(r *http.Request, token, file string) ([]byte, int, []
 		return nil, http.StatusInternalServerError, []any{"err", err.Error()}
 	}
 	attrs := []any{"deployment_id", d.ID, "seed_file", file}
+	if file == "user-data" {
+		s.reportProgress(ctx, d.ID, "checked-in", 5, "the installer fetched its configuration")
+	}
 	lp, err := autoinstall.ParseProfile(d.ProfileSnapshot)
 	if err != nil || lp.Kind != store.ProfileLinux || !lp.Automatic() {
 		return nil, http.StatusNotFound, append(attrs, "reason", "not an automatic Linux deployment")
@@ -295,7 +300,7 @@ func (s *Server) LinuxSeed(r *http.Request, token, file string) ([]byte, int, []
 	default:
 		return nil, http.StatusNotFound, append(attrs, "reason", "no such seed file")
 	}
-	b, err := s.deploymentUserData(ctx, d, lp)
+	b, err := s.deploymentUserData(ctx, d, lp, "http://"+r.Host+ReportPrefix+token+"/")
 	if err != nil {
 		return nil, http.StatusInternalServerError, append(attrs, "err", err.Error())
 	}
@@ -304,7 +309,7 @@ func (s *Server) LinuxSeed(r *http.Request, token, file string) ([]byte, int, []
 
 // deploymentUserData renders a deployment's user-data with its real
 // secrets, from what it copied when it was created.
-func (s *Server) deploymentUserData(ctx context.Context, d store.Deployment, lp autoinstall.Profile) ([]byte, error) {
+func (s *Server) deploymentUserData(ctx context.Context, d store.Deployment, lp autoinstall.Profile, reportBase string) ([]byte, error) {
 	spec := autoinstall.Builtin()
 	if len(d.UnattendTemplate) > 0 {
 		if err := json.Unmarshal(d.UnattendTemplate, &spec); err != nil {
@@ -333,7 +338,7 @@ func (s *Server) deploymentUserData(ctx context.Context, d store.Deployment, lp 
 		return nil, err
 	}
 	return t.Execute(autoinstall.Prepare(lp, autoinstall.Input{Arch: arch, Hostname: ptrOr(d.ComputerName, ""), PasswordHash: hash, Image: img,
-		Client: clientData(c), ProfileID: d.ProfileID, DeploymentID: d.ID, Variables: d.Variables}))
+		Client: clientData(c), ProfileID: d.ProfileID, DeploymentID: d.ID, Variables: d.Variables, ReportBase: reportBase}))
 }
 
 // yamlQuote is s as a YAML double-quoted scalar.

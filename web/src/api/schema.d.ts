@@ -1455,7 +1455,9 @@ export interface paths {
          *     the generated command line, the initrd, `boot`), served from
          *     `/content/linux/<imageId>/`; for an automatic install (ADR 0035) the
          *     command line also has `autoinstall ds=nocloud;s=<seed URL>`, the
-         *     deployment's NoCloud seed on plain HTTP, valid while it runs; otherwise
+         *     deployment's NoCloud seed on plain HTTP, valid while it runs, and the
+         *     installer reports progress (ADR 0036); an interactive install's
+         *     deployment is marked `succeeded` here, as nothing reports on it; otherwise
          *     why not (no pending deployment,
          *     an expired or used token, a profile that isn't deployable), then back
          *     to the firmware.
@@ -2432,6 +2434,11 @@ export interface components {
              *       (`lvm` or `direct`), `.Packages` (list), `.BootOrderAfterDeploy`.
              *     * `.Image`: `Distribution`, `Version`. `.Client`, `.Profile`,
              *       `.Deployment`, `.Variables` as above.
+             *     * `.Report`: `Webhook` (for `reporting:` as a `webhook`
+             *       endpoint), `Started`, `Finished`, `Failed`: URLs the installer
+             *       POSTs to (ADR 0036). Events move the deployment's stage and
+             *       percent; `Finished` marks it `succeeded`, `Failed` (or a failed
+             *       install event) `failed`. Previews show a placeholder address.
              *
              *     † Previews show `********`; the hash is made when the installer
              *     fetches `user-data`, with a new salt each time.

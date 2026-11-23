@@ -312,3 +312,33 @@ since 2026-11-20. Fixes: stop the other server; and full mode now notes the
 address a booting client takes from another server as a boot session, as
 proxy mode does (`another DHCP server answered a network-boot client` in
 the log).
+
+## Linux deployment status (decision 5, ADR 0036)
+
+**Built 2026-11-23** (not yet lab-tested). `/content/report/<token>/`
+(`events`, `started`, `finished`, `failed`); `.Report` in template data and
+the built-in template's webhook and hooks; milestones from the spike's
+webhook log move the stages; interactive installs end `succeeded` when the
+boot commands are served.
+
+**Automated:** the built-in template renders the report URLs and its checks
+warn without them; from the menu, `user-data` moves the deployment to
+`checked-in` 5%, `started` and three webhook events (out of order) to
+`finalizing` 90% with the step's message; only `started` and the INFO event
+reach the log; a bad event is `400`, an unknown kind `404`; `finished`
+marks `succeeded`, after which the seed and reports are `404`; a failed
+side step leaves it running, and both a failed install event and
+`error-commands` fail it; the content listener routes only `POST` with a
+token and a kind.
+
+**Not yet tested:** a real install's events on the NUC (step names,
+stages, timings, the inactivity timestamp), the curl hooks in the installer
+environment through netdeployd, a failed install.
+
+**Lab, Intel NUC, 2026-11-23 (the user):** an automatic Ubuntu install
+through the installed netdeployd completed, with its status and success
+shown on the deployment's page. Not yet recorded in detail: the stage
+timings, the account and boot order checks in `running-the-lab.md`, and
+the failure variant. The page still described a Windows deployment (the
+stage names, "Windows was applied … Setup", "Computer name", the cancel
+dialog); the UI now words these for Linux deployments.

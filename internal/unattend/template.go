@@ -32,11 +32,11 @@ var (
 // TemplateSpec is an unattend template as stored, and as copied into a
 // deployment when it is created.
 type TemplateSpec struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Description       string            `json:"description,omitempty"`
-	ETag              string            `json:"etag,omitempty"`
-	BuiltIn           bool              `json:"builtIn"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	ETag        string `json:"etag,omitempty"`
+	BuiltIn     bool   `json:"builtIn"`
 	// Format is "" or "unattend" (Windows) or "autoinstall" (ADR 0035).
 	Format            string            `json:"format,omitempty"`
 	Content           string            `json:"content"`

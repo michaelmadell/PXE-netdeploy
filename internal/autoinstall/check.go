@@ -60,6 +60,21 @@ func Check(out []byte, d Data) []unattend.Finding {
 			add(unattend.SevWarning, "hostname_dropped", 0, "identity.hostname isn't .Hostname (%q), so the profile's hostname pattern is ignored.", d.Hostname)
 		}
 	}
+	if d.Report.Webhook != "" {
+		rep, _ := ai["reporting"].(map[string]any)
+		found := false
+		for _, v := range rep {
+			if m, ok := v.(map[string]any); ok && m["endpoint"] == d.Report.Webhook {
+				found = true
+			}
+		}
+		if !found {
+			add(unattend.SevWarning, "report_missing", 0, "No reporting webhook to .Report.Webhook: netdeploy won't see the install's progress.")
+		}
+		if !bytes.Contains(out, []byte(d.Report.Finished)) {
+			add(unattend.SevWarning, "report_finish_missing", 0, "Nothing calls .Report.Finished: the deployment won't be marked succeeded and ends at the inactivity timeout.")
+		}
+	}
 	if hasID && d.Account.Username != "" {
 		if u, _ := id["username"].(string); u != d.Account.Username {
 			add(unattend.SevWarning, "account_dropped", 0, "identity.username isn't .Account.Username (%q).", d.Account.Username)

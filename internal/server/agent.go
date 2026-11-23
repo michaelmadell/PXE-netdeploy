@@ -100,6 +100,9 @@ type agentState struct {
 	bootPrompt func() settings.BootPrompt
 	// httpEndpoints replaces the settings' HTTP content endpoints in tests.
 	httpEndpoints func() []netip.AddrPort
+	// touched is when each Linux deployment's activity was last recorded
+	// (installer reports are throttled, ADR 0036).
+	touched map[string]time.Time
 }
 
 type checkIn struct {

@@ -27,6 +27,10 @@ const AgentPrefix = "/api/v1/agent/"
 // LinuxPrefix serves Linux images by id (ADR 0034): /content/linux/<id>/<path>.
 const LinuxPrefix = "/content/linux/"
 
+// ReportPrefix takes automatic Linux installs' reports (ADR 0036):
+// POST /content/report/<token>/<kind>.
+const ReportPrefix = "/content/report/"
+
 // SeedPrefix serves automatic Linux installs' NoCloud seeds (ADR 0035):
 // /content/seed/<token>/<file>.
 const SeedPrefix = "/content/seed/"
@@ -56,6 +60,10 @@ type Config struct {
 	// Seed serves a NoCloud seed file for a deployment token: the body, the
 	// HTTP status and log attributes. Nil: 404.
 	Seed func(r *http.Request, token, file string) (body []byte, status int, attrs []any)
+	// Report takes an installer report for a deployment token: the HTTP
+	// status, whether a success is logged at debug level only, and log
+	// attributes. Nil: 404.
+	Report func(r *http.Request, token, kind string) (status int, quiet bool, attrs []any)
 	// Agent handles AgentPrefix. Nil: 404.
 	Agent  http.Handler
 	Logger *slog.Logger
@@ -85,6 +93,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveLinux(w, r)
 	case strings.HasPrefix(r.URL.Path, SeedPrefix) && h.cfg.Seed != nil:
 		h.serveSeed(w, r)
+	case strings.HasPrefix(r.URL.Path, ReportPrefix) && h.cfg.Report != nil:
+		h.serveReport(w, r)
 	default:
 		notFound(w, "Nothing is served at "+r.URL.Path+" on the content listener.")
 	}
@@ -196,6 +206,38 @@ func (h *Handler) serveSeed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, file, time.Now(), strings.NewReader(string(body)))
+}
+
+// serveReport takes POST /content/report/<token>/<kind>. The token isn't
+// logged.
+func (h *Handler) serveReport(w http.ResponseWriter, r *http.Request) {
+	log := h.log.With("client", r.RemoteAddr, "path", ReportPrefix+"…")
+	token, kind, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, ReportPrefix), "/")
+	if !ok || token == "" || kind == "" || strings.Contains(kind, "/") {
+		log.Warn("report refused", "reason", "bad path")
+		notFound(w, "No such report.")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		problem(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST.")
+		return
+	}
+	status, quiet, attrs := h.cfg.Report(r, token, kind)
+	log = log.With(attrs...)
+	switch {
+	case status < 300 && quiet:
+		log.Debug("report taken", "status", status)
+	case status < 300:
+		log.Info("report taken", "status", status)
+	default:
+		log.Info("report refused", "status", status)
+	}
+	if status < 300 {
+		w.WriteHeader(status)
+		return
+	}
+	problem(w, status, "report_refused", http.StatusText(status))
 }
 
 // serveFile serves rel from root.

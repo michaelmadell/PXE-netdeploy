@@ -233,3 +233,39 @@ func TestGeneratedScriptAndLinux(t *testing.T) {
 		}
 	}
 }
+
+// TestReport: POST /content/report/<token>/<kind> goes to Report; other
+// methods and bad paths don't.
+func TestReport(t *testing.T) {
+	var got []string
+	h := New(Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Report: func(r *http.Request, token, kind string) (int, bool, []any) {
+			got = append(got, token+" "+kind)
+			if token != "tok" {
+				return http.StatusNotFound, false, nil
+			}
+			return http.StatusNoContent, kind == "events", nil
+		}})
+	post := func(path string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader("{}")))
+		return w.Code
+	}
+	if c := post(ReportPrefix + "tok/events"); c != http.StatusNoContent {
+		t.Errorf("events: %d", c)
+	}
+	if c := post(ReportPrefix + "other/finished"); c != http.StatusNotFound {
+		t.Errorf("unknown token: %d", c)
+	}
+	for _, p := range []string{ReportPrefix + "tok", ReportPrefix + "tok/a/b", ReportPrefix + "/events"} {
+		if c := post(p); c != http.StatusNotFound {
+			t.Errorf("%s: %d", p, c)
+		}
+	}
+	if w := get(h, "GET", ReportPrefix+"tok/events", "10.77.0.103"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET: %d", w.Code)
+	}
+	if len(got) != 2 {
+		t.Errorf("calls: %v", got)
+	}
+}

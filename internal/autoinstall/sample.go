@@ -2,6 +2,9 @@ package autoinstall
 
 import "github.com/michaelmadell/pxe-netdeploy/internal/unattend"
 
+// SampleReportBase stands for a deployment's report URL in previews.
+const SampleReportBase = "http://netdeploy.example/content/report/********/"
+
 // SampleHostname is the hostname sample renders use.
 const SampleHostname = "nd-sample-01"
 
@@ -15,7 +18,7 @@ func SampleProfile() Profile {
 
 // SampleInput is the sample deployment data, secrets masked.
 func SampleInput(vars map[string]string) Input {
-	return Input{Arch: "amd64", Hostname: SampleHostname, PasswordHash: unattend.Mask, Image: ImageData{Distribution: "Ubuntu-Server", Version: "26.04.1"},
+	return Input{Arch: "amd64", Hostname: SampleHostname, PasswordHash: unattend.Mask, ReportBase: SampleReportBase, Image: ImageData{Distribution: "Ubuntu-Server", Version: "26.04.1"},
 		Client: unattend.SampleClient, ProfileID: "sample-profile", DeploymentID: "preview", Variables: vars}
 }
 

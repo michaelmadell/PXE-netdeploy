@@ -9,6 +9,20 @@ import { initTheme } from "./lib/theme";
 
 initTheme();
 
+// A page still open from an older build asks for chunks the server no
+// longer has: reload once to get the current build (not in a loop).
+window.addEventListener("vite:preloadError", (e) => {
+  try {
+    const last = Number(sessionStorage.getItem("nd-reloaded-at") ?? 0);
+    if (Date.now() - last < 10_000) return;
+    sessionStorage.setItem("nd-reloaded-at", String(Date.now()));
+  } catch {
+    return;
+  }
+  e.preventDefault();
+  window.location.reload();
+});
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

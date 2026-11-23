@@ -52,6 +52,8 @@ type Options struct {
 	// LinuxContent opens a ready Linux image's content for
 	// /content/linux/<id>/ (ADR 0034). Nil: 404.
 	LinuxContent func(imageID string) (fs.FS, error)
+	// LinuxSeed serves NoCloud seeds for /content/seed/ (ADR 0035). Nil: 404.
+	LinuxSeed func(r *http.Request, token, file string) ([]byte, int, []any)
 	// Events receives client sightings and lease changes from DHCP.
 	Events *events.Bus
 	// CheckBackup validates backup settings against things the settings
@@ -415,6 +417,7 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 			ClientRoot:  s.clientRoot(iface),
 			Script:      s.ipxeScript(iface),
 			Linux:       s.opts.LinuxContent,
+			Seed:        s.opts.LinuxSeed,
 			Agent:       s.opts.Agent,
 			Logger:      s.opts.Logger,
 		}

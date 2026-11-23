@@ -263,6 +263,9 @@ func run(parent context.Context, o options) error {
 	}
 
 	var handler http.Handler
+	// The content listeners serve seeds the API server renders (ADR 0035);
+	// it's made after the settings service.
+	var linuxSeed func(*http.Request, string, string) ([]byte, int, []any)
 	network := netsvc.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
 	}), netsvc.Options{})
@@ -279,6 +282,12 @@ func run(parent context.Context, o options) error {
 		// forwards /api/v1/agent/ to it.
 		Agent:        http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }),
 		LinuxContent: booter.LinuxContent,
+		LinuxSeed: func(r *http.Request, token, file string) ([]byte, int, []any) {
+			if linuxSeed == nil {
+				return nil, http.StatusServiceUnavailable, nil
+			}
+			return linuxSeed(r, token, file)
+		},
 		CheckBackup: func(ctx context.Context, b settings.Backup) []settings.FieldError {
 			if b.Destination == nil {
 				return nil
@@ -350,6 +359,7 @@ func run(parent context.Context, o options) error {
 	}
 	impl := server.New(version, server.Deps{Settings: svc, Network: network, Store: st, Events: bus, Content: content, Jobs: runner, Uploads: up,
 		Vault: vault, Backup: backups, Boot: boot, CA: ca, IPXE: chain, Setup: setup, Dev: o.dev, DataDir: o.dataDir})
+	linuxSeed = impl.LinuxSeed // before the settings service starts the content listeners
 	if handler, err = adminHandler(impl, st, up); err != nil {
 		return err
 	}

@@ -496,19 +496,22 @@ export interface paths {
         };
         /**
          * List available unattend templates.
-         * @description The built-in template (id `builtin`) comes first, then the stored ones.
+         * @description The built-in templates come first (`builtin` for Windows unattend files,
+         *     `builtin-autoinstall` for Ubuntu autoinstall), then the stored ones.
          */
         get: operations["listUnattendTemplates"];
         put?: never;
         /**
          * Create a new unattend template.
          * @description The template is parsed and rendered with sample data for each of its
-         *     `identityModes` (`ad` with both join methods), and the output checked
-         *     (ADR 0027). `422` codes: `template_syntax` (doesn't parse; `detail` names the
+         *     `identityModes` (`ad` with both join methods), or once for an
+         *     `autoinstall` template, and the output checked (ADR 0027, 0035). `422` codes: `template_syntax` (doesn't parse; `detail` names the
          *     line), `template_render` (fails with the sample data, e.g. an undeclared
          *     variable or a field that doesn't exist), `template_invalid` (a check failed;
-         *     `errors[]` has one entry per finding, `field` being the finding code).
-         *     Warnings don't refuse; `render` shows them.
+         *     `errors[]` has one entry per finding, `field` being the finding code),
+         *     `identity_modes_required` (an `unattend` template with no
+         *     `identityModes`), `not_for_format` (`identityModes` on an `autoinstall`
+         *     template). Warnings don't refuse; `render` shows them.
          */
         post: operations["createUnattendTemplate"];
         delete?: never;
@@ -530,9 +533,10 @@ export interface paths {
         get: operations["getUnattendTemplate"];
         /**
          * Replace a specific unattend template.
-         * @description Same checks as create. `409` codes: `built_in` (the built-in template is
+         * @description Same checks as create. `409` codes: `built_in` (the built-in templates are
          *     read-only; create a copy), `template_in_use` (the new `identityModes` drop a
-         *     mode a profile using this template has). Pending and running deployments
+         *     mode a profile using this template has). `422` `format_changed`: a
+         *     template's `format` can't change. Pending and running deployments
          *     keep the copy they snapshotted.
          */
         put: operations["replaceUnattendTemplate"];
@@ -586,9 +590,9 @@ export interface paths {
          * @description Renders with the data an agent would get, except that no secret is ever
          *     decrypted: every secret value is `********` (ADR 0027). With `profileId`
          *     (and optionally `clientId`) it renders that real combination and runs the
-         *     checks arming runs; without, it renders sample data for `identityMode`.
-         *     `variables` are applied last, for experiments. Agent-mode output has no
-         *     `windowsPE` pass.
+         *     checks arming runs; without, it renders sample data for `identityMode`
+         *     (`unattend`) or the sample Linux profile (`autoinstall`). `variables` are
+         *     applied last, for experiments. Agent-mode output has no `windowsPE` pass.
          *
          *     `200` whenever the template renders, with `findings` (`ok` is false if any
          *     is an error). `422` codes: `template_syntax`, `template_render` (`detail`
@@ -1449,7 +1453,10 @@ export interface paths {
          *     Always answers `200` with an iPXE script: on success the boot commands
          *     (the distribution's shim through iPXE's `shim` command, the kernel with
          *     the generated command line, the initrd, `boot`), served from
-         *     `/content/linux/<imageId>/`; otherwise why not (no pending deployment,
+         *     `/content/linux/<imageId>/`; for an automatic install (ADR 0035) the
+         *     command line also has `autoinstall ds=nocloud;s=<seed URL>`, the
+         *     deployment's NoCloud seed on plain HTTP, valid while it runs; otherwise
+         *     why not (no pending deployment,
          *     an expired or used token, a profile that isn't deployable), then back
          *     to the firmware.
          */
@@ -2371,9 +2378,18 @@ export interface components {
             /** @description Total size of the served build's files. */
             readonly sizeBytes?: number | null;
         };
+        /**
+         * @description `unattend`: a Windows unattend file for Windows profiles (ADR 0027).
+         *     `autoinstall`: an Ubuntu autoinstall `user-data` document for Linux
+         *     profiles (ADR 0035). A template's format can't change.
+         * @enum {string}
+         */
+        UnattendFormat: "unattend" | "autoinstall";
         UnattendTemplateInput: {
             name: string;
             description?: string;
+            /** @default unattend */
+            format: components["schemas"]["UnattendFormat"];
             /**
              * @description Go `text/template` producing the whole unattend file (ADR 0027). Parsed
              *     with `missingkey=error`, so a missing field or undeclared variable fails
@@ -2403,12 +2419,35 @@ export interface components {
              *     Functions: `first n`, `last n`, `upper`, `lower` (as computer name
              *     patterns), `default "value" x`, and `raw`. Every value an action writes
              *     is XML-escaped; only a value passed through `raw` is written unescaped.
+             *
+             *     **`autoinstall` templates** (ADR 0035) write the whole `user-data`
+             *     document (`#cloud-config` with `autoinstall:`). Data:
+             *
+             *     * `.Arch`: `amd64` or `arm64`.
+             *     * `.Hostname`: the rendered `linux.hostnamePattern`.
+             *     * `.Account`: `Username`, `RealName`, `PasswordHash`† (SHA-512 crypt,
+             *       `$6$…`; empty without a password), `SSHAuthorizedKeys` (list),
+             *       `SSHPasswordAuth`.
+             *     * `.Locale`, `.KeyboardLayout`, `.Timezone`, `.StorageLayout`
+             *       (`lvm` or `direct`), `.Packages` (list), `.BootOrderAfterDeploy`.
+             *     * `.Image`: `Distribution`, `Version`. `.Client`, `.Profile`,
+             *       `.Deployment`, `.Variables` as above.
+             *
+             *     † Previews show `********`; the hash is made when the installer
+             *     fetches `user-data`, with a new salt each time.
+             *
+             *     Every value an action writes becomes YAML: strings as double-quoted
+             *     scalars (JSON strings), numbers and booleans as they are, lists as
+             *     flow sequences. `raw` writes a value as it is; `shquote` quotes a
+             *     string for a shell command (wrap the result in `raw` inside a YAML
+             *     block scalar).
              */
             content: string;
             /**
-             * @description Identity modes this template renders. Each is checked on save with
-             *     sample data: `local` must produce every account and the auto-logon,
-             *     `ad` the `UnattendedJoin` for both join methods (ADR 0027).
+             * @description `unattend` templates: identity modes this template renders, at least
+             *     one. Each is checked on save with sample data: `local` must produce
+             *     every account and the auto-logon, `ad` the `UnattendedJoin` for both
+             *     join methods (ADR 0027). `autoinstall` templates: empty.
              */
             identityModes: components["schemas"]["IdentityMode"][];
             variableDefaults?: components["schemas"]["Variables"];
@@ -2421,9 +2460,10 @@ export interface components {
         };
         UnattendTemplate: components["schemas"]["Meta"] & components["schemas"]["UnattendTemplateInput"] & {
             /**
-             * @description The shipped template (id `builtin`, all identity modes the server
-             *     supports). Read-only: create a copy to customise it. A profile with no
-             *     `unattendTemplateId` uses it.
+             * @description A shipped template: `builtin` (unattend, all identity modes the
+             *     server supports) or `builtin-autoinstall`. Read-only: create a copy
+             *     to customise it. A profile with no `unattendTemplateId` uses its
+             *     kind's built-in template.
              */
             readonly builtIn: boolean;
         };
@@ -2443,9 +2483,10 @@ export interface components {
             template: components["schemas"]["UnattendTemplateInput"];
         };
         UnattendRenderResult: components["schemas"]["ValidationResult"] & {
-            /** @description The rendered unattend file (secrets as `********`). */
+            /** @description The rendered file (secrets as `********`). */
             content: string;
-            identityMode: components["schemas"]["IdentityMode"];
+            /** @description The mode rendered (`unattend` templates only). */
+            identityMode?: components["schemas"]["IdentityMode"];
         };
         /** @enum {string} */
         InstallMethod: "agent" | "smb";
@@ -2460,10 +2501,13 @@ export interface components {
          * @description `bootImageId`, `editionIndex`, `installMethod` and `identity` are
          *     required for `windows` profiles (`422`, `code: required_for_kind`,
          *     the fields in `errors[]`) and must be absent for `linux` ones, which
-         *     use `kernelArgs` instead (`422`, `code: not_for_kind`). Other Windows-only fields
-         *     (`osDriverGroupIds`, `unattendTemplateId`, `smbTargetId`,
-         *     `osSettings`, `bootOrderAfterDeploy`) are refused on a `linux` profile
-         *     the same way. `kind` can't be changed by a replace (`422`,
+         *     use `kernelArgs` and `linux` instead (`422`, `code: not_for_kind`).
+         *     Other Windows-only fields (`osDriverGroupIds`, `smbTargetId`,
+         *     `osSettings`) are refused on a `linux` profile the same way, and
+         *     `linux` on a `windows` one. A `linux` profile's `unattendTemplateId`
+         *     names an `autoinstall` template (`422 template_format_mismatch`
+         *     otherwise); it and `bootOrderAfterDeploy` are for automatic installs
+         *     (ADR 0035). `kind` can't be changed by a replace (`422`,
          *     `code: kind_changed`): make a new profile.
          */
         ProfileInput: {
@@ -2485,11 +2529,14 @@ export interface components {
              *     (ADR 0034), e.g. `console=ttyS0,115200`. No newlines or `"`.
              */
             kernelArgs?: string;
+            linux?: components["schemas"]["LinuxSettings"];
             /** @description Drivers injected into the installed OS (separate from boot image drivers). */
             osDriverGroupIds?: string[];
             /**
-             * @description Null uses the built-in template. `builtin` means the same and is stored
-             *     as null. The template's `identityModes` must include the profile's mode.
+             * @description Null uses the kind's built-in template. `builtin` (Windows) and
+             *     `builtin-autoinstall` (Linux) mean the same and are stored as null.
+             *     Windows: an `unattend` template whose `identityModes` include the
+             *     profile's mode. Linux: an `autoinstall` template.
              */
             unattendTemplateId?: string | null;
             /** @description Precedence: template `variableDefaults` < profile `variables` < client `variables`. */
@@ -2500,8 +2547,9 @@ export interface components {
             identity?: components["schemas"]["Identity"];
             osSettings?: components["schemas"]["OsSettings"];
             /**
-             * @description UEFI boot order the agent leaves after a successful deployment.
-             *     Windows profiles only; `disk-first` when not given. (No schema
+             * @description UEFI boot order the agent (Windows) or the built-in autoinstall
+             *     template's `late-commands` (Linux, ADR 0035) leave after a successful
+             *     deployment; `disk-first` when not given. (No schema
              *     default: the request validator would fill it in on Linux
              *     profiles too, which refuse it.)
              *     Either way the installed system has a boot entry (bcdboot's, or one the
@@ -2513,6 +2561,58 @@ export interface components {
              * @enum {string}
              */
             bootOrderAfterDeploy?: "disk-first" | "network-first";
+        };
+        /**
+         * @description A Linux profile's install (ADR 0035). Absent: `interactive`, as
+         *     before. `automatic` needs `account`, with a password or an SSH key
+         *     (`422`, `code: linux_account_required`); the installer then gets a
+         *     NoCloud seed rendered from the profile's `autoinstall` template.
+         */
+        LinuxSettings: {
+            /**
+             * @description `interactive`: the installer asks everything, as with the ISO.
+             * @default automatic
+             * @enum {string}
+             */
+            install: "automatic" | "interactive";
+            /**
+             * @description As `osSettings.computerNamePattern` (same fields and functions); the
+             *     result is lowercased and must be a hostname label: 1-63 letters, digits
+             *     or hyphens, no hyphen at either end (`invalid_hostname` when arming).
+             *     Null: `linux-` and the MAC's last 6 hex digits.
+             */
+            hostnamePattern?: string | null;
+            account?: {
+                /** @description Not a system account name (`root`, `daemon`, …; `reserved_account_name`). */
+                username: string;
+                realName?: string;
+                /** @description Secret of kind `password`. It reaches the installer only as a SHA-512 crypt hash, over plain HTTP. */
+                passwordSecretId?: string | null;
+                /** @description OpenSSH public keys, one per entry; also installs the OpenSSH server. */
+                sshAuthorizedKeys?: string[];
+                /** @default false */
+                sshPasswordAuth: boolean;
+            };
+            /**
+             * @description Subiquity's layout on the largest disk; everything on it is erased.
+             * @default lvm
+             * @enum {string}
+             */
+            storageLayout: "lvm" | "direct";
+            /** @default en_GB.UTF-8 */
+            locale: string;
+            /**
+             * @description An XKB layout, e.g. `gb`, `us`, `de`.
+             * @default gb
+             */
+            keyboardLayout: string;
+            /**
+             * @description An IANA time zone.
+             * @default Europe/London
+             */
+            timezone: string;
+            /** @description Extra packages installed into the target. */
+            packages?: string[];
         };
         Profile: components["schemas"]["Meta"] & components["schemas"]["ProfileInput"];
         /** @enum {string} */

@@ -55,7 +55,7 @@ export function identityProblems(id: Identity): string[] {
   return out;
 }
 
-function SecretSelect({ kind, value, onChange, label, hint }: { kind: Schemas["SecretKind"]; value: string; onChange: (id: string) => void; label: string; hint?: string }) {
+export function SecretSelect({ kind, value, onChange, label, hint }: { kind: Schemas["SecretKind"]; value: string; onChange: (id: string) => void; label: string; hint?: string }) {
   const secrets = useSecrets(kind);
   const items = secrets.data?.items ?? [];
   return (

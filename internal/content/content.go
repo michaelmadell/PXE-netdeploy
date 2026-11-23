@@ -27,6 +27,10 @@ const AgentPrefix = "/api/v1/agent/"
 // LinuxPrefix serves Linux images by id (ADR 0034): /content/linux/<id>/<path>.
 const LinuxPrefix = "/content/linux/"
 
+// SeedPrefix serves automatic Linux installs' NoCloud seeds (ADR 0035):
+// /content/seed/<token>/<file>.
+const SeedPrefix = "/content/seed/"
+
 // Config configures a Handler.
 type Config struct {
 	// DefaultRoot serves clients ClientRoot doesn't place (nil or no
@@ -49,6 +53,9 @@ type Config struct {
 	// Linux opens a ready Linux image's content (its tree and image.iso)
 	// for LinuxPrefix. Nil: 404. fs.ErrNotExist: no such image.
 	Linux func(imageID string) (fs.FS, error)
+	// Seed serves a NoCloud seed file for a deployment token: the body, the
+	// HTTP status and log attributes. Nil: 404.
+	Seed func(r *http.Request, token, file string) (body []byte, status int, attrs []any)
 	// Agent handles AgentPrefix. Nil: 404.
 	Agent  http.Handler
 	Logger *slog.Logger
@@ -76,6 +83,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveBoot(w, r)
 	case strings.HasPrefix(r.URL.Path, LinuxPrefix) && h.cfg.Linux != nil:
 		h.serveLinux(w, r)
+	case strings.HasPrefix(r.URL.Path, SeedPrefix) && h.cfg.Seed != nil:
+		h.serveSeed(w, r)
 	default:
 		notFound(w, "Nothing is served at "+r.URL.Path+" on the content listener.")
 	}
@@ -156,6 +165,37 @@ func (h *Handler) serveLinux(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.serveFile(w, r, log.With("linux_image", id), root, rel, start)
+}
+
+// serveSeed serves /content/seed/<token>/<file>. The token isn't logged.
+func (h *Handler) serveSeed(w http.ResponseWriter, r *http.Request) {
+	log := h.log.With("client", r.RemoteAddr, "path", SeedPrefix+"…")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		problem(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only GET and HEAD.")
+		return
+	}
+	token, file, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, SeedPrefix), "/")
+	if !ok || token == "" || strings.ContainsAny(file, "/\\") {
+		log.Warn("content request refused", "reason", "bad path")
+		notFound(w, "No such file.")
+		return
+	}
+	body, status, attrs := h.cfg.Seed(r, token, file)
+	log = log.With(attrs...)
+	if status != http.StatusOK {
+		log.Info("content request refused", "status", status)
+		if status == http.StatusNotFound {
+			notFound(w, "No such file.")
+		} else {
+			problem(w, status, "internal_error", "")
+		}
+		return
+	}
+	log.Info("content served", "method", r.Method, "status", status, "bytes", len(body))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, file, time.Now(), strings.NewReader(string(body)))
 }
 
 // serveFile serves rel from root.

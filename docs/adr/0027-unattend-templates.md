@@ -5,6 +5,9 @@ findings](../spikes/phase-5-findings.md)). Amends [0007](0007-agent-and-smb-inst
 and the built-in unattend in [0026](0026-deployments.md); builds on
 [0008](0008-secrets-model.md).
 
+Extended by [0035](0035-autoinstall.md): templates have a `format`
+(`unattend`, `autoinstall`); this ADR describes `unattend`.
+
 ## Context
 ADR 0026 renders one built-in unattend per deployment, in code, for the
 `none`, `local` and `ad` identity modes. Admins need their own settings

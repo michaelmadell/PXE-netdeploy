@@ -19,12 +19,24 @@ var (
 	// ErrTemplateIdentityMismatch: the profile's identity mode isn't one the
 	// template renders.
 	ErrTemplateIdentityMismatch = errors.New("store: the unattend template doesn't render the profile's identity mode")
+	// ErrTemplateFormatMismatch: the template's format isn't the profile
+	// kind's (unattend for Windows, autoinstall for Linux; ADR 0035).
+	ErrTemplateFormatMismatch = errors.New("store: the template's format doesn't match the profile's kind")
+	// ErrFormatChanged: a replace changes a template's format.
+	ErrFormatChanged = errors.New("store: a template's format can't change")
+)
+
+// Template formats.
+const (
+	FormatUnattend    = "unattend"
+	FormatAutoinstall = "autoinstall"
 )
 
 // UnattendTemplateInput is a template's editable fields.
 type UnattendTemplateInput struct {
 	Name              string
 	Description       string
+	Format            string // FormatUnattend ("" too) or FormatAutoinstall
 	Content           string
 	IdentityModes     []string
 	VariableDefaults  map[string]string
@@ -40,13 +52,13 @@ type UnattendTemplate struct {
 	UpdatedAt time.Time
 }
 
-const unattendCols = `id, name, description, content, identity_modes, variable_defaults, required_variables, version, created_at, updated_at`
+const unattendCols = `id, name, description, format, content, identity_modes, variable_defaults, required_variables, version, created_at, updated_at`
 
 func scanUnattendTemplate(r rowScanner) (UnattendTemplate, error) {
 	var t UnattendTemplate
 	var modes, defaults, required string
 	var created, updated int64
-	if err := r.Scan(&t.ID, &t.Name, &t.Description, &t.Content, &modes, &defaults, &required, &t.Version, &created, &updated); err != nil {
+	if err := r.Scan(&t.ID, &t.Name, &t.Description, &t.Format, &t.Content, &modes, &defaults, &required, &t.Version, &created, &updated); err != nil {
 		return UnattendTemplate{}, err
 	}
 	if err := json.Unmarshal([]byte(modes), &t.IdentityModes); err != nil {
@@ -69,6 +81,9 @@ func (in UnattendTemplateInput) columns() ([]any, error) {
 	if in.RequiredVariables == nil {
 		in.RequiredVariables = []string{}
 	}
+	if in.IdentityModes == nil {
+		in.IdentityModes = []string{}
+	}
 	modes, err := jsonText(in.IdentityModes)
 	if err != nil {
 		return nil, err
@@ -84,6 +99,13 @@ func (in UnattendTemplateInput) columns() ([]any, error) {
 	return []any{in.Name, in.Description, in.Content, modes, defaults, required}, nil
 }
 
+func (in UnattendTemplateInput) format() string {
+	if in.Format == "" {
+		return FormatUnattend
+	}
+	return in.Format
+}
+
 // CreateUnattendTemplate stores a template.
 func (s *Store) CreateUnattendTemplate(ctx context.Context, in UnattendTemplateInput) (UnattendTemplate, error) {
 	cols, err := in.columns()
@@ -91,9 +113,9 @@ func (s *Store) CreateUnattendTemplate(ctx context.Context, in UnattendTemplateI
 		return UnattendTemplate{}, err
 	}
 	id, now := newID(), ms(s.now())
-	args := append(append([]any{id}, cols...), now, now)
+	args := append(append([]any{id}, cols...), in.format(), now, now)
 	if _, err := s.w.ExecContext(ctx, `INSERT INTO unattend_templates (id, name, description, content, identity_modes,
-		variable_defaults, required_variables, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+		variable_defaults, required_variables, format, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 		return UnattendTemplate{}, fmt.Errorf("store: create unattend template: %w", err)
 	}
 	return s.UnattendTemplate(ctx, id)
@@ -143,7 +165,7 @@ func (s *Store) ListUnattendTemplates(ctx context.Context, limit int, after stri
 
 // templateUsers returns the profiles using a template: name by identity mode.
 func templateUsers(ctx context.Context, t *sql.Tx, id string) (map[string][]string, int, error) {
-	rows, err := t.QueryContext(ctx, `SELECT name, json_extract(identity, '$.mode') FROM profiles WHERE unattend_template_id = ? ORDER BY name`, id)
+	rows, err := t.QueryContext(ctx, `SELECT name, COALESCE(json_extract(identity, '$.mode'), '') FROM profiles WHERE unattend_template_id = ? ORDER BY name`, id)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -170,7 +192,8 @@ func (s *Store) ReplaceUnattendTemplate(ctx context.Context, id string, in Unatt
 	}
 	err = s.tx(ctx, func(t *sql.Tx) error {
 		var v int64
-		if err := t.QueryRowContext(ctx, `SELECT version FROM unattend_templates WHERE id = ?`, id).Scan(&v); err != nil {
+		var format string
+		if err := t.QueryRowContext(ctx, `SELECT version, format FROM unattend_templates WHERE id = ?`, id).Scan(&v, &format); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -178,6 +201,9 @@ func (s *Store) ReplaceUnattendTemplate(ctx context.Context, id string, in Unatt
 		}
 		if v != ifVersion {
 			return ErrVersionMismatch
+		}
+		if format != in.format() {
+			return ErrFormatChanged
 		}
 		users, _, err := templateUsers(ctx, t, id)
 		if err != nil {
@@ -189,7 +215,7 @@ func (s *Store) ReplaceUnattendTemplate(ctx context.Context, id string, in Unatt
 		}
 		var lost []string
 		for mode, names := range users {
-			if !keep[mode] {
+			if mode != "" && !keep[mode] {
 				lost = append(lost, fmt.Sprintf("%s (%s)", strings.Join(names, ", "), mode))
 			}
 		}
@@ -241,13 +267,19 @@ func profileTemplateRef(ctx context.Context, t *sql.Tx, in ProfileInput) error {
 	if in.UnattendTemplateID == nil {
 		return nil
 	}
-	var modes string
-	err := t.QueryRowContext(ctx, `SELECT identity_modes FROM unattend_templates WHERE id = ?`, *in.UnattendTemplateID).Scan(&modes)
+	var modes, format string
+	err := t.QueryRowContext(ctx, `SELECT identity_modes, format FROM unattend_templates WHERE id = ?`, *in.UnattendTemplateID).Scan(&modes, &format)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: unattend template %s", ErrNotFound, *in.UnattendTemplateID)
 	}
 	if err != nil {
 		return err
+	}
+	if want := map[bool]string{true: FormatAutoinstall, false: FormatUnattend}[in.Kind == ProfileLinux]; format != want {
+		return fmt.Errorf("%w (the template is %s; a %s profile needs %s)", ErrTemplateFormatMismatch, format, cmpOr(in.Kind, ProfileWindows), want)
+	}
+	if format == FormatAutoinstall {
+		return nil
 	}
 	var list []string
 	var id struct {
@@ -265,4 +297,11 @@ func profileTemplateRef(ctx context.Context, t *sql.Tx, in ProfileInput) error {
 		}
 	}
 	return fmt.Errorf("%w (%s; it renders %s)", ErrTemplateIdentityMismatch, id.Mode, strings.Join(list, ", "))
+}
+
+func cmpOr(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a
 }

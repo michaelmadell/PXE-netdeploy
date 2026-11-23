@@ -57,7 +57,10 @@ export function DeploymentDetailPage() {
       "Installs",
       !snap ? "–" : snap.kind === "linux" ? (image?.name ?? "Deleted image") : `${edition ?? `Edition ${snap.editionIndex}`}${image ? ` from ${image.name}` : ""}`,
     ],
-    ["Accounts", !snap ? "–" : snap.identity ? identityText[snap.identity.mode] : "Set up in the installer"],
+    [
+      "Accounts",
+      !snap ? "–" : snap.identity ? identityText[snap.identity.mode] : snap.linux?.account && snap.linux.install !== "interactive" ? snap.linux.account.username : "Set up in the installer",
+    ],
     [
       "Unattend template",
       d.unattendTemplate ? (

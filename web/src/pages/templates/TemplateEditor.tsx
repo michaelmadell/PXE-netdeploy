@@ -13,6 +13,7 @@ import { useClients, useProfiles, clientName } from "@/pages/clients/data";
 import { parseVariables, VariablesField } from "@/pages/profiles/IdentityFields";
 import {
   BUILTIN,
+  formatOf,
   modeText,
   refreshTemplates,
   templateError,
@@ -22,10 +23,11 @@ import {
   useDebounced,
   usePreview,
   useTemplate,
+  type Format,
   type Mode,
   type TemplateInput,
 } from "./data";
-import { Reference } from "./Reference";
+import { AutoinstallReference, Reference } from "./Reference";
 
 const varsText = (v: Record<string, string> | undefined) =>
   Object.entries(v ?? {})
@@ -33,12 +35,13 @@ const varsText = (v: Record<string, string> | undefined) =>
     .join("\n");
 const requiredList = (text: string) => [...new Set(text.split(/[\n,]/).map((s) => s.trim()).filter(Boolean))];
 
-type Draft = { name: string; description: string; content: string; modes: Mode[]; defaults: string; required: string };
+type Draft = { name: string; description: string; format: Format; content: string; modes: Mode[]; defaults: string; required: string };
 
 function toDraft(t: TemplateInput): Draft {
   return {
     name: t.name,
     description: t.description ?? "",
+    format: formatOf(t),
     content: t.content,
     modes: t.identityModes,
     defaults: varsText(t.variableDefaults),
@@ -49,8 +52,9 @@ function toInput(d: Draft): TemplateInput {
   return {
     name: d.name.trim(),
     description: d.description.trim(),
+    format: d.format,
     content: d.content,
-    identityModes: templateModes.filter((m) => d.modes.includes(m)),
+    identityModes: d.format === "autoinstall" ? [] : templateModes.filter((m) => d.modes.includes(m)),
     variableDefaults: parseVariables(d.defaults).vars,
     requiredVariables: requiredList(d.required),
   };
@@ -137,7 +141,7 @@ function TemplateEditor({ templateId, from }: { templateId?: string; from: strin
   const defaultsBad = parseVariables(draft.defaults).bad;
   const problems = [
     !draft.name.trim() && "Give the template a name.",
-    draft.modes.length === 0 && "Choose at least one kind of accounts it handles.",
+    draft.format === "unattend" && draft.modes.length === 0 && "Choose at least one kind of accounts it handles.",
     defaultsBad.length > 0 && "Each default value needs name=value.",
   ].filter(Boolean) as string[];
   const saveError = save.error;
@@ -155,7 +159,7 @@ function TemplateEditor({ templateId, from }: { templateId?: string; from: strin
         }
         actions={
           readOnly ? (
-            <Button variant="primary" onClick={() => navigate(`/templates/new?from=${BUILTIN}`)}>
+            <Button variant="primary" onClick={() => navigate(`/templates/new?from=${encodeURIComponent(templateId ?? BUILTIN)}`)}>
               <Copy aria-hidden /> Make a copy
             </Button>
           ) : (
@@ -221,6 +225,12 @@ function TemplateEditor({ templateId, from }: { templateId?: string; from: strin
                   {(p) => <Input {...p} value={draft.description} onChange={(e) => set({ description: e.target.value })} />}
                 </Field>
               </div>
+              {draft.format === "autoinstall" ? (
+                <p className="text-sm text-muted-foreground">
+                  An Ubuntu autoinstall template, for Linux profiles with automatic installs. Saving renders it with a password and with SSH keys only, and
+                  checks the result is cloud-config with an autoinstall section that creates the account.
+                </p>
+              ) : (
               <fieldset>
                 <legend className="mb-1.5 text-sm font-medium">Handles profiles with</legend>
                 <div className="flex flex-wrap gap-x-6 gap-y-2">
@@ -239,6 +249,7 @@ function TemplateEditor({ templateId, from }: { templateId?: string; from: strin
                   Saving checks each one: local accounts must all be created, and an Active Directory join must be in the file for both join methods.
                 </p>
               </fieldset>
+              )}
               <div className="grid gap-5 sm:grid-cols-2">
                 <VariablesField
                   text={draft.defaults}
@@ -254,22 +265,29 @@ function TemplateEditor({ templateId, from }: { templateId?: string; from: strin
             </fieldset>
             <div>
               <p className="mb-1.5 text-sm font-medium" id="template-content-label">
-                Answer file
+                {draft.format === "autoinstall" ? "user-data" : "Answer file"}
               </p>
               <CodeEditor
                 ref={editor}
-                label="Answer file template"
+                label={draft.format === "autoinstall" ? "user-data template" : "Answer file template"}
                 value={draft.content}
                 readOnly={readOnly}
                 onChange={(content) => set({ content })}
                 className="h-[60vh] min-h-96"
               />
-              <p className="mt-1.5 text-sm text-muted-foreground">
-                Values from <code className="font-mono">{"{{ … }}"}</code> are escaped for XML; write the template’s own <code className="font-mono">&lt;</code>,{" "}
-                <code className="font-mono">&gt;</code> and <code className="font-mono">&amp;</code> as entities. Ctrl+F searches.
-              </p>
+              {draft.format === "autoinstall" ? (
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Values from <code className="font-mono">{"{{ … }}"}</code> are written as YAML: text in double quotes, true/false and numbers as they are, lists
+                  as <code className="font-mono">[…]</code>. Use <code className="font-mono">raw</code> inside block scalars. Ctrl+F searches.
+                </p>
+              ) : (
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Values from <code className="font-mono">{"{{ … }}"}</code> are escaped for XML; write the template’s own <code className="font-mono">&lt;</code>,{" "}
+                  <code className="font-mono">&gt;</code> and <code className="font-mono">&amp;</code> as entities. Ctrl+F searches.
+                </p>
+              )}
             </div>
-            <Reference />
+            {draft.format === "autoinstall" ? <AutoinstallReference /> : <Reference />}
           </div>
         </Section>
 
@@ -288,16 +306,17 @@ function Preview({ draft, onGoToTemplateLine }: { draft: TemplateInput; onGoToTe
   const clients = useClients(profileId ? { profileId } : {});
   const output = useRef<CodeEditorHandle>(null);
 
+  const auto = formatOf(draft) === "autoinstall";
   const sampleMode = (mode && draft.identityModes.includes(mode) ? mode : draft.identityModes[0]) as Mode | undefined;
   const ctx = useMemo(
-    () => (profileId ? { profileId, clientId: clientId || undefined } : { identityMode: sampleMode }),
-    [profileId, clientId, sampleMode],
+    () => (profileId ? { profileId, clientId: clientId || undefined } : auto ? {} : { identityMode: sampleMode }),
+    [profileId, clientId, sampleMode, auto],
   );
   // Debounce the serialised draft: the object itself is new on every render.
   const json = JSON.stringify(draft);
   const debouncedJson = useDebounced(json, 600);
   const debounced = useMemo(() => JSON.parse(debouncedJson) as TemplateInput, [debouncedJson]);
-  const preview = usePreview(debounced, ctx, debounced.identityModes.length > 0 && debounced.content.trim() !== "");
+  const preview = usePreview(debounced, ctx, (auto || debounced.identityModes.length > 0) && debounced.content.trim() !== "");
   const errLine = templateErrorLine(preview.error);
   const findings = preview.data?.findings ?? [];
   const stale = preview.isFetching || debouncedJson !== json;
@@ -321,7 +340,7 @@ function Preview({ draft, onGoToTemplateLine }: { draft: TemplateInput; onGoToTe
                 }}
               >
                 <option value="">Sample data</option>
-                {(profiles.data?.items ?? []).map((pr: Schemas["Profile"]) => (
+                {(profiles.data?.items ?? []).filter((pr: Schemas["Profile"]) => (pr.kind === "linux") === auto).map((pr: Schemas["Profile"]) => (
                   <option key={pr.id} value={pr.id}>
                     Profile: {pr.name}
                   </option>
@@ -342,7 +361,7 @@ function Preview({ draft, onGoToTemplateLine }: { draft: TemplateInput; onGoToTe
                 </Select>
               )}
             </Field>
-          ) : (
+          ) : auto ? null : (
             <Field label="Accounts">
               {(p) => (
                 <Select {...p} value={sampleMode ?? ""} disabled={draft.identityModes.length === 0} onChange={(e) => setMode(e.target.value as Mode)}>
@@ -407,15 +426,15 @@ function Preview({ draft, onGoToTemplateLine }: { draft: TemplateInput; onGoToTe
           </div>
         )}
         <div>
-          <p className="mb-1.5 text-sm font-medium">Rendered answer file</p>
+          <p className="mb-1.5 text-sm font-medium">{auto ? "Rendered user-data" : "Rendered answer file"}</p>
           <CodeEditor
             ref={output}
             readOnly
-            label="Rendered answer file"
+            label={auto ? "Rendered user-data" : "Rendered answer file"}
             value={preview.isError ? "" : (preview.data?.content ?? "")}
             className={cn("h-[60vh] min-h-96 transition-opacity", stale && "opacity-70")}
           />
-          {draft.identityModes.length === 0 && <p className="mt-1.5 text-sm text-muted-foreground">Choose what the template handles to preview it.</p>}
+          {!auto && draft.identityModes.length === 0 && <p className="mt-1.5 text-sm text-muted-foreground">Choose what the template handles to preview it.</p>}
         </div>
       </div>
     </Section>

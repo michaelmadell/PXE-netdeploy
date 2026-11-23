@@ -77,5 +77,5 @@ func (s *Server) validateLinuxProfile(ctx context.Context, p store.Profile, fs [
 	if !s.ipxe.Has(string(d.Architecture)) {
 		add("error", "http_boot_unavailable", "The iPXE chain for %s isn't installed (capabilities.httpBoot).", d.Architecture)
 	}
-	return fs, nil
+	return s.validateAutoinstall(ctx, p, fs)
 }

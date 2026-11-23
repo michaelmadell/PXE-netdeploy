@@ -8,7 +8,7 @@ import { Alert, Badge, Dialog, PageHeader, td, th } from "@/components/ui/misc";
 import { formatDateTime } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/problem";
 import { useProfiles } from "@/pages/clients/data";
-import { BUILTIN, modeText, profileTemplateId, refreshTemplates, templateError, useTemplates, type Template } from "./data";
+import { BUILTIN, BUILTIN_AUTOINSTALL, formatOf, modeText, profileTemplateId, refreshTemplates, templateError, useTemplates, type Template } from "./data";
 
 export function TemplatesPage() {
   const templates = useTemplates();
@@ -28,9 +28,14 @@ export function TemplatesPage() {
   const custom = items.filter((t) => !t.builtIn);
   const copy = (t: Template) => navigate(`/templates/new?from=${encodeURIComponent(t.id!)}`);
   const newButton = (
-    <Button variant="primary" onClick={() => navigate(`/templates/new?from=${BUILTIN}`)}>
-      <Plus aria-hidden /> New template
-    </Button>
+    <>
+      <Button onClick={() => navigate(`/templates/new?from=${BUILTIN_AUTOINSTALL}`)}>
+        <Plus aria-hidden /> New autoinstall template
+      </Button>
+      <Button variant="primary" onClick={() => navigate(`/templates/new?from=${BUILTIN}`)}>
+        <Plus aria-hidden /> New unattend template
+      </Button>
+    </>
   );
   const deletingUsers = deleting ? usedBy(deleting) : [];
 
@@ -38,7 +43,7 @@ export function TemplatesPage() {
     <div className="max-w-5xl">
       <PageHeader
         title="Unattend templates"
-        description="The answer file Windows Setup reads on each machine: computer name, locale, accounts and domain join, and anything else you add. Profiles use the built-in template unless you choose another."
+        description="The file each machine’s installer reads: Windows Setup’s answer file (computer name, locale, accounts and domain join) or Ubuntu’s autoinstall user-data (hostname, account, disk layout, packages), and anything else you add. Profiles use their kind’s built-in template unless you choose another."
         actions={newButton}
       />
 
@@ -73,7 +78,17 @@ export function TemplatesPage() {
                         {t.builtIn && <Badge>Built-in</Badge>}
                         {t.description && <div className="max-w-prose text-xs text-muted-foreground">{t.description}</div>}
                       </td>
-                      <td className={td}>{t.identityModes.map((m) => modeText[m]).join(", ")}</td>
+                      <td className={td}>
+                        {formatOf(t) === "autoinstall" ? (
+                          <>
+                            Linux profiles <span className="text-muted-foreground">· Ubuntu autoinstall</span>
+                          </>
+                        ) : (
+                          <>
+                            {t.identityModes.map((m) => modeText[m]).join(", ")} <span className="text-muted-foreground">· Windows</span>
+                          </>
+                        )}
+                      </td>
                       <td className={td}>
                         {profiles.isPending ? "…" : users.length === 0 ? <span className="text-muted-foreground">No profiles</span> : users.map((p) => p.name).join(", ")}
                       </td>
@@ -106,7 +121,7 @@ export function TemplatesPage() {
               <FileCode2 className="mx-auto size-6 text-muted-foreground" aria-hidden />
               <p className="mt-2 font-medium">No templates of your own yet</p>
               <p className="mx-auto mt-1 max-w-prose text-sm text-muted-foreground">
-                Copy the built-in template to add settings of your own, such as commands to run at first sign-in. Copies don’t pick up later changes to the built-in one.
+                Copy a built-in template to add settings of your own, such as commands to run at first sign-in or after an Ubuntu install. Copies don’t pick up later changes to the built-in ones.
               </p>
             </div>
           )}

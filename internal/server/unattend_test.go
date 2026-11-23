@@ -26,9 +26,10 @@ func TestUnattendTemplates(t *testing.T) {
 	f := newAgentFixture(t)
 	builtin := unattend.Builtin().Content
 
-	// The built-in template: listed first, read-only.
+	// The built-in templates: listed first, read-only.
 	page := decode[api.UnattendTemplatePage](t, f.call("GET", "/unattend-templates", "", ""))
-	if len(page.Items) != 1 || *page.Items[0].Id != "builtin" || !*page.Items[0].BuiltIn || page.Items[0].Content != builtin {
+	if len(page.Items) != 2 || *page.Items[0].Id != "builtin" || !*page.Items[0].BuiltIn || page.Items[0].Content != builtin ||
+		*page.Items[1].Id != "builtin-autoinstall" || *page.Items[1].Format != "autoinstall" {
 		t.Fatalf("list: %+v", page)
 	}
 	if w := f.call("PUT", "/unattend-templates/builtin", "", templateBody(t, "x", builtin, []string{"none"}), "If-Match", `"1"`); w.Code != 409 || !strings.Contains(w.Body.String(), "built_in") {

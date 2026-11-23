@@ -9,8 +9,10 @@ import (
 	"strings"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/autoinstall"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
+	"github.com/michaelmadell/pxe-netdeploy/internal/unattend"
 )
 
 // Profiles (ADR 0024). Identity and secret checks come with deployments
@@ -41,8 +43,7 @@ func profileInput(b *api.ProfileInput) (store.ProfileInput, *api.Problem, error)
 		}{
 			{"bootImageId", b.BootImageId != nil}, {"editionIndex", b.EditionIndex != nil}, {"installMethod", b.InstallMethod != nil},
 			{"identity", b.Identity != nil}, {"osDriverGroupIds", b.OsDriverGroupIds != nil && len(*b.OsDriverGroupIds) > 0},
-			{"unattendTemplateId", b.UnattendTemplateId != nil}, {"smbTargetId", b.SmbTargetId != nil},
-			{"osSettings", b.OsSettings != nil}, {"bootOrderAfterDeploy", b.BootOrderAfterDeploy != nil},
+			{"smbTargetId", b.SmbTargetId != nil}, {"osSettings", b.OsSettings != nil},
 		} {
 			if f.set {
 				extra = append(extra, fieldError{field: f.name, message: "not used by linux profiles"})
@@ -50,8 +51,27 @@ func profileInput(b *api.ProfileInput) (store.ProfileInput, *api.Problem, error)
 		}
 		if len(extra) > 0 {
 			p := newProblem(http.StatusUnprocessableEntity, "not_for_kind", "Field not used by this kind of profile",
-				"A linux profile has a name, a description, installImageId, variables and kernelArgs (ADR 0034).", extra)
+				"A linux profile has a name, a description, installImageId, variables, kernelArgs, linux, unattendTemplateId and bootOrderAfterDeploy (ADR 0034, 0035).", extra)
 			return in, &p, nil
+		}
+		if b.BootOrderAfterDeploy != nil {
+			in.BootOrderAfterDeploy = string(*b.BootOrderAfterDeploy)
+		}
+		if id := in.UnattendTemplateID; id != nil && (*id == "" || *id == autoinstall.BuiltinID) {
+			in.UnattendTemplateID = nil
+		} else if id != nil && *id == unattend.BuiltinID {
+			p := newProblem(http.StatusUnprocessableEntity, "template_format_mismatch", "Template format mismatch",
+				"The built-in unattend template is for Windows profiles; a linux profile uses an autoinstall template.", nil)
+			return in, &p, nil
+		}
+		if b.Linux != nil {
+			if p := linuxSettingsProblem(*b.Linux); p != nil {
+				return in, p, nil
+			}
+			var err error
+			if in.LinuxSettings, err = json.Marshal(b.Linux); err != nil {
+				return in, nil, err
+			}
 		}
 		if b.KernelArgs != nil {
 			in.KernelArgs = *b.KernelArgs
@@ -64,9 +84,21 @@ func profileInput(b *api.ProfileInput) (store.ProfileInput, *api.Problem, error)
 		return in, nil, nil
 	}
 
-	if b.KernelArgs != nil {
+	if b.KernelArgs != nil || b.Linux != nil {
+		var fields []fieldError
+		if b.KernelArgs != nil {
+			fields = append(fields, fieldError{field: "kernelArgs", message: "not used by windows profiles"})
+		}
+		if b.Linux != nil {
+			fields = append(fields, fieldError{field: "linux", message: "not used by windows profiles"})
+		}
 		p := newProblem(http.StatusUnprocessableEntity, "not_for_kind", "Field not used by this kind of profile",
-			"kernelArgs is for linux profiles.", []fieldError{{field: "kernelArgs", message: "not used by windows profiles"}})
+			"kernelArgs and linux are for linux profiles.", fields)
+		return in, &p, nil
+	}
+	if id := in.UnattendTemplateID; id != nil && *id == autoinstall.BuiltinID {
+		p := newProblem(http.StatusUnprocessableEntity, "template_format_mismatch", "Template format mismatch",
+			"The built-in autoinstall template is for linux profiles.", nil)
 		return in, &p, nil
 	}
 	var missing []fieldError
@@ -130,6 +162,19 @@ func (s *Server) checkProfile(ctx context.Context, in store.ProfileInput) (*api.
 		if _, reason := linuxImage(im); reason != "" {
 			return profileProblem(http.StatusUnprocessableEntity, "install_image_unavailable", "Install image unavailable", reason), nil
 		}
+		if id := in.UnattendTemplateID; id != nil {
+			t, err := s.store.UnattendTemplate(ctx, *id)
+			if errors.Is(err, store.ErrNotFound) {
+				return profileProblem(http.StatusUnprocessableEntity, "unknown_unattend_template", "Unknown unattend template", "No template "+*id+"."), nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			if t.Format != store.FormatAutoinstall {
+				return profileProblem(http.StatusUnprocessableEntity, "template_format_mismatch", "Template format mismatch",
+					fmt.Sprintf("Template %q is an unattend template; a linux profile uses an autoinstall template.", t.Name)), nil
+			}
+		}
 		return nil, nil
 	}
 	if in.InstallMethod == "smb" {
@@ -148,6 +193,10 @@ func (s *Server) checkProfile(ctx context.Context, in store.ProfileInput) (*api.
 		}
 		if err != nil {
 			return nil, err
+		}
+		if t.Format == store.FormatAutoinstall {
+			return profileProblem(http.StatusUnprocessableEntity, "template_format_mismatch", "Template format mismatch",
+				fmt.Sprintf("Template %q is an autoinstall template; a windows profile uses an unattend template.", t.Name)), nil
 		}
 		if !templateSpec(t).Supports(mode.Mode) {
 			return profileProblem(http.StatusUnprocessableEntity, "template_identity_mismatch", "Template doesn't render the identity mode",
@@ -212,6 +261,8 @@ func profileStoreError(err error) *api.Problem {
 		return profileProblem(http.StatusUnprocessableEntity, "install_image_unavailable", "Install image unavailable", msg+".")
 	case errors.Is(err, store.ErrNotFound) && strings.Contains(msg, "unattend template"):
 		return profileProblem(http.StatusUnprocessableEntity, "unknown_unattend_template", "Unknown unattend template", msg+".")
+	case errors.Is(err, store.ErrTemplateFormatMismatch):
+		return profileProblem(http.StatusUnprocessableEntity, "template_format_mismatch", "Template format mismatch", msg+".")
 	case errors.Is(err, store.ErrTemplateIdentityMismatch):
 		return profileProblem(http.StatusUnprocessableEntity, "template_identity_mismatch", "Template doesn't render the identity mode", msg+".")
 	}
@@ -371,6 +422,10 @@ func profileToAPI(p store.Profile) (api.Profile, error) {
 		if p.KernelArgs != "" {
 			doc["kernelArgs"] = p.KernelArgs
 		}
+		doc["unattendTemplateId"], doc["bootOrderAfterDeploy"] = p.UnattendTemplateID, p.BootOrderAfterDeploy
+		if p.LinuxSettings != nil {
+			doc["linux"] = p.LinuxSettings
+		}
 	} else {
 		doc["bootImageId"], doc["editionIndex"], doc["installMethod"], doc["identity"] = p.BootImageID, p.EditionIndex, p.InstallMethod, p.Identity
 		doc["osDriverGroupIds"], doc["unattendTemplateId"], doc["smbTargetId"] = p.OSDriverGroupIDs, p.UnattendTemplateID, p.SMBTargetID
@@ -389,4 +444,38 @@ func profileToAPI(p store.Profile) (api.Profile, error) {
 	var out api.Profile
 	err = json.Unmarshal(b, &out)
 	return out, err
+}
+
+// linuxSettingsProblem checks a Linux profile's install settings (ADR
+// 0035): an automatic install needs an account that isn't a system one,
+// with a password or an SSH key, and a hostname pattern that parses.
+func linuxSettingsProblem(l api.LinuxSettings) *api.Problem {
+	unproc := func(code, title, detail, field string) *api.Problem {
+		p := newProblem(http.StatusUnprocessableEntity, code, title, detail, []fieldError{{field: field, message: detail}})
+		return &p
+	}
+	if l.HostnamePattern != nil && strings.TrimSpace(*l.HostnamePattern) != "" {
+		if _, err := unattend.ParseName(*l.HostnamePattern); err != nil {
+			return unproc("invalid_hostname_pattern", "Invalid hostname pattern", err.Error(), "linux.hostnamePattern")
+		}
+	}
+	if l.Install != nil && *l.Install == api.LinuxSettingsInstallInteractive {
+		return nil
+	}
+	a := l.Account
+	if a == nil || (ptrOr(a.PasswordSecretId, "") == "" && (a.SshAuthorizedKeys == nil || len(*a.SshAuthorizedKeys) == 0)) {
+		return unproc("linux_account_required", "Account required",
+			"An automatic install creates an account: give linux.account a username and a password secret or an SSH key.", "linux.account")
+	}
+	if autoinstall.ReservedUsername(a.Username) {
+		return unproc("reserved_account_name", "Reserved account name", fmt.Sprintf("%q is a system account; choose another username.", a.Username), "linux.account.username")
+	}
+	if a.SshAuthorizedKeys != nil {
+		for _, k := range *a.SshAuthorizedKeys {
+			if f := strings.Fields(k); len(f) < 2 || strings.ContainsAny(k, "\r\n") {
+				return unproc("invalid_ssh_key", "Invalid SSH key", "Each SSH key is one line: type, key and an optional comment.", "linux.account.sshAuthorizedKeys")
+			}
+		}
+	}
+	return nil
 }

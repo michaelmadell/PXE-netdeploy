@@ -49,3 +49,41 @@ export function Reference() {
     </details>
   );
 }
+
+/** What an autoinstall template can use (the spec's UnattendTemplateInput.content, ADR 0035). */
+export function AutoinstallReference() {
+  return (
+    <details className="rounded-md border bg-muted/40 px-4 py-3 text-sm">
+      <summary className="cursor-pointer font-medium">What a template can use</summary>
+      <div className="mt-3 space-y-4">
+        <p className="text-muted-foreground">
+          Go template syntax, as for unattend templates. The output is Ubuntu’s autoinstall <code className="font-mono">user-data</code>: it must start with{" "}
+          <code className="font-mono">#cloud-config</code> and have an <code className="font-mono">autoinstall:</code> section with{" "}
+          <code className="font-mono">version: 1</code> and an <code className="font-mono">identity</code>. The password hash (†) is shown as{" "}
+          <code className="font-mono">********</code> in previews.
+        </p>
+        <table className="w-full">
+          <tbody>
+            {row(".Hostname", "From the profile’s hostname pattern, lowercased.")}
+            {row(".Account.Username, .Account.RealName", "The account the installer creates.")}
+            {row(".Account.PasswordHash †", "A SHA-512 crypt hash ($6$…), made with a new salt each time the installer asks. Empty without a password.")}
+            {row(".Account.SSHAuthorizedKeys, .Account.SSHPasswordAuth", "A list of OpenSSH public keys, and whether SSH accepts the password.")}
+            {row(".Locale, .KeyboardLayout, .Timezone", "For example en_GB.UTF-8, gb, Europe/London.")}
+            {row(".StorageLayout", "lvm or direct, on the largest disk.")}
+            {row(".Packages", "A list of extra packages.")}
+            {row(".BootOrderAfterDeploy", "disk-first or network-first.")}
+            {row(".Arch, .Image.Distribution, .Image.Version", "amd64 or arm64, and the image’s distribution and version.")}
+            {row(".Client.*, .Profile.*, .Deployment.ID, .Variables.name", "As for unattend templates.")}
+          </tbody>
+        </table>
+        <table className="w-full">
+          <tbody>
+            {row("first n, last n, upper, lower, default", "As for unattend templates.")}
+            {row("raw", "Write a value as it is, not as a quoted YAML value.")}
+            {row("shquote", <>Quote text for a shell command: <code className="font-mono">{"{{ raw (shquote .Hostname) }}"}</code> in a block scalar.</>)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}

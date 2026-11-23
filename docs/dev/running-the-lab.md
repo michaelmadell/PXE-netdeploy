@@ -1007,5 +1007,27 @@ boot prompt password.
 5. **PXE:** PXE-boot the NUC with the Linux profile: no answer, and the log
    says "is a Linux profile, which needs HTTP(S) Boot".
 
+### Automatic installs (ADR 0035)
+
+1. **Secrets:** a `password` secret for the account (optional with SSH
+   keys).
+2. **Profiles → the Linux profile → Edit:** Install **Automatic**; username
+   (not `root`), the password secret and/or an SSH public key; a hostname
+   pattern such as `lab-{{ .Client.Serial | last 6 }}`; disk layout LVM;
+   after installing **Its disk**; template **Built-in (Ubuntu autoinstall)**.
+   **Check** has no errors. **The NUC's disk is erased.**
+3. Arm a deployment (or use the menu) and HTTP-boot the NUC. After the
+   ISO download the netdeployd log shows
+   `content served … seed_file=meta-data`, `user-data`, `vendor-data`, and a
+   refused `network-config` (404), from the installer's own address.
+4. Expect no questions: the install runs to the end and the machine
+   reboots into Ubuntu **from its disk** (the boot order was changed), with
+   the hostname from the pattern. Sign in with the password, or over SSH
+   with the key; `sudo -v` works.
+5. Variant: no password, keys only. Password sign-in is refused; SSH with
+   the key works; `sudo` doesn't ask for a password.
+6. Variant: **The network** after installing: the next boot shows
+   netdeploy's countdown first and, with no key, continues to the disk.
+
 Linux deployments don't report progress yet (decision 5): they stay
 `running` until they expire or you cancel them.

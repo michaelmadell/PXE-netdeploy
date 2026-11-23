@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/autoinstall"
 	"github.com/michaelmadell/pxe-netdeploy/internal/boot"
 	"github.com/michaelmadell/pxe-netdeploy/internal/ipxe"
 	"github.com/michaelmadell/pxe-netdeploy/internal/settings"
@@ -193,7 +194,9 @@ func (s *Server) AgentIpxeStart(ctx context.Context, req api.AgentIpxeStartReque
 			return ipxeScript(ipxe.Failure(arch, "profile "+p.Name+" can't be deployed: "+ptrOr(prob.Detail, prob.Title), true)), nil
 		}
 		s.supersede(ctx, c.ID)
-		if d, err = s.store.CreateDeployment(ctx, nd); err != nil {
+		if d, err = s.store.CreateDeployment(ctx, nd); errors.Is(err, store.ErrNotFound) {
+			return ipxeScript(ipxe.Failure(arch, "profile "+p.Name+" can't be deployed: "+strings.TrimPrefix(err.Error(), "store: "), true)), nil
+		} else if err != nil {
 			return nil, err
 		}
 		s.deploymentEvent(d)
@@ -303,6 +306,20 @@ func (s *Server) linuxBootScript(ctx context.Context, d store.Deployment, arch s
 			return "", why, nil
 		}
 		cmdline = "ip=dhcp url=" + iso + " cloud-config-url=/dev/null"
+		if lp, err := autoinstall.ParseProfile(d.ProfileSnapshot); err == nil && lp.Automatic() {
+			// The seed is found by a deployment token in its URL: the
+			// installer's kernel has another address than iPXE (ADR 0035).
+			tok, hash := newToken()
+			if err := s.store.CreateAgentToken(ctx, store.AgentToken{Hash: hash, Kind: store.TokenDeployment, ClientID: d.ClientID,
+				DeploymentID: &d.ID, ExpiresAt: time.Now().Add(deploymentTokenTTL).UTC()}); err != nil {
+				return "", "", err
+			}
+			seed, why := s.isoURL(ctx, SeedPrefix+tok+"/")
+			if why != "" {
+				return "", why, nil
+			}
+			cmdline += " autoinstall ds=nocloud;s=" + seed
+		}
 	}
 	if snap.KernelArgs != nil && strings.TrimSpace(*snap.KernelArgs) != "" {
 		cmdline = strings.TrimSpace(cmdline + " " + ipxe.Text(*snap.KernelArgs))

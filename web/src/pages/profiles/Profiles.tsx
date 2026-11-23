@@ -11,6 +11,7 @@ import { linuxImages, useBootImages, useDriverGroups, useSettings, windowsImages
 import { useImages } from "@/pages/images/data";
 import { Findings, useValidation } from "@/pages/deployments/parts";
 import { BUILTIN, modeText, profileTemplateId, useTemplates } from "@/pages/templates/data";
+import { LinuxInstallFields, linuxDraft, linuxInput, linuxProblems, type LinuxDraft } from "./LinuxInstallFields";
 import { IdentityFields, OsFields, VariablesField, identityProblems, osToInput, parseVariables, type Identity, type OsDraft } from "./IdentityFields";
 
 type Profile = Schemas["Profile"];
@@ -29,6 +30,11 @@ const codes: Record<string, string> = {
   kind_changed: "A profile can’t switch between Windows and Linux. Make a new profile instead.",
   not_for_kind: "Some settings don’t apply to this kind of profile.",
   invalid_kernel_args: "Kernel arguments must fit on one line, without double quotes.",
+  linux_account_required: "An automatic install needs an account with a password or an SSH key.",
+  reserved_account_name: "That username belongs to a system account. Choose another.",
+  invalid_ssh_key: "One of the SSH keys isn’t a key.",
+  invalid_hostname_pattern: "The hostname pattern doesn’t parse.",
+  template_format_mismatch: "That template is for the other kind of profile.",
   architecture_mismatch: "The boot image and the Windows image are for different architectures.",
   unknown_edition: "The Windows image has no such edition.",
   unknown_driver_group: "One of the driver groups no longer exists.",
@@ -178,7 +184,16 @@ export function ProfilesPage() {
                         )}
                         {lx && <div className="text-xs text-muted-foreground">{lx.description ?? lx.distribution ?? lx.family} · {lx.architecture}</div>}
                       </td>
-                      <td className={td}>Set up in the installer</td>
+                      <td className={td}>
+                        {p.linux && p.linux.install !== "interactive" ? (
+                          <>
+                            {p.linux.account?.username ?? "–"}
+                            <div className="text-xs text-muted-foreground">Automatic install</div>
+                          </>
+                        ) : (
+                          "Set up in the installer"
+                        )}
+                      </td>
                       <td className={`${td} pr-0`}>{actions(p)}</td>
                     </tr>
                   );
@@ -306,6 +321,8 @@ function ProfileForm({
     profile?.kind === "linux" ? profile.installImageId : linuxSources.filter((l) => l.linux.deployable).length === 1 ? linuxSources.find((l) => l.linux.deployable)!.image.id : "",
   );
   const [kernelArgs, setKernelArgs] = useState(profile?.kernelArgs ?? "");
+  const [linux, setLinux] = useState<LinuxDraft>(() => linuxDraft(profile));
+  const linuxIssues = linuxProblems(linux);
 
   const [name, setName] = useState(profile?.name ?? "");
   const [bootImageId, setBootImageId] = useState(profile?.bootImageId ?? (boots.length === 1 ? boots[0]!.id : ""));
@@ -335,7 +352,7 @@ function ProfileForm({
   const missingVars = (template?.requiredVariables ?? []).filter((k) => !(vars.vars[k] ?? "").trim() && !(template?.variableDefaults?.[k] ?? "").trim());
   const linuxSource = linuxSources.find((l) => l.image.id === linuxImageId);
   const kernelArgsBad = kernelArgs.length > 1024 || /["\r\n]/.test(kernelArgs);
-  const linuxValid = !!name.trim() && !!linuxSource?.linux.deployable && !kernelArgsBad;
+  const linuxValid = !!name.trim() && !!linuxSource?.linux.deployable && !kernelArgsBad && linuxIssues.length === 0;
   const windowsValid =
     !!name.trim() &&
     !!bootImageId &&
@@ -359,6 +376,7 @@ function ProfileForm({
               description: kept.description,
               installImageId: linuxImageId,
               kernelArgs: kernelArgs.trim() || undefined,
+              ...linuxInput(linux),
               variables: kept.variables,
             }
           : {
@@ -410,7 +428,17 @@ function ProfileForm({
           />
         )}
         {kind === "linux" ? (
-          <LinuxFields sources={linuxSources} imageId={linuxImageId} onImage={setLinuxImageId} kernelArgs={kernelArgs} onKernelArgs={setKernelArgs} bad={kernelArgsBad} />
+          <>
+            <LinuxFields sources={linuxSources} imageId={linuxImageId} onImage={setLinuxImageId} kernelArgs={kernelArgs} onKernelArgs={setKernelArgs} bad={kernelArgsBad} />
+            <LinuxInstallFields value={linux} onChange={setLinux} />
+            {linuxIssues.length > 0 && (
+              <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                {linuxIssues.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+            )}
+          </>
         ) : (
           <>
         <Field

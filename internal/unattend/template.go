@@ -37,6 +37,8 @@ type TemplateSpec struct {
 	Description       string            `json:"description,omitempty"`
 	ETag              string            `json:"etag,omitempty"`
 	BuiltIn           bool              `json:"builtIn"`
+	// Format is "" or "unattend" (Windows) or "autoinstall" (ADR 0035).
+	Format            string            `json:"format,omitempty"`
 	Content           string            `json:"content"`
 	IdentityModes     []string          `json:"identityModes"`
 	VariableDefaults  map[string]string `json:"variableDefaults,omitempty"`

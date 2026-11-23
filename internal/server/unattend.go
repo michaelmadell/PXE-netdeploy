@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/michaelmadell/pxe-netdeploy/internal/api"
+	"github.com/michaelmadell/pxe-netdeploy/internal/autoinstall"
 	"github.com/michaelmadell/pxe-netdeploy/internal/store"
 	"github.com/michaelmadell/pxe-netdeploy/internal/unattend"
 )
@@ -17,14 +18,15 @@ import (
 // or deployment uses.
 
 func templateSpec(t store.UnattendTemplate) unattend.TemplateSpec {
-	return unattend.TemplateSpec{ID: t.ID, Name: t.Name, Description: t.Description, ETag: versionETag(t.Version),
+	return unattend.TemplateSpec{ID: t.ID, Name: t.Name, Description: t.Description, ETag: versionETag(t.Version), Format: t.Format,
 		Content: t.Content, IdentityModes: t.IdentityModes, VariableDefaults: t.VariableDefaults, RequiredVariables: t.RequiredVariables}
 }
 
 func templateToAPI(spec unattend.TemplateSpec, t *store.UnattendTemplate) api.UnattendTemplate {
 	builtIn := spec.BuiltIn
+	format := api.UnattendFormat(templateFormat(spec))
 	out := api.UnattendTemplate{Id: &spec.ID, BuiltIn: &builtIn, Name: spec.Name, Content: spec.Content,
-		IdentityModes: []api.IdentityMode{}}
+		IdentityModes: []api.IdentityMode{}, Format: &format}
 	if spec.Description != "" {
 		out.Description = &spec.Description
 	}
@@ -40,7 +42,7 @@ func templateToAPI(spec unattend.TemplateSpec, t *store.UnattendTemplate) api.Un
 	if t != nil {
 		out.Etag, out.CreatedAt, out.UpdatedAt = &spec.ETag, &t.CreatedAt, &t.UpdatedAt
 	} else {
-		tag := `"builtin"`
+		tag := `"` + spec.ID + `"`
 		out.Etag = &tag
 	}
 	return out
@@ -50,6 +52,10 @@ func templateInput(b api.UnattendTemplateInput) store.UnattendTemplateInput {
 	in := store.UnattendTemplateInput{Name: strings.TrimSpace(b.Name), Content: b.Content, VariableDefaults: map[string]string{}, RequiredVariables: []string{}}
 	if b.Description != nil {
 		in.Description = *b.Description
+	}
+	in.Format = store.FormatUnattend
+	if b.Format != nil {
+		in.Format = string(*b.Format)
 	}
 	for _, m := range b.IdentityModes {
 		in.IdentityModes = append(in.IdentityModes, string(m))
@@ -64,19 +70,56 @@ func templateInput(b api.UnattendTemplateInput) store.UnattendTemplateInput {
 }
 
 func inputSpec(in store.UnattendTemplateInput) unattend.TemplateSpec {
-	return unattend.TemplateSpec{Name: in.Name, Description: in.Description, Content: in.Content, IdentityModes: in.IdentityModes,
+	return unattend.TemplateSpec{Name: in.Name, Description: in.Description, Format: in.Format, Content: in.Content, IdentityModes: in.IdentityModes,
 		VariableDefaults: in.VariableDefaults, RequiredVariables: in.RequiredVariables}
 }
 
-func isBuiltinID(id string) bool { return id == unattend.BuiltinID }
+func isBuiltinID(id string) bool { return id == unattend.BuiltinID || id == autoinstall.BuiltinID }
 
-// templateFor returns the template a profile names: null or builtin is the
-// built-in one. store.ErrNotFound if it doesn't exist.
+// templateFormat is a template's format ("" is unattend).
+func templateFormat(spec unattend.TemplateSpec) string {
+	if spec.Format == "" {
+		return store.FormatUnattend
+	}
+	return spec.Format
+}
+
+// builtinTemplate is a built-in template by id.
+func builtinTemplate(id string) unattend.TemplateSpec {
+	if id == autoinstall.BuiltinID {
+		return autoinstall.Builtin()
+	}
+	return unattend.Builtin()
+}
+
+// templateFor returns the unattend template a Windows profile names: null
+// or builtin is the built-in one. store.ErrNotFound if it doesn't exist.
 func (s *Server) templateFor(ctx context.Context, id *string) (unattend.TemplateSpec, error) {
-	if id == nil || *id == "" || isBuiltinID(*id) {
+	if id == nil || *id == "" || *id == unattend.BuiltinID {
 		return unattend.Builtin(), nil
 	}
-	t, err := s.store.UnattendTemplate(ctx, *id)
+	return s.storedTemplate(ctx, *id)
+}
+
+// linuxTemplateFor returns the autoinstall template a Linux profile names
+// (ADR 0035): null or builtin-autoinstall is the built-in one.
+func (s *Server) linuxTemplateFor(ctx context.Context, id *string) (unattend.TemplateSpec, error) {
+	if id == nil || *id == "" || *id == autoinstall.BuiltinID {
+		return autoinstall.Builtin(), nil
+	}
+	return s.storedTemplate(ctx, *id)
+}
+
+// templateByID is any template, built-in or stored.
+func (s *Server) templateByID(ctx context.Context, id string) (unattend.TemplateSpec, error) {
+	if isBuiltinID(id) {
+		return builtinTemplate(id), nil
+	}
+	return s.storedTemplate(ctx, id)
+}
+
+func (s *Server) storedTemplate(ctx context.Context, id string) (unattend.TemplateSpec, error) {
+	t, err := s.store.UnattendTemplate(ctx, id)
 	if err != nil {
 		return unattend.TemplateSpec{}, err
 	}
@@ -119,7 +162,22 @@ func templateProblem(in store.UnattendTemplateInput) *api.Problem {
 		p := newProblem(http.StatusBadRequest, "invalid_request", "Invalid request", "name must be 1 to 200 characters.", nil)
 		return &p
 	}
-	_, fs, err := unattend.CheckTemplate(inputSpec(in))
+	var fs []unattend.Finding
+	var err error
+	switch in.Format {
+	case store.FormatAutoinstall:
+		if len(in.IdentityModes) > 0 {
+			return unproc("not_for_format", "Field not used by this format", "Autoinstall templates have no identityModes.",
+				[]fieldError{{"identityModes", "must be empty for autoinstall templates"}})
+		}
+		_, fs, err = autoinstall.CheckTemplate(inputSpec(in))
+	default:
+		if len(in.IdentityModes) == 0 {
+			return unproc("identity_modes_required", "Identity modes required", "An unattend template renders at least one identity mode.",
+				[]fieldError{{"identityModes", "at least one"}})
+		}
+		_, fs, err = unattend.CheckTemplate(inputSpec(in))
+	}
 	switch {
 	case errors.Is(err, unattend.ErrTemplateSyntax):
 		return unproc("template_syntax", "Template doesn't parse", err.Error(), nil)
@@ -150,7 +208,7 @@ func templateNotFound(id string) api.Problem {
 }
 
 func builtInConflict() api.Problem {
-	return newProblem(http.StatusConflict, "built_in", "Built-in template", "The built-in template is read-only; create a copy to customise it.", nil)
+	return newProblem(http.StatusConflict, "built_in", "Built-in template", "The built-in templates are read-only; create a copy to customise one.", nil)
 }
 
 // ListUnattendTemplates implements GET /unattend-templates: the built-in
@@ -169,7 +227,7 @@ func (s *Server) ListUnattendTemplates(ctx context.Context, req api.ListUnattend
 	}
 	out := api.ListUnattendTemplates200JSONResponse{Items: []api.UnattendTemplate{}}
 	if after == "" {
-		out.Items = append(out.Items, templateToAPI(unattend.Builtin(), nil))
+		out.Items = append(out.Items, templateToAPI(unattend.Builtin(), nil), templateToAPI(autoinstall.Builtin(), nil))
 	}
 	for i := range list {
 		out.Items = append(out.Items, templateToAPI(templateSpec(list[i]), &list[i]))
@@ -183,7 +241,7 @@ func (s *Server) ListUnattendTemplates(ctx context.Context, req api.ListUnattend
 // GetUnattendTemplate implements GET /unattend-templates/{templateId}.
 func (s *Server) GetUnattendTemplate(ctx context.Context, req api.GetUnattendTemplateRequestObject) (api.GetUnattendTemplateResponseObject, error) {
 	if isBuiltinID(req.TemplateId) {
-		return api.GetUnattendTemplate200JSONResponse(templateToAPI(unattend.Builtin(), nil)), nil
+		return api.GetUnattendTemplate200JSONResponse(templateToAPI(builtinTemplate(req.TemplateId), nil)), nil
 	}
 	t, err := s.store.UnattendTemplate(ctx, req.TemplateId)
 	if errors.Is(err, store.ErrNotFound) {
@@ -237,6 +295,9 @@ func (s *Server) ReplaceUnattendTemplate(ctx context.Context, req api.ReplaceUna
 	switch {
 	case errors.Is(err, store.ErrVersionMismatch):
 		return api.ReplaceUnattendTemplate412ApplicationProblemPlusJSONResponse(etagMismatch()), nil
+	case errors.Is(err, store.ErrFormatChanged):
+		return api.ReplaceUnattendTemplate422ApplicationProblemPlusJSONResponse(newProblem(http.StatusUnprocessableEntity, "format_changed",
+			"A template's format can't change", "Create a new template of the other format.", nil)), nil
 	case errors.Is(err, store.ErrTemplateInUse):
 		return api.ReplaceUnattendTemplate409ApplicationProblemPlusJSONResponse(newProblem(http.StatusConflict, "template_in_use", "Template in use",
 			strings.TrimPrefix(err.Error(), store.ErrTemplateInUse.Error()+": ")+".", nil)), nil
@@ -268,7 +329,7 @@ func (s *Server) DeleteUnattendTemplate(ctx context.Context, req api.DeleteUnatt
 
 // RenderUnattendTemplate implements POST /unattend-templates/{templateId}/render.
 func (s *Server) RenderUnattendTemplate(ctx context.Context, req api.RenderUnattendTemplateRequestObject) (api.RenderUnattendTemplateResponseObject, error) {
-	spec, err := s.templateFor(ctx, &req.TemplateId)
+	spec, err := s.templateByID(ctx, req.TemplateId)
 	if errors.Is(err, store.ErrNotFound) {
 		return api.RenderUnattendTemplate404ApplicationProblemPlusJSONResponse(templateNotFound(req.TemplateId)), nil
 	}
@@ -317,6 +378,9 @@ func (s *Server) preview(ctx context.Context, spec unattend.TemplateSpec, req ap
 	fail := func(status int, code, title, detail string) (api.UnattendRenderResult, *api.Problem, error) {
 		p := newProblem(status, code, title, detail, nil)
 		return api.UnattendRenderResult{}, &p, nil
+	}
+	if templateFormat(spec) == store.FormatAutoinstall {
+		return s.previewAutoinstall(ctx, spec, req, saveChecks)
 	}
 	var fs []unattend.Finding
 	if saveChecks {
@@ -423,7 +487,8 @@ func (s *Server) preview(ctx context.Context, spec unattend.TemplateSpec, req ap
 		return fail(http.StatusUnprocessableEntity, "template_render", "Template fails to render", err.Error())
 	}
 	fs = append(fs, unattend.Check(out, d)...)
-	return api.UnattendRenderResult{Content: string(out), IdentityMode: api.IdentityMode(mode), Ok: len(unattend.Errors(fs)) == 0,
+	im := api.IdentityMode(mode)
+	return api.UnattendRenderResult{Content: string(out), IdentityMode: &im, Ok: len(unattend.Errors(fs)) == 0,
 		Findings: findingsAPI(dedupe(fs))}, nil, nil
 }
 

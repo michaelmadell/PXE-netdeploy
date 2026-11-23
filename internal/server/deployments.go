@@ -156,9 +156,13 @@ func (s *Server) prepareDeployment(ctx context.Context, c store.Client, p store.
 		return store.NewDeployment{}, nil, err
 	}
 	if p.Kind == store.ProfileLinux {
-		// No unattend, secrets or computer name yet (decision 4).
-		return store.NewDeployment{ClientID: c.ID, ProfileID: p.ID, ProfileSnapshot: snap, Origin: origin,
-			Running: origin == store.OriginBootPrompt}, nil, nil
+		nd := store.NewDeployment{ClientID: c.ID, ProfileID: p.ID, ProfileSnapshot: snap, Origin: origin,
+			Running: origin == store.OriginBootPrompt}
+		prob, err := s.prepareAutoinstall(ctx, c, p, snap, &nd)
+		if err != nil || prob != nil {
+			return store.NewDeployment{}, prob, err
+		}
+		return nd, nil, nil
 	}
 	up, err := unattend.Parse(snap)
 	if err != nil {

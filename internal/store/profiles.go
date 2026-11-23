@@ -47,6 +47,8 @@ type ProfileInput struct {
 	OSSettings           json.RawMessage // nil: none
 	BootOrderAfterDeploy string
 	KernelArgs           string
+	// LinuxSettings is the API's LinuxSettings JSON (ADR 0035); nil: none.
+	LinuxSettings json.RawMessage
 }
 
 // Profile is a profiles row with its OS driver groups.
@@ -59,16 +61,16 @@ type Profile struct {
 }
 
 const profileCols = `id, name, description, kind, boot_image_id, install_image_id, edition_index, install_method, smb_target_id,
-	unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, kernel_args, version, created_at, updated_at`
+	unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, kernel_args, linux_settings, version, created_at, updated_at`
 
 func (s *Store) scanProfile(ctx context.Context, r rowScanner) (Profile, error) {
 	var p Profile
-	var smb, tmpl, osSettings, bootImage, method, identity sql.NullString
+	var smb, tmpl, osSettings, bootImage, method, identity, linux sql.NullString
 	var edition sql.NullInt64
 	var vars string
 	var created, updated int64
 	if err := r.Scan(&p.ID, &p.Name, &p.Description, &p.Kind, &bootImage, &p.InstallImageID, &edition, &method, &smb,
-		&tmpl, &identity, &osSettings, &vars, &p.BootOrderAfterDeploy, &p.KernelArgs, &p.Version, &created, &updated); err != nil {
+		&tmpl, &identity, &osSettings, &vars, &p.BootOrderAfterDeploy, &p.KernelArgs, &linux, &p.Version, &created, &updated); err != nil {
 		return Profile{}, err
 	}
 	p.BootImageID, p.EditionIndex, p.InstallMethod = bootImage.String, int(edition.Int64), method.String
@@ -78,6 +80,9 @@ func (s *Store) scanProfile(ctx context.Context, r rowScanner) (Profile, error) 
 	}
 	if osSettings.Valid {
 		p.OSSettings = json.RawMessage(osSettings.String)
+	}
+	if linux.Valid {
+		p.LinuxSettings = json.RawMessage(linux.String)
 	}
 	if err := json.Unmarshal([]byte(vars), &p.Variables); err != nil {
 		return Profile{}, err
@@ -122,12 +127,16 @@ func (in ProfileInput) columns() ([]any, error) {
 	if in.EditionIndex != 0 {
 		edition = sql.NullInt64{Int64: int64(in.EditionIndex), Valid: true}
 	}
+	var linux sql.NullString
+	if len(in.LinuxSettings) > 0 && string(in.LinuxSettings) != "null" {
+		linux = sql.NullString{String: string(in.LinuxSettings), Valid: true}
+	}
 	order := in.BootOrderAfterDeploy
 	if order == "" {
 		order = "disk-first"
 	}
 	return []any{in.Name, in.Description, kind, bootImage, in.InstallImageID, edition, method,
-		nullStr(in.SMBTargetID), nullStr(in.UnattendTemplateID), identity, osSettings, v, order, in.KernelArgs}, nil
+		nullStr(in.SMBTargetID), nullStr(in.UnattendTemplateID), identity, osSettings, v, order, in.KernelArgs, linux}, nil
 }
 
 func (s *Store) setProfileGroups(ctx context.Context, t *sql.Tx, id string, groups []string) error {
@@ -188,7 +197,7 @@ func (s *Store) CreateProfile(ctx context.Context, in ProfileInput) (Profile, er
 		args := append(append([]any{id}, cols...), now, now)
 		if _, err := t.ExecContext(ctx, `INSERT INTO profiles (id, name, description, kind, boot_image_id, install_image_id, edition_index,
 			install_method, smb_target_id, unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, kernel_args,
-			created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+			linux_settings, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 			return fmt.Errorf("store: create profile: %w", err)
 		}
 		return s.setProfileGroups(ctx, t, id, in.OSDriverGroupIDs)
@@ -266,7 +275,7 @@ func (s *Store) ReplaceProfile(ctx context.Context, id string, in ProfileInput, 
 		args := append(cols, ms(s.now()), id)
 		if _, err := t.ExecContext(ctx, `UPDATE profiles SET name = ?, description = ?, kind = ?, boot_image_id = ?, install_image_id = ?,
 			edition_index = ?, install_method = ?, smb_target_id = ?, unattend_template_id = ?, identity = ?, os_settings = ?,
-			variables = ?, boot_order_after_deploy = ?, kernel_args = ?, version = version + 1, updated_at = ? WHERE id = ?`, args...); err != nil {
+			variables = ?, boot_order_after_deploy = ?, kernel_args = ?, linux_settings = ?, version = version + 1, updated_at = ? WHERE id = ?`, args...); err != nil {
 			return fmt.Errorf("store: replace profile: %w", err)
 		}
 		return s.setProfileGroups(ctx, t, id, in.OSDriverGroupIDs)

@@ -1,0 +1,20 @@
+name: Feature request
+description: Something netdeploy should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do, and what gets in the way today.
+    validations: { required: true }
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: Hardware, operating systems you deploy, network (DHCP, VLANs), scale.
+  - type: textarea
+    id: idea
+    attributes:
+      label: Ideas
+      description: How it might work, or what you've tried. Optional.

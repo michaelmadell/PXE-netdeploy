@@ -214,8 +214,9 @@ profiles, a per-client iPXE script with the gate, `/content/linux/`), is
 built and lab-tested on the NUC (2026-11-23). Decision 4, automated installs
 (ADR 0035: autoinstall templates, Linux install settings, a per-deployment
 NoCloud seed), and decision 5, status without an agent (ADR 0036:
-installer reports to the content listener), are built with automated
-tests; the NUC test of both is next.
+installer reports to the content listener), are built and lab-tested on
+the NUC (2026-11-23). Decision 6 (PXE for Linux) is deferred past the first
+release; next: a Windows regression pass and a release candidate.
 
 ## Open questions and things to verify
 

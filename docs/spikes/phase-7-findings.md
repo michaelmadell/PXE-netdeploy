@@ -342,3 +342,13 @@ timings, the account and boot order checks in `running-the-lab.md`, and
 the failure variant. The page still described a Windows deployment (the
 stage names, "Windows was applied … Setup", "Computer name", the cancel
 dialog); the UI now words these for Linux deployments.
+
+**Lab, Intel NUC, 2026-11-23 (the user): decisions 4 and 5 passed.** A1
+(automatic install with a password and an SSH key, disk-first: progress
+through the stages, succeeded, booted from disk, password and key sign-in,
+sudo, hostname from the pattern, the extra package, `ubuntu` first in the
+boot order), A2 (keys only: `password: "!"` accepted, password sign-in
+refused, passwordless sudo), A3 (network-first: the countdown, then the
+disk), A4 (a failing late command: failed, with the installer's errors in
+the log) and A5 (interactive: succeeded at once, the installer asked its
+questions). Windows regression and the release candidate still to run.

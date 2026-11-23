@@ -1,63 +1,85 @@
 # netdeploy
 
-Network deployment for Windows 11 (and later other operating systems) over PXE
-and UEFI HTTP Boot, working with standard Secure Boot: Microsoft-signed boot
-managers, both the 2011 and 2023 CA chains, and no custom keys on the clients.
+Network deployment for Windows 11 and Ubuntu over PXE and UEFI HTTP(S) Boot,
+on machines with **standard Secure Boot**: Microsoft-signed boot managers and
+shims (2011 and 2023 CA chains), no custom keys enrolled on the clients.
 
-WDS-style workflow: import ISOs and driver packs, build boot images with the
-drivers your hardware needs (an Intel I210 NIC, say), combine them into
-profiles, and deploy to registered machines. Runs on Windows or Linux as a
-single binary with a web UI and a documented API.
+A WDS-style workflow in one server: import ISOs and driver packs, build
+Windows boot images with the drivers your hardware needs, combine them into
+profiles, and deploy registered machines remotely or from a password-protected
+prompt at the machine. Runs on Windows or Linux as a single service with a web
+UI and a documented REST API.
 
-> **Status:** early scaffolding. The API spec is drafted; the server currently
-> serves the UI and a health endpoint. See [the roadmap](docs/architecture.md#roadmap).
+> **Status: pre-release (0.x).** Lab-tested on Hyper-V and an Intel NUC under
+> Secure Boot. Expect rough edges, and read [Known limitations](#known-limitations)
+> before using it on a network you care about. Binaries aren't code-signed yet.
 
-## Quick start
+## Features
 
-Prerequisites: [Go 1.24+](https://go.dev/dl/), [Node.js 22 LTS](https://nodejs.org/),
-[PowerShell 7](https://aka.ms/powershell), [just](https://just.systems), Git.
+- **Windows 11** over PXE (TFTP, Microsoft's boot manager directly) or UEFI
+  HTTP(S) Boot (through Microsoft-signed iPXE). WinPE boot images built with
+  wimlib or DISM, with storage and network drivers; a deployment agent that
+  partitions, applies the image, adds OS drivers and sets the boot order.
+- **Ubuntu Server** over UEFI HTTP(S) Boot, through the distribution's own
+  signed shim: automatic installs (account, SSH keys, hostname pattern, disk
+  layout, packages) from autoinstall templates, or the interactive installer.
+- **Unattend and autoinstall templates** with live previews that never show
+  secrets; local accounts, Active Directory join (online or offline), or none.
+- **Built-in DHCP** (off, proxy alongside your DHCP server, or full), TFTP,
+  and HTTP/HTTPS content with an internal CA.
+- **Re-image protection:** machines only install when a deployment is armed
+  for them, or when someone at the machine enters the boot prompt password.
+- **Operations:** encrypted secrets, scheduled backups (folder or SMB share),
+  admin accounts and API tokens, live deployment progress and logs.
 
-```sh
-just setup   # check tools, install dependencies, generate code, build
-just dev     # server on https://127.0.0.1:8443, UI on http://localhost:5173
-```
+## Install
 
-On first run the server creates `./data` and a self-signed admin certificate.
+Download the latest release from the
+[Releases page](https://github.com/michaelmadell/PXE-netdeploy/releases):
 
-## Common tasks
+- **Windows** (10/11 or Server 2019+): run `netdeploy-<version>-setup.exe`.
+  It installs a service, asks where the admin UI listens, and shows a setup
+  code on its last page. SmartScreen warns because it isn't signed.
+- **Ubuntu 24.04** (amd64 or arm64):
+  `sudo apt install ./netdeploy_<version>_amd64.deb`; it prints the setup code.
 
-| Command | What it does |
-|---|---|
-| `just gen` | Regenerate Go server code and the TypeScript client from `api/openapi.yaml` |
-| `just lint` | Lint the spec, vet Go, typecheck the frontend |
-| `just test` | Run Go tests |
-| `just build` | Release binaries in `./dist` (server with embedded UI, WinPE agents) |
-| `just lab` | Create a Hyper-V test VM and lab switch (Windows, elevated) |
-
-## Repository layout
-
-```
-api/            OpenAPI spec (source of truth) and codegen config
-cmd/netdeployd  Server entry point
-cmd/agent       WinPE deployment agent
-internal/api    Generated server code — do not edit
-internal/server API implementation and HTTP middleware
-internal/certs  Admin TLS certificate handling
-web/            React frontend (Vite, Tailwind v4, shadcn/ui); web/src/api/schema.d.ts is generated
-scripts/        PowerShell 7 scripts behind the justfile recipes
-docs/           Architecture, developer guides, and decision records (ADRs)
-```
+Then open the admin UI (`https://localhost:8443` by default), enter the setup
+code and create the first account. The [user guide](docs/user/README.md)
+walks through configuring the network and deploying the first machine.
 
 ## Documentation
 
-- [Project brief](docs/PROJECT_BRIEF.md): start here; status, open questions, next steps
-- [Phase 1 spike plan](docs/plan/phase-1-spike.md)
-- [Architecture](docs/architecture.md): components, boot flows, roadmap
-- [Getting started](docs/dev/getting-started.md): setup and the add-an-endpoint workflow
-- [Test environments](docs/dev/test-environments.md): Hyper-V lab, QEMU/OVMF with custom keys
-- [Decision records](docs/adr/): why things are the way they are
+- [User guide](docs/user/README.md): installing, setting up, deploying
+  Windows and Ubuntu, troubleshooting.
+- [Architecture](docs/architecture.md) and [decision records](docs/adr/README.md):
+  how it works and why.
+- [API](api/openapi.yaml): the OpenAPI 3.0 spec the server implements.
+- [Building from source](docs/dev/getting-started.md).
+
+## Known limitations
+
+- **Ubuntu** deploys over HTTP(S) Boot only (PXE clients with a Linux profile
+  get no answer), and only Ubuntu: Debian and RHEL ISOs import but can't be
+  deployed yet. Ubuntu's current shim is signed by Microsoft's 2011 UEFI CA
+  only, so machines that trust only the 2023 CAs refuse it.
+- **Windows:** no Microsoft Entra/Autopilot join and no `setup.exe`/SMB
+  install method yet.
+- **Trusted network assumed:** the Ubuntu installer downloads its ISO,
+  settings (with a password *hash*) and reports over plain HTTP, and the boot
+  prompt password crosses the network in clear unless content HTTPS is on.
+  Run deployments on a network you control. See [SECURITY.md](SECURITY.md).
+- Untested so far: arm64 clients, Secure Boot databases with only the 2023
+  CAs, proxy DHCP's port 4011 path on real firmware.
+
+## Contributing
+
+Bug reports and ideas are welcome as
+[issues](https://github.com/michaelmadell/PXE-netdeploy/issues); pull requests
+aren't being accepted yet. See [CONTRIBUTING.md](CONTRIBUTING.md). Report
+security problems privately: [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The Windows
-installer also bundles wimlib under its own licences (ADR 0031).
+Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The packages
+also ship unmodified third-party binaries under their own licences: wimlib
+(Windows installer) and the signed shim, iPXE and wimboot (both packages).

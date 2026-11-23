@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/michaelmadell/PXE-netdeploy/security/advisories/new
+    about: Please report vulnerabilities privately, not as an issue.
+  - name: User guide
+    url: https://github.com/michaelmadell/PXE-netdeploy/blob/main/docs/user/README.md
+    about: Installing, setting up and deploying.

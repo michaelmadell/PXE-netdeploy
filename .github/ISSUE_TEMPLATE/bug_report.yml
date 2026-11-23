@@ -1,0 +1,54 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems: please use private reporting instead (see SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: netdeploy version
+      description: Shown under the menu in the admin UI.
+      placeholder: 0.1.0
+    validations: { required: true }
+  - type: dropdown
+    id: host
+    attributes:
+      label: Server host
+      options: [Windows, Ubuntu, Other Linux]
+    validations: { required: true }
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Windows deployment (WinPE, agent)
+        - Ubuntu deployment
+        - Network boot (DHCP, PXE, HTTP(S) Boot, iPXE)
+        - Image or driver import
+        - Boot image build
+        - Templates
+        - Admin UI or API
+        - Installation, upgrade or service
+        - Other
+    validations: { required: true }
+  - type: textarea
+    id: client
+    attributes:
+      label: Client machine
+      description: Hardware or VM, PXE or HTTP(S) Boot, Secure Boot on or off, DHCP mode (off, proxy, full).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log
+      description: |
+        From the time it happened: C:\ProgramData\netdeploy\logs\netdeployd.log (Windows) or `journalctl -u netdeploy` (Linux). For a failed deployment, its log too (its page → Download). Check for host names or addresses you'd rather not share.
+      render: text

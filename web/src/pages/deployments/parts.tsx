@@ -12,23 +12,23 @@ import {
   cancelDeployment,
   deploymentError,
   refreshDeployments,
-  stageText,
+  isLinux,
+  stageLabel,
   statusText,
   statusTone,
   type Deployment,
 } from "./data";
 
 /** Status as a badge, with the stage and percent while it runs. */
-export function DeploymentBadge({ d }: { d: Pick<Deployment, "status" | "stage" | "percent"> }) {
-  const label =
-    d.status === "running" ? `${d.stage ? stageText[d.stage] : statusText.running} · ${d.percent ?? 0}%` : statusText[d.status];
+export function DeploymentBadge({ d }: { d: Pick<Deployment, "status" | "stage" | "percent" | "profileSnapshot"> }) {
+  const label = d.status === "running" ? `${d.stage ? stageLabel(d) : statusText.running} · ${d.percent ?? 0}%` : statusText[d.status];
   return <Badge tone={statusTone[d.status]}>{label}</Badge>;
 }
 
 /** Stage, bar and percent for a running deployment. */
 export function DeploymentProgress({ d }: { d: Deployment }) {
   if (d.status !== "running") return null;
-  const stage = d.stage ? stageText[d.stage] : "Starting";
+  const stage = stageLabel(d);
   return (
     <div className="min-w-40">
       <Progress value={d.percent ?? 0} label={`${stage}, ${d.percent ?? 0}%`} />
@@ -63,7 +63,15 @@ export function CancelDialog({ deployment, onClose }: { deployment: Deployment |
         </>
       }
     >
-      {running ? (
+      {running && deployment && isLinux(deployment) ? (
+        <div className="space-y-2 text-sm">
+          <p>netdeploy stops tracking the install and ignores the installer’s reports from now on.</p>
+          <p className="text-muted-foreground">
+            The installer on the machine can’t be told to stop: it carries on unless you power the machine off, which can leave the disk
+            partly installed. The deployment’s log is kept.
+          </p>
+        </div>
+      ) : running ? (
         <div className="space-y-2 text-sm">
           <p>
             The machine finishes the step it is on (partitioning, applying the image or writing boot files), then stops and restarts.

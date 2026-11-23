@@ -9,7 +9,7 @@ import { ApiError, errorMessage } from "@/lib/problem";
 import { cn } from "@/lib/utils";
 import { clientName, useClient } from "@/pages/clients/data";
 import { useImages } from "@/pages/images/data";
-import { elapsed, isActive, outcome, stageText, useDeployment, useDeploymentLogs, type LogEntry } from "./data";
+import { elapsed, isActive, isLinux, outcome, stageLabel, useDeployment, useDeploymentLogs, type LogEntry } from "./data";
 import { CancelDialog, DeploymentBadge } from "./parts";
 
 const identityText = { none: "None (set up at the machine)", local: "Local accounts", ad: "Active Directory", entra: "Microsoft Entra" } as const;
@@ -84,7 +84,9 @@ export function DeploymentDetailPage() {
         "None"
       ),
     ],
-    ["Computer name", d.computerName ?? (snap?.identity?.mode === "ad" ? "From the offline join blob, or chosen by Windows" : "Chosen by Windows")],
+    isLinux(d)
+      ? ["Hostname", d.computerName ?? "Chosen in the installer"]
+      : ["Computer name", d.computerName ?? (snap?.identity?.mode === "ad" ? "From the offline join blob, or chosen by Windows" : "Chosen by Windows")],
     ["Armed", formatDateTime(d.createdAt)],
     ["Ran", d.startedAt ? `${formatDateTime(d.startedAt)}${d.finishedAt ? ` to ${formatDateTime(d.finishedAt)}` : ""}` : "Not yet"],
     ["Took", secs === null ? "–" : formatDuration(secs)],
@@ -106,9 +108,11 @@ export function DeploymentDetailPage() {
       />
       <div className="space-y-6">
         {d.status === "running" && (
-          <Section title={d.stage ? stageText[d.stage] : "Starting"} description={d.message || undefined}>
+          <Section title={stageLabel(d)} description={d.message || undefined}>
             <Progress value={d.percent ?? 0} label={`Deployment progress, ${d.percent ?? 0}%`} />
-            <p className="mt-2 text-sm tabular-nums text-muted-foreground">{d.percent ?? 0}% of this step</p>
+            <p className="mt-2 text-sm tabular-nums text-muted-foreground">
+              {isLinux(d) ? `About ${d.percent ?? 0}% of the install, from the installer’s steps` : `${d.percent ?? 0}% of this step`}
+            </p>
           </Section>
         )}
         {d.status === "pending" && (
@@ -121,11 +125,22 @@ export function DeploymentDetailPage() {
             {why}
           </Alert>
         )}
-        {d.status === "succeeded" && (
-          <Alert tone="success" title="Installed">
-            Windows was applied and the machine restarted into Setup. Setup itself (accounts, domain join) finishes on the machine.
-          </Alert>
-        )}
+        {d.status === "succeeded" &&
+          (!isLinux(d) ? (
+            <Alert tone="success" title="Installed">
+              Windows was applied and the machine restarted into Setup. Setup itself (accounts, domain join) finishes on the machine.
+            </Alert>
+          ) : snap?.linux && snap.linux.install !== "interactive" ? (
+            <Alert tone="success" title="Installed">
+              The installer finished and the machine restarted into the installed system
+              {d.computerName ? <> as <span className="font-medium">{d.computerName}</span></> : null}.
+            </Alert>
+          ) : (
+            <Alert tone="info" title="Installer started">
+              This was an interactive install: the installer started on the machine and asks its questions there. netdeploy doesn’t track it
+              further, so it can’t tell whether it finished.
+            </Alert>
+          ))}
         <Section title="Details">
           <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[10rem_1fr]">
             {facts.map(([k, v]) => (
@@ -177,7 +192,7 @@ function LogSection({ id, entries, loading, error, live }: { id: string; entries
   return (
     <Section
       title="Log"
-      description={live ? "From the machine, every few seconds while it runs." : "What the machine reported."}
+      description={live ? "From the machine as it reports, while it runs." : "What the machine reported."}
       actions={
         <Button size="sm" disabled={!entries?.length} onClick={download}>
           <Download aria-hidden /> Download
@@ -195,7 +210,7 @@ function LogSection({ id, entries, loading, error, live }: { id: string; entries
         </label>
         <label className="flex min-w-60 flex-1 items-center gap-2 text-sm">
           <span className="text-muted-foreground">Find</span>
-          <Input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="e.g. bcdboot" />
+          <Input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="e.g. partition" />
         </label>
       </div>
       {loading ? (

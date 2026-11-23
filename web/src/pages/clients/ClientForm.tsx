@@ -66,7 +66,7 @@ export function ClientForm({ client, onDone, onCancel }: { client: Client | null
           <Field label="MAC address" path="mac" hint={mac && !macOk ? "Six pairs of hex digits, e.g. 00:15:5d:00:85:09." : "Of the network adapter the machine boots from."}>
             {(p) => <Input {...p} className="font-mono" value={mac} onChange={(e) => setMac(e.target.value)} placeholder="00:15:5d:00:85:09" />}
           </Field>
-          <Field label="Name" path="hostname" hint="For you; it isn’t the computer name Windows gets.">
+          <Field label="Name" path="hostname" hint="For you; it isn’t the name the installed system gets.">
             {(p) => <Input {...p} value={hostname} onChange={(e) => setHostname(e.target.value)} />}
           </Field>
         </div>

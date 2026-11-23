@@ -72,6 +72,7 @@ export async function armClient(clientId: string, profileId: string) {
 
 export const isActive = (d: Pick<Deployment, "status">) => d.status === "pending" || d.status === "running";
 
+/** Stages of a Windows deployment (the agent's steps, ADR 0025). */
 export const stageText: Record<DeploymentStage, string> = {
   "checked-in": "Starting",
   partitioning: "Partitioning the disk",
@@ -81,6 +82,26 @@ export const stageText: Record<DeploymentStage, string> = {
   finalizing: "Making the disk bootable",
   rebooting: "Restarting into Windows",
 };
+
+/** Stages of an Ubuntu install, as the installer reports them (ADR 0036). */
+export const linuxStageText: Record<DeploymentStage, string> = {
+  "checked-in": "Starting the installer",
+  partitioning: "Partitioning the disk",
+  "applying-image": "Writing the system to disk",
+  "injecting-drivers": "Adding drivers",
+  configuring: "Configuring the installed system",
+  finalizing: "Finishing the install",
+  rebooting: "Restarting into the installed system",
+};
+
+/** Whether a deployment installs Linux (from its profile snapshot). */
+export const isLinux = (d: Pick<Deployment, "profileSnapshot">) => d.profileSnapshot?.kind === "linux";
+
+/** The deployment's current stage in words, for its kind. */
+export function stageLabel(d: Pick<Deployment, "stage" | "profileSnapshot">): string {
+  if (!d.stage) return isLinux(d) ? "Starting the installer" : "Starting";
+  return (isLinux(d) ? linuxStageText : stageText)[d.stage];
+}
 
 export const statusText: Record<DeploymentStatus, string> = {
   pending: "Armed",
@@ -109,6 +130,8 @@ export function outcome(d: Deployment): string | null {
     ["expired", "The machine didn’t network boot in time to pick up the deployment."],
     ["superseded", "Replaced by a deployment started at the machine."],
     ["plan", "The deployment couldn’t be prepared on the server."],
+    ["boot", "The installer couldn’t be started."],
+    ["the installer failed", "The installer reported a failure; its logs are on the machine in /var/log/installer."],
   ];
   for (const [prefix, text] of reasons) if (m.startsWith(prefix)) return `${text} (${m})`;
   return m || "The deployment failed.";

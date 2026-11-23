@@ -37,7 +37,7 @@ func (s *Server) SweepDeployments(ctx context.Context) error {
 		fail(id, "expired: not picked up within "+time.Duration(lim.ArmedExpiryHours*int(time.Hour)).String())
 	}
 	for _, id := range idle {
-		fail(id, "timeout: no word from the agent for "+time.Duration(lim.InactivityMinutes*int(time.Minute)).String())
+		fail(id, "timeout: no word from the machine for "+time.Duration(lim.InactivityMinutes*int(time.Minute)).String())
 	}
 	return nil
 }

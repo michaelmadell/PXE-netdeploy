@@ -51,6 +51,10 @@ type BootManager struct {
 	SHA256       string
 	Signer       string
 	Architecture *string
+	// Signers and SignedBy (ADR 0033) go into the image's details only;
+	// the image_boot_managers table keeps Signer.
+	Signers  []string
+	SignedBy []string
 }
 
 const imageCols = `id, name, notes, kind, status, error, source_filename, volume_label, upload_id, size_bytes, sha256,
@@ -261,13 +265,16 @@ func (s *Store) DeleteImage(ctx context.Context, id string) error {
 
 // ImportResult is what a finished import records.
 type ImportResult struct {
-	Kind         string
-	VolumeLabel  string
-	TreeID       string
-	ISOBlob      *string // set when the ISO was retained
-	Details      json.RawMessage
-	Warnings     []string
-	BootManagers []BootManager
+	Kind        string
+	VolumeLabel string
+	TreeID      string
+	ISOBlob     *string // set when the ISO was retained
+	// ForceRetainISO records retain_iso = true whatever was asked (Ubuntu
+	// media, whose installer downloads the whole ISO; ADR 0033).
+	ForceRetainISO bool
+	Details        json.RawMessage
+	Warnings       []string
+	BootManagers   []BootManager
 }
 
 // CompleteImageImport marks an importing image ready with its content, in
@@ -280,8 +287,9 @@ func (s *Store) CompleteImageImport(ctx context.Context, id string, r ImportResu
 	}
 	return s.tx(ctx, func(t *sql.Tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE images SET status = 'ready', kind = ?, volume_label = ?, tree_id = ?, iso_blob = ?,
+			retain_iso = CASE WHEN ? THEN 1 ELSE retain_iso END,
 			details = ?, warnings = ?, version = version + 1, updated_at = ? WHERE id = ? AND status = 'importing'`,
-			r.Kind, nullIfEmpty(r.VolumeLabel), r.TreeID, nullStr(r.ISOBlob), string(r.Details), string(warnings), ms(s.now()), id)
+			r.Kind, nullIfEmpty(r.VolumeLabel), r.TreeID, nullStr(r.ISOBlob), r.ForceRetainISO, string(r.Details), string(warnings), ms(s.now()), id)
 		if err != nil {
 			return fmt.Errorf("store: complete image: %w", err)
 		}

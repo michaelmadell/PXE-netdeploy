@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"math/big"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -166,6 +167,20 @@ func TestClassify(t *testing.T) {
 	// Validly signed, but by a CA we don't trust.
 	if r := classify(t, c, sign(t, img, issue(t, "Someone", other, false, expired))); r.Signer != Unknown || r.Subject != "CN=Someone" {
 		t.Errorf("unknown CA: %+v", r)
+	}
+
+	// Signed twice, under two known CAs (a dual-signed shim), plus a
+	// vendor key: Signers has both CAs in order, Subjects all three.
+	ca2 := issue(t, "Test UEFI CA 2023", root, true, time.Date(2040, 1, 1, 0, 0, 0, 0, time.UTC))
+	c2 := New(CA{Signer: UEFICA2011, Cert: ca.cert}, CA{Signer: UEFICA2023, Cert: ca2.cert})
+	dual := sign(t, sign(t, sign(t, img, leaf, ca.cert), issue(t, "Test 2023", ca2, false, expired), ca2.cert), issue(t, "Vendor", other, false, expired))
+	r := classify(t, c2, dual)
+	if r.Signer != UEFICA2011 || !slices.Equal(r.Signers, []Signer{UEFICA2011, UEFICA2023}) || len(r.Subjects) != 3 {
+		t.Errorf("dual: %+v", r)
+	}
+	// Only a vendor key: Unknown, no Signers, the subject recorded.
+	if r := classify(t, c2, sign(t, img, issue(t, "Canonical", other, false, expired))); r.Signer != Unknown || len(r.Signers) != 0 || !slices.Equal(r.Subjects, []string{"CN=Canonical"}) {
+		t.Errorf("vendor only: %+v", r)
 	}
 
 	// Not a PE at all.

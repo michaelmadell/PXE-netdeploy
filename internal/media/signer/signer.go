@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/foxboron/go-uefi/authenticode"
@@ -74,11 +75,18 @@ var defaultClassifier = func() *Classifier {
 type Result struct {
 	Signer  Signer
 	Subject string // the signing certificate's subject, if any
+	// Signers is every known CA any verified signature chains to, in
+	// signature order without repeats (ADR 0033); Signer is the first.
+	Signers []Signer
+	// Subjects is the subject of every verified signing certificate,
+	// including ones that chain to no known CA (a distribution's own key).
+	Subjects []string
 }
 
 // Classify reads a PE/COFF binary of size bytes. A binary whose signatures
 // don't verify, or chain to no known CA, is Unknown; no signature at all is
-// Unsigned. The first signature that chains to a known CA wins.
+// Unsigned. The first signature that chains to a known CA sets Signer;
+// Signers lists every CA (a dual-signed shim has two).
 func (c *Classifier) Classify(r io.ReaderAt, size int64) (res Result, err error) {
 	// The parser and verifier work on untrusted bytes; a panic in them is a
 	// malformed binary, not a crash.
@@ -111,11 +119,18 @@ func (c *Classifier) classify(r io.ReaderAt, size int64) (Result, error) {
 			if ok, err := pe.Verify(leaf); err != nil || !ok {
 				continue
 			}
-			if res.Subject == "" {
-				res.Subject = leaf.Subject.String()
+			subject := leaf.Subject.String()
+			if !slices.Contains(res.Subjects, subject) {
+				res.Subjects = append(res.Subjects, subject)
 			}
-			if s, ok := c.chain(leaf, certs); ok {
-				return Result{Signer: s, Subject: leaf.Subject.String()}, nil
+			if res.Subject == "" {
+				res.Subject = subject
+			}
+			if s, ok := c.chain(leaf, certs); ok && !slices.Contains(res.Signers, s) {
+				if len(res.Signers) == 0 {
+					res.Signer, res.Subject = s, subject
+				}
+				res.Signers = append(res.Signers, s)
 			}
 		}
 	}

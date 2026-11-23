@@ -148,4 +148,5 @@ kernel (the Phase 7 B2 rerun). Not tested: arm64.
 - Only the NIC the machine booted from is used (as before in practice).
 - A netdeploy release changes the binary that every HTTP(S) Boot client
   runs: re-test on the NUC with netdeployd's own DHCP answer after
-  updating.
+  updating. Done 2026-11-23: the installed service with the new bundle,
+  netdeployd's DHCP answer (no typed URL), WinPE and the agent on the NUC.

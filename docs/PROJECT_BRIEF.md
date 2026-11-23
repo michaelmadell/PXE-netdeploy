@@ -95,6 +95,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0030 | Linux hosts: a non-root service account with `CAP_NET_BIND_SERVICE` and `CAP_NET_RAW`; privileges reported in capabilities and health (`missing_privileges`) instead of only bind failures; ping check falls back to Linux's unprivileged ICMP socket (`dhcp_ping_unavailable` otherwise); `ownerProcess` from `/proc` and the Windows owner tables; data directory permission checks; CI on Ubuntu with wimtools. iPXE and non-Windows OSs moved to a phase of their own. |
 | 0031 | Packaging: an Inno Setup installer (LocalSystem service, private data folder, admin address and firewall asked at install, wimlib bundled, uninstall moves data aside) and a `.deb` (sysusers account, hardened unit with two capabilities, debconf admin address, purge moves data aside); versions from git tags; the generated admin certificate renewed at start; a `v*` tag publishes a GitHub release. Unsigned for now. |
 | 0032 | HTTP(S) Boot through the signed iPXE chain: Microsoft-signed shim (ipxe-16.1, 2011 + 2023 CAs) → iPXE-signed `ipxe.efi` (the archive's `snponly.efi` since 2026-11-23: the full build broke the NUC's USB keyboard) → a generated script → wimboot → the same bootmgfw/BCD/boot.wim as PXE, served from `/content/boot/ipxe/<arch>/`. DHCP answers `HTTPClient` with the `https://` URL when the interface serves HTTPS. Bundled with pinned hashes. Narrows ADR 0002 to PXE. The RAM-disk ISO is kept for later. |
+| 0033 | Reading Linux media: own ISO9660 reader (Rock Ridge, Joliet, plain), import tries UDF then ISO9660; families `ubuntu` (casper), `debian`, `redhat` (`.treeinfo`), only Ubuntu deployable until proven; `LinuxImageDetails` with shim, GRUB, kernel, initrd; every signer on `BootManager` (`signers`, `signedBy`); Ubuntu keeps its ISO (casper downloads it). |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -203,7 +204,8 @@ NoCloud ran to the end with progress on Subiquity's webhook and the
 installed system booted under Secure Boot. casper can't fetch the ISO over
 HTTPS (no TLS client in its initramfs), `sanboot` of the ISO doesn't work for
 Linux, and the NUC's keyboard works in iPXE only with `snponly.efi`
-([spikes/phase-7-findings.md](spikes/phase-7-findings.md)).
+([spikes/phase-7-findings.md](spikes/phase-7-findings.md)). Decision 2,
+Linux media import (ADR 0033), is built and imports both Ubuntu ISOs.
 
 ## Open questions and things to verify
 

@@ -94,6 +94,7 @@ boot.
 | **B2** (ISO over HTTPS, `snponly.efi`) | **Failed** after the kernel started: casper printed `wget: error getting response: Connection reset by peer`, then `Unable to find a live file system on the network`, and dropped to the initramfs shell. Reproduced on OVMF with casper's output on the serial console (same messages; BusyBox v1.37.0). The server logged **nothing** for it on :8444, not even a TLS handshake error, though it logs one for a bare TCP connect-and-close or a TLS 1.1 client. So casper's `wget` never connected: BusyBox's `wget` hands `https://` to a helper (`ssl_client` or `openssl`), which the Ubuntu initramfs doesn't seem to have, and reports the closed helper pipe as a reset. **The stock casper initrd can't fetch the ISO over HTTPS** |
 | **E** (`sanboot` of the ISO) | The firmware booted the ISO's own shim, GRUB and kernel from iPXE's SAN disk (iPXE read the ISO with HTTP range requests), then casper stopped: "unable to find a medium containing a live filesystem". Once Linux runs, nothing provides that disk (no driver for iPXE's HTTP SAN device), and the ISO's GRUB configuration can't be given `url=`. **Not usable for Linux installs** |
 | **W**: Windows through `snponly.efi` (the ADR 0032 script: wimboot, then the stage 4 spike's `bootmgfw.efi`, BCD, boot.sdi, boot.wim) | **Worked**, twice: WinPE started and the netdeploy agent came up with network. boot.wim (599 MB) in 17.5 s both times, the same as the full `ipxe.efi` in stage 4 (17.6 s) |
+| netdeployd itself with the amended bundle (ADR 0032), 2026-11-23 | **Worked**: the installed service serving `snponly.efi` as `ipxe.efi`, the NUC HTTPS-booted from netdeployd's own DHCP answer (no typed URL) to WinPE and the agent |
 | "Verification failed" after `vmlinuz` (B, B2, B4) | Expected, as on OVMF: iPXE's `efi_can_load` probe asks the firmware to load the kernel directly, the iPXE shim's verifier refuses it and prints the message, then iPXE starts Ubuntu's shim, which verifies the kernel |
 
 ### Still to do
@@ -156,3 +157,68 @@ OVMF screenshots: `.tmp\httpboot-spike\shot.ps1 -File <png>` (QMP on
   for Windows, and iPXE has no prompt of ours. Options for decision 3: the
   script falls back to `exit` (back to the firmware, then the disk) unless a
   deployment is armed, or curtin/`late-commands` sets the boot order.
+
+## Linux media import (decision 2, ADR 0033)
+
+**Built 2026-11-23.** `internal/media/iso9660` (Rock Ridge, Joliet, plain
+names; multi-extent; symlinks reported, not followed); import reads UDF,
+else ISO 9660; `detectLinux` (ubuntu, debian, redhat); `LinuxImageDetails`;
+every signer on `BootManager` (`signers`, `signedBy`) for Windows images
+too; Ubuntu keeps its ISO.
+
+**Automated** (Windows lab host: `go test -count=1 ./...`, `just lint`):
+
+- `iso9660`: fixtures made by xorriso 1.5.6 in WSL
+  (`scripts/make-iso9660-fixtures.sh`): Rock Ridge + Joliet (names,
+  Unicode, a 204-character name through a `CE` area, `.disk`, the symlink
+  as `ModeSymlink`), Joliet only (xorriso cuts the long name to 104
+  characters), plain level 1 (`VMLINUZ.;1` read as `VMLINUZ`); `ReaderAt`
+  across blocks; in-memory images for a multi-extent file, an extent outside
+  the image, a cut-short multi-extent file, interleaving (refused), a
+  directory containing itself and two entries naming one directory (both
+  `ErrCorrupt`, so a walk can't loop or explode); `fstest.TestFS`.
+- **Fuzzing:** 12 million inputs clean (Linux, `-fuzzminimizetime 0`).
+  Without that flag the coordinator spends nearly all its time minimising
+  the 48 KiB seeds (17 execs a minute); on Windows, multi-worker fuzzing
+  is slow as well.
+- `signer`: a binary signed under two known CAs and a vendor key gives
+  `Signers` in order and three `Subjects`; vendor-only gives `Unknown`, no
+  `Signers`, the subject.
+- `imports`: the Rock Ridge fixture imports as `ubuntu` 26.04.1 x64,
+  deployable, `retainIso` forced on with the ISO blob, kernel and initrd
+  paths and hashes, the unsigned-shim warning, the tree readable; the plain
+  fixture imports as Linux too; `detectLinux` cases for Ubuntu arm64 (from
+  `.disk/info` and from the shim's name), Debian, Rocky (`.treeinfo`), a
+  casper directory without an initrd (warning, `other`), and nothing.
+
+**Real media, 2026-11-23** (`NETDEPLOY_TEST_LINUX_ISO`, lab host):
+
+| ISO | Result |
+|---|---|
+| `ubuntu-26.04.1-live-server-amd64.iso` | `linux`, `ubuntu`, `Ubuntu-Server` `26.04.1`, x64, deployable, ISO kept; shim `EFI/boot/bootx64.efi` `signers: [uefi-ca-2011]` (Microsoft Windows UEFI Driver Publisher), GRUB and kernel `signedBy` Canonical (2022 v1), `signers: []`; the "2011 CA only" warning. 21.6 s |
+| `ubuntu-24.04.5-live-server-amd64.iso` | The same, `24.04.5`. 26.0 s |
+
+The signers match what the spike's `sigs` tool found.
+
+**Through the lab server's UI (the user, 2026-11-23):** Ubuntu 26.04.1
+imported as Linux, ready, with its warning. **Debian Live 13.8.0 (xfce) and
+the RHEL 10.3 boot ISO imported as Other**: the rules missed them.
+
+| ISO | Why it was missed | Fixed by |
+|---|---|---|
+| `debian-live-13.8.0-amd64-xfce.iso` | debian-installer is in `install/` (`vmlinuz`, `initrd.gz`), not `install.amd/`; the live system is in `live/`; `.disk/info` ("Official Debian GNU/Linux Live 13.8.0 xfce 2026-11-21T09:15:44Z") names no architecture | `install/` accepted when `.disk/info` names Debian; architecture from the shim's name |
+| `rhel-10.3-x86_64-boot.iso` | No `.treeinfo` on boot ISOs; `.discinfo` (`1793810521.107004`, `10.3`, `x86_64`), `images/pxeboot/{vmlinuz,initrd.img}`, `images/install.img` (stage 2) | `.discinfo` with `images/pxeboot/`; the name from GRUB's "Install Red Hat Enterprise Linux 10.3" |
+
+Re-imported with the fix (`NETDEPLOY_TEST_LINUX_ISO`):
+
+| ISO | Result |
+|---|---|
+| Debian Live 13.8.0 | `linux`, `debian`, "Debian GNU/Linux Live" `13.8.0`, x64, not deployable (reason given), no warnings; shim `signers: [uefi-ca-2011, uefi-ca-2023]`; GRUB "Debian Secure Boot Signer 2022 - grub2", kernel (`install/vmlinuz`) "Debian Secure Boot Signer 2022 - linux". 33 s |
+| RHEL 10.3 boot ISO | `linux`, `redhat`, "Red Hat Enterprise Linux" `10.3`, x64, not deployable, no warnings; shim `signers: [uefi-ca-2011, uefi-ca-2023]`, also signed by "Red Hat UEFI Publisher 2024"; GRUB "Red Hat Secure Boot Signing 802", kernel "… 801". 9.5 s |
+
+**Debian's and Red Hat's shims are dual-signed** (2011 and 2023 CAs), so
+they'd boot on 2023-only machines; Ubuntu's (shim 15.8) aren't yet.
+
+**Not yet:** the web UI shows Linux images without their details (family,
+version, signers); Windows media through the refactored import only by the
+UDF fixtures (`NETDEPLOY_TEST_ISO` not re-run).

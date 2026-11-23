@@ -224,8 +224,20 @@ export interface paths {
          *     The image keeps the ISO's file name, volume label and SHA-256; it doesn't
          *     need the upload afterwards, so the upload can be deleted.
          *
-         *     Media must be UDF (all Windows ISOs are); plain ISO9660 media fails the
-         *     job with `unsupported_media` until the Linux phase. Unreadable media fails
+         *     Linux media (ADR 0033) is recognised by family: `ubuntu` (casper:
+         *     `casper/vmlinuz`, `casper/initrd`, `.disk/info`), `debian`
+         *     (debian-installer in `install.amd/`, `install.a64/`, or `install/` on
+         *     live media, with `.disk/info`) and `redhat` (`.treeinfo`, or
+         *     `.discinfo` with `images/pxeboot/` on boot ISOs: Fedora, RHEL and its
+         *     rebuilds). `details` records the
+         *     distribution, version, architecture, and the shim, kernel and initrd
+         *     with every signer. Only `ubuntu` is deployable for now
+         *     (`details.deployable`); the others are recorded and refused by
+         *     profile validation. Media that matches none is `kind: other`.
+         *
+         *     Media is read as UDF if it has a UDF file system (all Windows ISOs),
+         *     else as ISO9660 with Rock Ridge or Joliet names (Linux ISOs). Media with
+         *     neither fails the job with `unsupported_media`; unreadable media fails
          *     with `invalid_media`.
          *
          *     Deduplication: if an image with the same SHA-256 already exists, the import
@@ -1912,7 +1924,9 @@ export interface components {
             name: string;
             /**
              * @description Keep the original ISO alongside the extracted files. Only needed for
-             *     features that serve the whole ISO (e.g. future UEFI HTTP Boot of ISOs).
+             *     features that serve the whole ISO. Ubuntu media always keeps it,
+             *     whatever this says, because its installer downloads the whole ISO
+             *     (`url=`, ADR 0033); `retainIso` on the image then reads `true`.
              *     The ISO is hardlinked from the upload where the volume allows, so it
              *     costs no extra space while the upload is also kept.
              * @default false
@@ -1949,7 +1963,7 @@ export interface components {
             sha256?: string;
             retainIso: boolean;
             /** @description Kind-specific metadata. Absent until the import finishes. */
-            details?: components["schemas"]["WindowsImageDetails"] | components["schemas"]["OtherImageDetails"];
+            details?: components["schemas"]["WindowsImageDetails"] | components["schemas"]["LinuxImageDetails"] | components["schemas"]["OtherImageDetails"];
         };
         WindowsImageDetails: {
             /**
@@ -1989,10 +2003,65 @@ export interface components {
         };
         BootManager: {
             signer: components["schemas"]["SecureBootSigner"];
+            /**
+             * @description Every Microsoft CA the binary's signatures chain to (ADR 0033), e.g.
+             *     `[uefi-ca-2011, uefi-ca-2023]` for a dual-signed shim. Empty when
+             *     none does. `signer` is the first of them, `unknown` for a binary
+             *     signed only by another key (see `signedBy`), or `unsigned`.
+             */
+            signers?: components["schemas"]["SecureBootSigner"][];
+            /**
+             * @description The subject of each verified signing certificate, e.g.
+             *     `CN=Canonical Ltd. Secure Boot Signing (2022 v1),…` for a kernel
+             *     signed with a distribution's own key.
+             */
+            signedBy?: string[];
             /** @description Where it was found, e.g. `efi/boot/bootx64.efi` or `boot.wim:2/Windows/Boot/EFI_EX/bootmgfw_EX.efi`. */
             sourcePath: string;
             sha256: string;
             architecture?: components["schemas"]["Architecture"];
+        };
+        /**
+         * @description How the installer is booted and automated (ADR 0033): `ubuntu` =
+         *     casper and Subiquity (autoinstall); `debian` = debian-installer
+         *     (preseed); `redhat` = Anaconda (kickstart), for Fedora, RHEL and its
+         *     rebuilds.
+         * @enum {string}
+         */
+        LinuxFamily: "ubuntu" | "debian" | "redhat";
+        LinuxImageDetails: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "linux";
+            family: components["schemas"]["LinuxFamily"];
+            /** @description e.g. `Ubuntu-Server`, `Debian GNU/Linux`, `Rocky Linux`. */
+            distribution?: string;
+            /** @description e.g. `26.04.1`. */
+            version?: string;
+            architecture: components["schemas"]["Architecture"];
+            /** @description The media's own description (`.disk/info`, or the `.treeinfo` name and version). */
+            description?: string;
+            /**
+             * @description The files a network boot loads (paths relative to the image's root).
+             *     `shim` is the distribution's own `EFI/BOOT/BOOTX64.EFI` (or
+             *     `BOOTAA64.EFI`), which iPXE's `shim` command starts the kernel
+             *     through under Secure Boot (Phase 7 findings).
+             */
+            boot: {
+                shim?: components["schemas"]["BootManager"];
+                grub?: components["schemas"]["BootManager"];
+                kernel: components["schemas"]["BootManager"];
+                initrd: {
+                    sourcePath: string;
+                    sha256: string;
+                };
+            };
+            /** @description Whether profiles can deploy it. Only `ubuntu` for now. */
+            deployable: boolean;
+            /** @description Why not, when `deployable` is false. */
+            deployableReason?: string;
         };
         OtherImageDetails: {
             /**

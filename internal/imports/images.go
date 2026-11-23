@@ -20,6 +20,7 @@ import (
 	"github.com/michaelmadell/pxe-netdeploy/internal/cas"
 	"github.com/michaelmadell/pxe-netdeploy/internal/events"
 	"github.com/michaelmadell/pxe-netdeploy/internal/jobs"
+	"github.com/michaelmadell/pxe-netdeploy/internal/media/iso9660"
 	"github.com/michaelmadell/pxe-netdeploy/internal/media/signer"
 	"github.com/michaelmadell/pxe-netdeploy/internal/media/udf"
 	"github.com/michaelmadell/pxe-netdeploy/internal/media/wim"
@@ -144,14 +145,9 @@ func (im *Images) importISO(ctx context.Context, r *jobs.Run, imageID, uploadID 
 	defer f.Close()
 
 	r.Progress(0, "Reading the ISO")
-	media, err := udf.Open(f, up.Length)
-	switch {
-	case errors.Is(err, udf.ErrNotUDF):
-		return unsupported("This ISO has no UDF file system. Windows install media is UDF; other media (e.g. Linux ISO9660) is not supported yet.")
-	case errors.Is(err, udf.ErrUnsupported):
-		return unsupported(err.Error())
-	case err != nil:
-		return invalid(err.Error())
+	media, err := openMedia(f, up.Length)
+	if err != nil {
+		return err
 	}
 
 	type file struct {
@@ -207,7 +203,7 @@ func (im *Images) importISO(ctx context.Context, r *jobs.Run, imageID, uploadID 
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if errors.Is(err, udf.ErrCorrupt) {
+			if errors.Is(err, udf.ErrCorrupt) || errors.Is(err, iso9660.ErrCorrupt) {
 				return invalid(err.Error())
 			}
 			return err
@@ -227,14 +223,28 @@ func (im *Images) importISO(ctx context.Context, r *jobs.Run, imageID, uploadID 
 		}
 	}
 	_, bootErr := fs.Stat(media, "sources/boot.wim")
-	if installPath != "" && bootErr == nil {
+	linux, linuxWarnings := detectLinux(media)
+	switch {
+	case installPath != "" && bootErr == nil:
 		res.Kind = "windows"
 		d, bms, warnings, err := im.windows(ctx, media, st, shas, installPath)
 		if err != nil {
 			return err
 		}
 		details, res.BootManagers, res.Warnings = d, bms, warnings
-	} else {
+	case linux != nil:
+		res.Kind = "linux"
+		d, warnings, err := im.linux(media, linux, shas)
+		if err != nil {
+			return err
+		}
+		details, res.Warnings = d, warnings
+		res.BootManagers = im.mediaBootManagers(media, shas)
+		// casper downloads the whole ISO (url=), so Ubuntu keeps it.
+		res.ForceRetainISO = linux.family == api.LinuxFamilyUbuntu
+		log.Info("linux media", "family", linux.family, "distribution", linux.distribution, "version", linux.version, "arch", linux.arch)
+	default:
+		res.Warnings = linuxWarnings
 		res.Kind = "other"
 		bms := im.mediaBootManagers(media, shas)
 		res.BootManagers = bms
@@ -253,7 +263,7 @@ func (im *Images) importISO(ctx context.Context, r *jobs.Run, imageID, uploadID 
 	if err != nil {
 		return err
 	}
-	if img.RetainISO {
+	if img.RetainISO || res.ForceRetainISO {
 		if err := st.LinkBlob(p, *up.SHA256, up.Length); err != nil {
 			return err
 		}
@@ -276,7 +286,7 @@ func (im *Images) importISO(ctx context.Context, r *jobs.Run, imageID, uploadID 
 
 // windows reads editions from the install image, boot image indexes from
 // boot.wim, and every boot manager on the media and inside boot.wim.
-func (im *Images) windows(ctx context.Context, media *udf.FS, st *cas.Staging, shas map[string]string, installPath string) (api.WindowsImageDetails, []store.BootManager, []string, error) {
+func (im *Images) windows(ctx context.Context, media fs.FS, st *cas.Staging, shas map[string]string, installPath string) (api.WindowsImageDetails, []store.BootManager, []string, error) {
 	var warnings []string
 	d := api.WindowsImageDetails{Kind: api.WindowsImageDetailsKindWindows}
 	switch path.Ext(installPath) {
@@ -369,11 +379,11 @@ func (im *Images) windows(ctx context.Context, media *udf.FS, st *cas.Staging, s
 				if err != nil {
 					return d, nil, nil, err
 				}
-				bm := store.BootManager{SourcePath: fmt.Sprintf("boot.wim:%d/%s", x.Index, name), SHA256: sha, Signer: im.classify(b)}
+				arch := ""
 				if x.Arch == "x64" || x.Arch == "arm64" {
-					a := x.Arch
-					bm.Architecture = &a
+					arch = x.Arch
 				}
+				bm := im.bootManager(fmt.Sprintf("boot.wim:%d/%s", x.Index, name), sha, b, arch)
 				bms = append(bms, bm)
 			}
 		}
@@ -392,7 +402,7 @@ func (im *Images) windows(ctx context.Context, media *udf.FS, st *cas.Staging, s
 }
 
 // mediaBootManagers classifies the EFI binaries in efi/boot on the media.
-func (im *Images) mediaBootManagers(media *udf.FS, shas map[string]string) []store.BootManager {
+func (im *Images) mediaBootManagers(media fs.FS, shas map[string]string) []store.BootManager {
 	dir := realPath(media, "efi/boot")
 	ents, err := fs.ReadDir(media, dir)
 	if err != nil {
@@ -408,16 +418,8 @@ func (im *Images) mediaBootManagers(media *udf.FS, shas map[string]string) []sto
 		if err != nil {
 			continue
 		}
-		bm := store.BootManager{SourcePath: p, SHA256: shas[cas.Fold(p)], Signer: im.classify(b)}
-		switch strings.ToLower(e.Name()) {
-		case "bootx64.efi":
-			a := "x64"
-			bm.Architecture = &a
-		case "bootaa64.efi":
-			a := "arm64"
-			bm.Architecture = &a
-		}
-		out = append(out, bm)
+		arch := map[string]string{"bootx64.efi": "x64", "bootaa64.efi": "arm64"}[strings.ToLower(e.Name())]
+		out = append(out, im.bootManager(p, shas[cas.Fold(p)], b, arch))
 	}
 	return out
 }
@@ -446,12 +448,23 @@ func realPath(media fs.FS, name string) string {
 	return cur
 }
 
-func (im *Images) classify(b []byte) string {
+// bootManager classifies an EFI binary with every signer (ADR 0033). arch
+// is "" when unknown. A file that isn't PE/COFF is Unknown.
+func (im *Images) bootManager(sourcePath, sha string, b []byte, arch string) store.BootManager {
+	bm := store.BootManager{SourcePath: sourcePath, SHA256: sha, Signer: string(signer.Unknown)}
+	if arch != "" {
+		bm.Architecture = &arch
+	}
 	res, err := im.signers.Classify(bytes.NewReader(b), int64(len(b)))
 	if err != nil {
-		return string(signer.Unknown)
+		return bm
 	}
-	return string(res.Signer)
+	bm.Signer = string(res.Signer)
+	for _, s := range res.Signers {
+		bm.Signers = append(bm.Signers, string(s))
+	}
+	bm.SignedBy = res.Subjects
+	return bm
 }
 
 func apiBootManagers(bms []store.BootManager) []api.BootManager {
@@ -462,11 +475,50 @@ func apiBootManagers(bms []store.BootManager) []api.BootManager {
 			a := api.Architecture(*b.Architecture)
 			out[i].Architecture = &a
 		}
+		signers := make([]api.SecureBootSigner, 0, len(b.Signers))
+		for _, s := range b.Signers {
+			signers = append(signers, api.SecureBootSigner(s))
+		}
+		out[i].Signers = &signers
+		if len(b.SignedBy) > 0 {
+			by := b.SignedBy
+			out[i].SignedBy = &by
+		}
 	}
 	return out
 }
 
-func wimInfo(media *udf.FS, name string) (wim.Info, error) {
+// medium is an opened ISO: either reader.
+type medium interface {
+	fs.FS
+	Label() string
+}
+
+// openMedia reads the ISO as UDF if it has a UDF volume (Windows), else as
+// ISO 9660 (Linux; ADR 0033).
+func openMedia(r io.ReaderAt, size int64) (medium, error) {
+	u, err := udf.Open(r, size)
+	switch {
+	case err == nil:
+		return u, nil
+	case errors.Is(err, udf.ErrUnsupported):
+		return nil, unsupported(err.Error())
+	case !errors.Is(err, udf.ErrNotUDF):
+		return nil, invalid(err.Error())
+	}
+	iso, err := iso9660.Open(r, size)
+	switch {
+	case err == nil:
+		return iso, nil
+	case errors.Is(err, iso9660.ErrNotISO9660):
+		return nil, unsupported("This file is neither a UDF nor an ISO 9660 image.")
+	case errors.Is(err, iso9660.ErrUnsupported):
+		return nil, unsupported(err.Error())
+	}
+	return nil, invalid(err.Error())
+}
+
+func wimInfo(media fs.FS, name string) (wim.Info, error) {
 	f, err := media.Open(name)
 	if err != nil {
 		return wim.Info{}, err

@@ -1,6 +1,7 @@
 # 18. Reading install media: own UDF and WIM metadata readers, go-wim, go-uefi
 
-Status: accepted
+Status: accepted. Amended by [0033](0033-reading-linux-media.md) (2026-11-23):
+ISO9660 media is read too.
 
 ## Context
 Image import (Phase 3) needs, from a Windows ISO: every file (stored in the

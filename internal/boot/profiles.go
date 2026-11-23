@@ -29,6 +29,9 @@ type Profiles struct {
 	Store *store.Store
 	// Tree serves a content-store tree (cas.Store.Tree).
 	Tree func(id string) fs.FS
+	// BlobPath finds a stored blob's file (cas.Store.BlobPath): a Linux
+	// image's kept ISO (ADR 0034).
+	BlobPath func(sha string) (string, error)
 	// DefaultProfileID returns bootPrompt.defaultProfileId ("" for none).
 	DefaultProfileID func() string
 }
@@ -39,6 +42,9 @@ func (p *Profiles) Boot(ctx context.Context, r Request) (Answer, bool, string) {
 	switch {
 	case err == nil:
 		if d, err := p.Store.ActiveDeployment(ctx, c.ID); err == nil && d.Status == "pending" {
+			if img := snapshotLinuxImage(d); img != "" {
+				return p.linux(r.Arch, img, d.ProfileID, "deployment")
+			}
 			return p.answer(ctx, r.Arch, snapshotBootImage(d), d.ProfileID, "deployment")
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return Answer{}, false, "reading deployments: " + err.Error()
@@ -74,6 +80,36 @@ func snapshotBootImage(d store.Deployment) string {
 	return snap.BootImageID
 }
 
+// snapshotLinuxImage is the Linux image an armed deployment's profile
+// snapshot names, "" for a Windows profile.
+func snapshotLinuxImage(d store.Deployment) string {
+	var snap struct {
+		Kind           string `json:"kind"`
+		InstallImageID string `json:"installImageId"`
+	}
+	_ = json.Unmarshal(d.ProfileSnapshot, &snap)
+	if snap.Kind != store.ProfileLinux {
+		return ""
+	}
+	return snap.InstallImageID
+}
+
+// linux answers a client whose profile is Linux (ADR 0034): HTTP(S) Boot
+// clients get the iPXE chain, whose generated script does the rest; PXE
+// clients get nothing (decision 6). The image itself is checked when its
+// boot commands are served.
+func (p *Profiles) linux(arch Arch, imageID, profileID, source string) (Answer, bool, string) {
+	if !arch.HTTP() {
+		return Answer{}, false, fmt.Sprintf("%s %s is a Linux profile, which needs HTTP(S) Boot; this is a PXE client", source, profileID)
+	}
+	want := arch.ImageArch()
+	if want == "" {
+		return Answer{}, false, "no Linux boot for " + string(arch) + " clients"
+	}
+	return Answer{File: ipxe.ShimPath(want), ProfileID: profileID, Source: source,
+		Linux: &LinuxAnswer{ImageID: imageID, Armed: source == "deployment"}}, true, ""
+}
+
 // answer serves bootImageID (or the profile's) to a client of arch. No
 // fallback when it can't (ADR 0024): the reason says why.
 func (p *Profiles) answer(ctx context.Context, arch Arch, bootImageID, profileID, source string) (Answer, bool, string) {
@@ -81,6 +117,9 @@ func (p *Profiles) answer(ctx context.Context, arch Arch, bootImageID, profileID
 		pr, err := p.Store.Profile(ctx, profileID)
 		if err != nil {
 			return Answer{}, false, fmt.Sprintf("%s %s: %v", source, profileID, err)
+		}
+		if pr.Kind == store.ProfileLinux {
+			return p.linux(arch, pr.InstallImageID, profileID, source)
 		}
 		bootImageID = pr.BootImageID
 	}

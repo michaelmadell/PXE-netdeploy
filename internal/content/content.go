@@ -24,6 +24,9 @@ const BootPrefix = "/content/boot/"
 // AgentPrefix is the agent API, forwarded to the API handler.
 const AgentPrefix = "/api/v1/agent/"
 
+// LinuxPrefix serves Linux images by id (ADR 0034): /content/linux/<id>/<path>.
+const LinuxPrefix = "/content/linux/"
+
 // Config configures a Handler.
 type Config struct {
 	// DefaultRoot serves clients ClientRoot doesn't place (nil or no
@@ -40,6 +43,12 @@ type Config struct {
 	// client's content. Its files must implement io.ReadSeeker.
 	Shared    fs.FS
 	SharedDir string
+	// Script generates <SharedDir>/<arch>/autoexec.ipxe for the requesting
+	// client (ADR 0034). ok=false falls through to Shared's static script.
+	Script func(r *http.Request, client netip.Addr, arch string) (body []byte, attrs []any, ok bool)
+	// Linux opens a ready Linux image's content (its tree and image.iso)
+	// for LinuxPrefix. Nil: 404. fs.ErrNotExist: no such image.
+	Linux func(imageID string) (fs.FS, error)
 	// Agent handles AgentPrefix. Nil: 404.
 	Agent  http.Handler
 	Logger *slog.Logger
@@ -65,6 +74,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cfg.Agent.ServeHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, BootPrefix):
 		h.serveBoot(w, r)
+	case strings.HasPrefix(r.URL.Path, LinuxPrefix) && h.cfg.Linux != nil:
+		h.serveLinux(w, r)
 	default:
 		notFound(w, "Nothing is served at "+r.URL.Path+" on the content listener.")
 	}
@@ -96,12 +107,59 @@ func (h *Handler) serveBoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.cfg.Shared != nil && h.cfg.SharedDir != "" && strings.HasPrefix(strings.ToLower(rel), strings.ToLower(h.cfg.SharedDir)+"/") {
 		root = h.cfg.Shared
+		// The script is generated per client (ADR 0034).
+		if parts := strings.Split(rel, "/"); h.cfg.Script != nil && len(parts) == 3 && strings.EqualFold(parts[2], "autoexec.ipxe") {
+			if body, sattrs, ok := h.cfg.Script(r, client, parts[1]); ok {
+				log.Info("content served", append([]any{"method", r.Method, "status", http.StatusOK, "generated", true, "bytes", len(body)}, sattrs...)...)
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-store")
+				http.ServeContent(w, r, "autoexec.ipxe", time.Now(), strings.NewReader(string(body)))
+				return
+			}
+		}
 	}
 	if root == nil {
 		log.Warn("content request refused", "reason", "no boot content configured")
 		notFound(w, "No boot content is configured.")
 		return
 	}
+	h.serveFile(w, r, log, root, rel, start)
+}
+
+// serveLinux serves /content/linux/<imageId>/<path> (ADR 0034): the same
+// files to every client, whatever its address (the installer's kernel can
+// get another address than iPXE had).
+func (h *Handler) serveLinux(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		problem(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only GET and HEAD.")
+		return
+	}
+	start := time.Now()
+	log := h.log.With("client", r.RemoteAddr, "path", r.URL.Path)
+	id, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, LinuxPrefix), "/")
+	rel, ok := cleanPath(rest)
+	if !ok || id == "" || strings.ContainsAny(id, "/\\:.") {
+		log.Warn("content request refused", "reason", "bad path")
+		notFound(w, "No such file.")
+		return
+	}
+	root, err := h.cfg.Linux(id)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Error("linux image open failed", "err", err)
+			problem(w, http.StatusInternalServerError, "internal_error", "")
+			return
+		}
+		log.Info("content request refused", "reason", "no such Linux image")
+		notFound(w, "No such Linux image.")
+		return
+	}
+	h.serveFile(w, r, log.With("linux_image", id), root, rel, start)
+}
+
+// serveFile serves rel from root.
+func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, log *slog.Logger, root fs.FS, rel string, start time.Time) {
 	f, err := root.Open(rel)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrInvalid) {

@@ -38,5 +38,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0031](0031-packaging.md) | Packaging: an Inno Setup installer and a .deb | accepted |
 | [0032](0032-https-boot-ipxe.md) | HTTP(S) Boot through the signed iPXE shim and wimboot (amended: `snponly.efi`) | accepted |
 | [0033](0033-reading-linux-media.md) | Reading Linux media: ISO9660, distribution families, every signer | accepted |
+| [0034](0034-linux-clients.md) | What a Linux client boots: Linux profiles, per-client iPXE scripts, the gate in iPXE | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

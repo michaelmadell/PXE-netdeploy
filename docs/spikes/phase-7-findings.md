@@ -222,3 +222,41 @@ they'd boot on 2023-only machines; Ubuntu's (shim 15.8) aren't yet.
 **Not yet:** the web UI shows Linux images without their details (family,
 version, signers); Windows media through the refactored import only by the
 UDF fixtures (`NETDEPLOY_TEST_ISO` not re-run).
+
+## What a Linux client boots (decision 3, ADR 0034)
+
+**Built 2026-11-23** (not yet lab-tested). Profiles have a `kind`
+(migration 0015 rebuilds `profiles` with per-kind checks); HTTP(S) Boot
+clients with a Linux profile get a generated `autoexec.ipxe` (the gate);
+`/agent/ipxe/unlock` answers with a menu of Linux profiles,
+`/agent/ipxe/start` with the boot commands; `/content/linux/<imageId>/`
+serves the image's tree and `image.iso`. Import also warns about a
+2023-only shim.
+
+**Automated** (Windows lab host: `go test -count=1 ./...`, `just lint`):
+
+- `internal/ipxe`: the gate (armed, unarmed, debug mode, no password), the
+  menu, the boot commands, failures; `Text` refuses `${` and control
+  characters.
+- `internal/boot`: PXE clients with a Linux profile get no answer (with the
+  reason), HTTP Boot clients the iPXE shim; an armed Linux deployment sets
+  `Armed`; `LinuxContent` serves the tree and the ISO, not Windows images.
+- `internal/content`: the generated script when `Script` says so, the
+  static one otherwise; `/content/linux/` with ranges and path refusals.
+- `internal/settings`: the script from the session (armed), the default
+  profile with no session, the static script for a Windows session.
+- `internal/server`: wrong password goes back to the gate; the menu lists
+  only Linux profiles for the machine's architecture; tokens are single-use
+  and bound to the MAC; the boot commands
+  (`shim …/EFI/boot/bootx64.efi`, `kernel … ip=dhcp
+  url=http://10.77.0.1:8080/content/linux/<id>/image.iso
+  cloud-config-url=/dev/null <kernelArgs>`, `initrd …`); armed start
+  consumes the deployment once; WinPE neither lists, starts nor consumes
+  Linux deployments; profile API per-kind codes and `kind_changed`.
+
+**Not yet tested:** any of it on the NUC: `prompt`, `login`, `menu` and
+`params` (POST) in the signed `snponly.efi`, `exit 1` falling through to
+the disk, and an Ubuntu install started from the menu and from an armed
+deployment through netdeployd (the spike used its own server). The UI's
+profile editor (kind choice, Linux fields) only through `tsc`.
+

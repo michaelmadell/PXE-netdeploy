@@ -260,6 +260,8 @@ func (im *Images) linux(media fs.FS, m *linuxMedia, shas map[string]string) (api
 			warnings = append(warnings, "The shim ("+shim.SourcePath+") isn't signed by a Microsoft UEFI CA: Secure Boot will refuse it.")
 		case slices.Contains(ss, api.SecureBootSignerUefiCa2011) && !slices.Contains(ss, api.SecureBootSignerUefiCa2023):
 			warnings = append(warnings, "The shim is signed by the Microsoft UEFI CA 2011 only: machines that trust only the 2023 CAs will refuse it.")
+		case slices.Contains(ss, api.SecureBootSignerUefiCa2023) && !slices.Contains(ss, api.SecureBootSignerUefiCa2011):
+			warnings = append(warnings, "The shim is signed by the Microsoft UEFI CA 2023 only: machines without the 2023 CA in their Secure Boot database will refuse it.")
 		}
 	}
 	if g, err := bm("EFI/BOOT/" + efi[1]); err == nil {

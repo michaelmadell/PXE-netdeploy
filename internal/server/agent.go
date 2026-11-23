@@ -42,6 +42,7 @@ const (
 	ctxBearer ctxKey = iota
 	ctxRemoteIP
 	ctxAccept
+	ctxLocalIP
 )
 
 // WithRequestInfo puts the bearer token and the caller's IP into the
@@ -60,9 +61,17 @@ func WithRequestInfo(next http.Handler) http.Handler {
 				ctx = context.WithValue(ctx, ctxRemoteIP, a.Unmap())
 			}
 		}
+		if la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+			if ap, err := netip.ParseAddrPort(la.String()); err == nil {
+				ctx = context.WithValue(ctx, ctxLocalIP, ap.Addr().Unmap())
+			}
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// localAddr is the address the request came in on.
+func localAddr(ctx context.Context) netip.Addr { a, _ := ctx.Value(ctxLocalIP).(netip.Addr); return a }
 
 func bearer(ctx context.Context) string { s, _ := ctx.Value(ctxBearer).(string); return s }
 
@@ -89,6 +98,8 @@ type agentState struct {
 	now      func() time.Time
 	// bootPrompt replaces the settings in tests.
 	bootPrompt func() settings.BootPrompt
+	// httpEndpoints replaces the settings' HTTP content endpoints in tests.
+	httpEndpoints func() []netip.AddrPort
 }
 
 type checkIn struct {
@@ -269,6 +280,8 @@ func (s *Server) AgentCheckIn(ctx context.Context, req api.AgentCheckInRequestOb
 		if c.LastIP != nil && ip.IsValid() && *c.LastIP != ip.String() {
 			log.Warn("armed deployment not handed over: check-in from a different address than DHCP gave the client",
 				"deployment_id", d.ID, "dhcp_ip", *c.LastIP)
+		} else if snapshotIsLinux(d.ProfileSnapshot) {
+			log.Warn("armed deployment not handed over: it's a Linux one, started by the client's iPXE script", "deployment_id", d.ID)
 		} else if out, ok, err := s.startArmed(ctx, c, d); err != nil {
 			return nil, err
 		} else if ok {
@@ -392,6 +405,9 @@ func (s *Server) AgentUnlock(ctx context.Context, req api.AgentUnlockRequestObje
 	}
 	out := api.AgentUnlockResult{SessionToken: tok, ExpiresAt: exp}
 	for _, p := range profiles {
+		if p.Kind == store.ProfileLinux {
+			continue // the iPXE menu offers those (ADR 0034)
+		}
 		item := struct {
 			Description *string `json:"description,omitempty"`
 			Id          string  `json:"id"`
@@ -445,6 +461,10 @@ func (s *Server) AgentStartDeployment(ctx context.Context, req api.AgentStartDep
 	}
 	if err != nil {
 		return nil, err
+	}
+	if p.Kind == store.ProfileLinux {
+		return api.AgentStartDeployment422ApplicationProblemPlusJSONResponse(newProblem(http.StatusUnprocessableEntity, "not_for_kind",
+			"Linux profile", "Profile "+p.Name+" is a Linux profile: it is started from the iPXE menu, not WinPE.", nil)), nil
 	}
 	c, err := s.store.Client(ctx, sess.ClientID)
 	if err != nil {
@@ -507,8 +527,11 @@ func (s *Server) buildPlan(ctx context.Context, d store.Deployment) (api.AgentDe
 	if err := json.Unmarshal(d.ProfileSnapshot, &snap); err != nil {
 		return api.AgentDeploymentPlan{}, nil, fmt.Errorf("profile snapshot: %w", err)
 	}
-	if snap.InstallMethod != api.InstallMethodAgent {
-		return api.AgentDeploymentPlan{}, nil, fmt.Errorf("install method %s isn't supported yet", snap.InstallMethod)
+	if snap.Kind != nil && *snap.Kind == api.ProfileKindLinux {
+		return api.AgentDeploymentPlan{}, nil, fmt.Errorf("profile %q is a Linux profile: the WinPE agent can't deploy it", snap.Name)
+	}
+	if snap.InstallMethod == nil || *snap.InstallMethod != api.InstallMethodAgent || snap.EditionIndex == nil || snap.BootImageId == nil {
+		return api.AgentDeploymentPlan{}, nil, fmt.Errorf("install method %v isn't supported yet", snap.InstallMethod)
 	}
 	im, err := s.store.Image(ctx, snap.InstallImageId)
 	if err != nil {
@@ -532,7 +555,7 @@ func (s *Server) buildPlan(ctx context.Context, d store.Deployment) (api.AgentDe
 	size := int(image.Size)
 
 	plan := api.AgentDeploymentPlan{
-		DeploymentId: d.ID, InstallMethod: api.InstallMethodAgent, EditionIndex: snap.EditionIndex,
+		DeploymentId: d.ID, InstallMethod: api.InstallMethodAgent, EditionIndex: *snap.EditionIndex,
 		BootOrderAfterDeploy: api.AgentDeploymentPlanBootOrderAfterDeploy("disk-first"),
 		BootManager:          api.AgentDeploymentPlanBootManager("windows-pca-2011"),
 	}
@@ -542,7 +565,7 @@ func (s *Server) buildPlan(ctx context.Context, d store.Deployment) (api.AgentDe
 	if snap.BootOrderAfterDeploy != nil {
 		plan.BootOrderAfterDeploy = api.AgentDeploymentPlanBootOrderAfterDeploy(*snap.BootOrderAfterDeploy)
 	}
-	if bi, err := s.store.BootImage(ctx, snap.BootImageId); err == nil && bi.SelectedBootManager != nil {
+	if bi, err := s.store.BootImage(ctx, *snap.BootImageId); err == nil && bi.SelectedBootManager != nil {
 		var bm struct {
 			Signer string `json:"signer"`
 		}

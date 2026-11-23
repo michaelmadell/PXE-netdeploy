@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox, Field, FieldErrors, Input, RadioCards, Select } from "@/components/ui/form";
 import { Alert, Badge, Dialog, PageHeader, td, th } from "@/components/ui/misc";
 import { ApiError, errorMessage, unwrap } from "@/lib/problem";
-import { useBootImages, useDriverGroups, useSettings, windowsImages } from "@/pages/boot/data";
+import { linuxImages, useBootImages, useDriverGroups, useSettings, windowsImages } from "@/pages/boot/data";
 import { useImages } from "@/pages/images/data";
 import { Findings, useValidation } from "@/pages/deployments/parts";
 import { BUILTIN, modeText, profileTemplateId, useTemplates } from "@/pages/templates/data";
@@ -25,7 +25,10 @@ const identityText: Record<Schemas["IdentityMode"], string> = {
 
 const codes: Record<string, string> = {
   unknown_boot_image: "That boot image no longer exists.",
-  install_image_unavailable: "That Windows image is missing or not ready.",
+  install_image_unavailable: "That image is missing, not ready, or can’t be deployed by this kind of profile.",
+  kind_changed: "A profile can’t switch between Windows and Linux. Make a new profile instead.",
+  not_for_kind: "Some settings don’t apply to this kind of profile.",
+  invalid_kernel_args: "Kernel arguments must fit on one line, without double quotes.",
   architecture_mismatch: "The boot image and the Windows image are for different architectures.",
   unknown_edition: "The Windows image has no such edition.",
   unknown_driver_group: "One of the driver groups no longer exists.",
@@ -80,6 +83,24 @@ export function ProfilesPage() {
     const ed = im?.details?.kind === "windows" ? im.details.editions.find((e) => e.index === p.editionIndex) : undefined;
     return { image: im?.name ?? "Deleted image", edition: ed?.name ?? `Edition ${p.editionIndex}` };
   };
+  const actions = (p: Profile) => (
+    <div className="flex justify-end gap-1">
+      {p.id !== defaultId && (
+        <Button size="sm" variant="ghost" disabled={makeDefault.isPending} aria-label={`Make ${p.name} the default`} onClick={() => makeDefault.mutate(p.id)}>
+          <Star aria-hidden /> Make default
+        </Button>
+      )}
+      <Button size="sm" variant="ghost" aria-label={`Check ${p.name}`} onClick={() => setChecking(p)}>
+        <ListChecks aria-hidden /> Check
+      </Button>
+      <Button size="sm" variant="ghost" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
+        <Pencil aria-hidden /> Edit
+      </Button>
+      <Button size="sm" variant="destructive-ghost" aria-label={`Delete ${p.name}`} onClick={() => { del.reset(); setDeleting(p); }}>
+        <Trash2 aria-hidden /> Delete
+      </Button>
+    </div>
+  );
   const newButton = (
     <Button variant="primary" onClick={() => setEditing("new")}>
       <Plus aria-hidden /> New profile
@@ -90,7 +111,7 @@ export function ProfilesPage() {
     <div className="max-w-5xl">
       <PageHeader
         title="Profiles"
-        description="A profile is what a machine can be turned into: the boot image it starts and the Windows edition it installs. The default profile is offered to any machine that network boots."
+        description="A profile is what a machine can be turned into: for Windows, the boot image it starts and the edition it installs; for Linux, the installer image it boots over HTTP(S) Boot. The default profile is offered to any machine that network boots."
         actions={newButton}
       />
 
@@ -115,7 +136,7 @@ export function ProfilesPage() {
         <div className="rounded-lg border border-dashed px-6 py-12 text-center">
           <p className="font-medium">No profiles yet</p>
           <p className="mx-auto mt-1 max-w-prose text-sm text-muted-foreground">
-            You need a built boot image and a Windows image first. A profile joins the two, and machines boot the profile.
+            For Windows you need a built boot image and a Windows image; for Linux, an imported Linux installer ISO. Machines boot the profile.
           </p>
           <div className="mt-4 flex justify-center">{newButton}</div>
         </div>
@@ -133,7 +154,36 @@ export function ProfilesPage() {
             </thead>
             <tbody>
               {items.map((p) => {
-                const b = bootImage(p.bootImageId);
+                if (p.kind === "linux") {
+                  const im = images.data?.items.find((i) => i.id === p.installImageId);
+                  const lx = im?.details?.kind === "linux" ? im.details : undefined;
+                  return (
+                    <tr key={p.id} className="border-b last:border-0">
+                      <td className={td}>
+                        <span className="font-medium">{p.name}</span> <Badge>Linux</Badge>{" "}
+                        {p.id === defaultId && <Badge tone="success">Default</Badge>}
+                        {p.description && <div className="text-xs text-muted-foreground">{p.description}</div>}
+                      </td>
+                      <td className={td}>
+                        HTTP(S) Boot only
+                        <div className="text-xs text-muted-foreground">PXE clients get no answer</div>
+                      </td>
+                      <td className={td}>
+                        {im ? (
+                          <Link to={`/images/${im.id}`} className="text-primary underline-offset-4 hover:underline">
+                            {im.name}
+                          </Link>
+                        ) : (
+                          "Deleted image"
+                        )}
+                        {lx && <div className="text-xs text-muted-foreground">{lx.description ?? lx.distribution ?? lx.family} · {lx.architecture}</div>}
+                      </td>
+                      <td className={td}>Set up in the installer</td>
+                      <td className={`${td} pr-0`}>{actions(p)}</td>
+                    </tr>
+                  );
+                }
+                const b = bootImage(p.bootImageId ?? "");
                 const built = (b?.artifacts?.length ?? 0) > 0;
                 const e = edition(p);
                 return (
@@ -162,7 +212,7 @@ export function ProfilesPage() {
                       <div className="text-xs text-muted-foreground">{e.image}</div>
                     </td>
                     <td className={td}>
-                      {identityText[p.identity.mode]}
+                      {p.identity ? identityText[p.identity.mode] : "–"}
                       {p.unattendTemplateId && (
                         <div className="text-xs text-muted-foreground">
                           Template:{" "}
@@ -172,24 +222,7 @@ export function ProfilesPage() {
                         </div>
                       )}
                     </td>
-                    <td className={`${td} pr-0`}>
-                      <div className="flex justify-end gap-1">
-                        {p.id !== defaultId && (
-                          <Button size="sm" variant="ghost" disabled={makeDefault.isPending} aria-label={`Make ${p.name} the default`} onClick={() => makeDefault.mutate(p.id)}>
-                            <Star aria-hidden /> Make default
-                          </Button>
-                        )}
-                        <Button size="sm" variant="ghost" aria-label={`Check ${p.name}`} onClick={() => setChecking(p)}>
-                          <ListChecks aria-hidden /> Check
-                        </Button>
-                        <Button size="sm" variant="ghost" aria-label={`Edit ${p.name}`} onClick={() => setEditing(p)}>
-                          <Pencil aria-hidden /> Edit
-                        </Button>
-                        <Button size="sm" variant="destructive-ghost" aria-label={`Delete ${p.name}`} onClick={() => { del.reset(); setDeleting(p); }}>
-                          <Trash2 aria-hidden /> Delete
-                        </Button>
-                      </div>
-                    </td>
+                    <td className={`${td} pr-0`}>{actions(p)}</td>
                   </tr>
                 );
               })}
@@ -265,11 +298,20 @@ function ProfileForm({
   const templates = useTemplates();
   const driverGroups = useDriverGroups();
   const sources = windowsImages(images.data?.items);
+  const linuxSources = linuxImages(images.data?.items);
   const boots = bootImages.data?.items ?? [];
+
+  const [kind, setKind] = useState<Schemas["ProfileKind"]>(profile?.kind ?? "windows");
+  const [linuxImageId, setLinuxImageId] = useState(
+    profile?.kind === "linux" ? profile.installImageId : linuxSources.filter((l) => l.linux.deployable).length === 1 ? linuxSources.find((l) => l.linux.deployable)!.image.id : "",
+  );
+  const [kernelArgs, setKernelArgs] = useState(profile?.kernelArgs ?? "");
 
   const [name, setName] = useState(profile?.name ?? "");
   const [bootImageId, setBootImageId] = useState(profile?.bootImageId ?? (boots.length === 1 ? boots[0]!.id : ""));
-  const [installImageId, setInstallImageId] = useState(profile?.installImageId ?? (sources.length === 1 ? sources[0]!.image.id : ""));
+  const [installImageId, setInstallImageId] = useState(
+    profile?.kind === "windows" ? profile.installImageId : sources.length === 1 ? sources[0]!.image.id : "",
+  );
   const [editionIndex, setEditionIndex] = useState<number | null>(profile?.editionIndex ?? null);
   const [bootOrder, setBootOrder] = useState(profile?.bootOrderAfterDeploy ?? "disk-first");
   const [asDefault, setAsDefault] = useState(offerDefault);
@@ -291,7 +333,10 @@ function ProfileForm({
   const template = templates.data?.find((t) => t.id === templateId);
   const templateMismatch = !!template && identity.mode !== "entra" && !template.identityModes.includes(identity.mode);
   const missingVars = (template?.requiredVariables ?? []).filter((k) => !(vars.vars[k] ?? "").trim() && !(template?.variableDefaults?.[k] ?? "").trim());
-  const valid =
+  const linuxSource = linuxSources.find((l) => l.image.id === linuxImageId);
+  const kernelArgsBad = kernelArgs.length > 1024 || /["\r\n]/.test(kernelArgs);
+  const linuxValid = !!name.trim() && !!linuxSource?.linux.deployable && !kernelArgsBad;
+  const windowsValid =
     !!name.trim() &&
     !!bootImageId &&
     !!installImageId &&
@@ -300,12 +345,24 @@ function ProfileForm({
     !templateMismatch &&
     problems.length === 0 &&
     vars.bad.length === 0;
+  const valid = kind === "linux" ? linuxValid : windowsValid;
 
   const save = useMutation({
     mutationFn: async () => {
       // Everything this form doesn't show (install method, driver groups, …) is kept as it was.
       const { id: _id, etag: _etag, createdAt: _c, updatedAt: _u, ...kept } = profile ?? ({} as Partial<Profile>);
-      const input: ProfileInput = {
+      const input: ProfileInput =
+        kind === "linux"
+          ? {
+              kind: "linux",
+              name: name.trim(),
+              description: kept.description,
+              installImageId: linuxImageId,
+              kernelArgs: kernelArgs.trim() || undefined,
+              variables: kept.variables,
+            }
+          : {
+        kind: "windows",
         installMethod: "agent",
         ...kept,
         name: name.trim(),
@@ -318,7 +375,7 @@ function ProfileForm({
         variables: vars.vars,
         unattendTemplateId: templateId === BUILTIN ? null : templateId,
         osDriverGroupIds: osGroups,
-      };
+            };
       const saved = profile
         ? unwrap(await api.PUT("/profiles/{profileId}", { params: { path: { profileId: profile.id }, header: { "If-Match": profile.etag } }, body: input }))
         : unwrap(await api.POST("/profiles", { body: input }));
@@ -341,6 +398,21 @@ function ProfileForm({
         <Field label="Name" path="name" hint="Shown in the menu on the machine, for example “Windows 11 Pro”.">
           {(p) => <Input {...p} maxLength={200} value={name} onChange={(e) => setName(e.target.value)} />}
         </Field>
+        {!profile && (
+          <RadioCards
+            legend="Installs"
+            value={kind}
+            onChange={setKind}
+            options={[
+              { value: "windows", label: "Windows", description: "Boots a WinPE boot image; the netdeploy agent applies a Windows image." },
+              { value: "linux", label: "Linux", description: "Boots the distribution’s own installer over HTTP(S) Boot, with Secure Boot." },
+            ]}
+          />
+        )}
+        {kind === "linux" ? (
+          <LinuxFields sources={linuxSources} imageId={linuxImageId} onImage={setLinuxImageId} kernelArgs={kernelArgs} onKernelArgs={setKernelArgs} bad={kernelArgsBad} />
+        ) : (
+          <>
         <Field
           label="Boot image"
           path="bootImageId"
@@ -497,6 +569,9 @@ function ProfileForm({
           />
         </section>
 
+          </>
+        )}
+
         {(offerDefault || asDefault) && (
           <Checkbox
             label="Make this the default profile"
@@ -515,6 +590,75 @@ function ProfileForm({
         </div>
       </form>
     </FieldErrors>
+  );
+}
+
+type LinuxSource = ReturnType<typeof linuxImages>[number];
+
+/** A Linux profile's fields (ADR 0034): the installer image and extra kernel arguments. */
+function LinuxFields({
+  sources,
+  imageId,
+  onImage,
+  kernelArgs,
+  onKernelArgs,
+  bad,
+}: {
+  sources: LinuxSource[];
+  imageId: string;
+  onImage: (id: string) => void;
+  kernelArgs: string;
+  onKernelArgs: (v: string) => void;
+  bad: boolean;
+}) {
+  const source = sources.find((s) => s.image.id === imageId);
+  const signers = source?.linux.boot.shim?.signers ?? [];
+  return (
+    <>
+      <Field
+        label="Linux image"
+        path="installImageId"
+        hint={sources.length === 0 ? "No Linux images yet. Import an installer ISO on the Images page first." : "Only Ubuntu images can be deployed for now."}
+      >
+        {(p) => (
+          <Select {...p} value={imageId} onChange={(e) => onImage(e.target.value)}>
+            <option value="" disabled>
+              Choose an image…
+            </option>
+            {sources.map(({ image, linux }) => (
+              <option key={image.id} value={image.id} disabled={!linux.deployable && image.id !== imageId}>
+                {image.name} · {linux.architecture}
+                {linux.deployable ? "" : " · can’t be deployed yet"}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      {source && !source.linux.deployable && (
+        <Alert tone="error">{source.linux.deployableReason ?? "This image can’t be deployed yet."}</Alert>
+      )}
+      {source && !source.linux.boot.shim && (
+        <Alert tone="error">This image has no shim, so it can’t boot under Secure Boot through netdeploy.</Alert>
+      )}
+      {source?.linux.boot.shim && !signers.includes("uefi-ca-2023") && (
+        <Alert tone="warning">Its shim is signed by the Microsoft UEFI CA 2011 only: machines that trust only the 2023 CAs refuse it.</Alert>
+      )}
+      {source?.linux.boot.shim && signers.includes("uefi-ca-2023") && !signers.includes("uefi-ca-2011") && (
+        <Alert tone="warning">Its shim is signed by the Microsoft UEFI CA 2023 only: machines without that CA refuse it.</Alert>
+      )}
+      <Field
+        label="Extra kernel arguments"
+        path="kernelArgs"
+        hint={bad ? "One line, at most 1024 characters, without double quotes." : "Added after netdeploy’s own (ip=dhcp, the ISO’s URL). For example “autoinstall” or a serial console."}
+      >
+        {(p) => <Input {...p} maxLength={1024} value={kernelArgs} onChange={(e) => onKernelArgs(e.target.value)} />}
+      </Field>
+      <Alert tone="info" title="How machines start it">
+        Machines boot Linux profiles over HTTP(S) Boot only; PXE machines get no answer. At the machine, an armed deployment starts
+        after a countdown; otherwise a key opens the password prompt and a menu of Linux profiles, and with no key the machine boots
+        from its disk.
+      </Alert>
+    </>
   );
 }
 

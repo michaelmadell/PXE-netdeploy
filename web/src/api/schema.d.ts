@@ -1392,6 +1392,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/ipxe/unlock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The iPXE boot prompt's password check (Linux profiles, ADR 0034).
+         * @description Called by the generated iPXE script (`autoexec.ipxe`) of an HTTP(S) Boot
+         *     client whose profile is Linux, after a key was pressed at its prompt.
+         *     The form is what iPXE's `params` sends. The client is found by `mac`
+         *     (a client record is created if there is none, as at DHCP time).
+         *
+         *     Always answers `200` with an iPXE script, because iPXE shows a failed
+         *     request only as an error number. With the right password (or in debug
+         *     mode, `bootPrompt.requirePassword: false`, where `password` is
+         *     ignored) the script is a menu of the deployable Linux profiles, the
+         *     client's own (else the default) preselected; choosing one posts to
+         *     `/agent/ipxe/start` with a single-use `unlockToken` valid for 10
+         *     minutes and bound to this MAC. Otherwise the script says why (wrong
+         *     password, too many attempts with the wait, no password configured)
+         *     and returns to the firmware, which boots the next device. Failed
+         *     attempts are rate-limited per MAC and per source IP, as for
+         *     `/agent/unlock`.
+         */
+        post: operations["agentIpxeUnlock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/ipxe/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a Linux deployment from iPXE and get its boot commands (ADR 0034).
+         * @description Either `armed=true`, posted by the script of a client with a `pending`
+         *     deployment after its countdown: that deployment becomes `running`
+         *     (it's consumed, as at a Windows agent check-in). Or `profileId` with
+         *     the `unlockToken` from `/agent/ipxe/unlock`: a deployment of that
+         *     profile is created and started, snapshotting it as `POST /deployments`
+         *     does; a `running` deployment of the client is marked `failed`
+         *     (`code: superseded`) first and a `pending` one cancelled.
+         *
+         *     Always answers `200` with an iPXE script: on success the boot commands
+         *     (the distribution's shim through iPXE's `shim` command, the kernel with
+         *     the generated command line, the initrd, `boot`), served from
+         *     `/content/linux/<imageId>/`; otherwise why not (no pending deployment,
+         *     an expired or used token, a profile that isn't deployable), then back
+         *     to the firmware.
+         */
+        post: operations["agentIpxeStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/deployments": {
         parameters: {
             query?: never;
@@ -2381,12 +2449,42 @@ export interface components {
         };
         /** @enum {string} */
         InstallMethod: "agent" | "smb";
+        /**
+         * @description `windows`: WinPE and the agent apply an install image (ADR 0024, 0025).
+         *     `linux`: HTTP(S) Boot clients start the distribution's installer
+         *     through the iPXE chain (ADR 0034).
+         * @enum {string}
+         */
+        ProfileKind: "windows" | "linux";
+        /**
+         * @description `bootImageId`, `editionIndex`, `installMethod` and `identity` are
+         *     required for `windows` profiles (`422`, `code: required_for_kind`,
+         *     the fields in `errors[]`) and must be absent for `linux` ones, which
+         *     use `kernelArgs` instead (`422`, `code: not_for_kind`). Other Windows-only fields
+         *     (`osDriverGroupIds`, `unattendTemplateId`, `smbTargetId`,
+         *     `osSettings`, `bootOrderAfterDeploy`) are refused on a `linux` profile
+         *     the same way. `kind` can't be changed by a replace (`422`,
+         *     `code: kind_changed`): make a new profile.
+         */
         ProfileInput: {
             name: string;
             description?: string;
-            bootImageId: string;
+            /** @default windows */
+            kind: components["schemas"]["ProfileKind"];
+            /** @description Windows profiles. */
+            bootImageId?: string;
+            /**
+             * @description A ready image of the profile's kind: a Windows image, or a
+             *     deployable Linux image (`details.deployable`).
+             */
             installImageId: string;
-            editionIndex: number;
+            /** @description Windows profiles. */
+            editionIndex?: number;
+            /**
+             * @description Linux profiles: arguments added to the generated kernel command line
+             *     (ADR 0034), e.g. `console=ttyS0,115200`. No newlines or `"`.
+             */
+            kernelArgs?: string;
             /** @description Drivers injected into the installed OS (separate from boot image drivers). */
             osDriverGroupIds?: string[];
             /**
@@ -2396,23 +2494,25 @@ export interface components {
             unattendTemplateId?: string | null;
             /** @description Precedence: template `variableDefaults` < profile `variables` < client `variables`. */
             variables?: components["schemas"]["Variables"];
-            installMethod: components["schemas"]["InstallMethod"];
+            installMethod?: components["schemas"]["InstallMethod"];
             /** @description Required when `installMethod` is `smb`. */
             smbTargetId?: string | null;
-            identity: components["schemas"]["Identity"];
+            identity?: components["schemas"]["Identity"];
             osSettings?: components["schemas"]["OsSettings"];
             /**
              * @description UEFI boot order the agent leaves after a successful deployment.
+             *     Windows profiles only; `disk-first` when not given. (No schema
+             *     default: the request validator would fill it in on Linux
+             *     profiles too, which refuse it.)
              *     Either way the installed system has a boot entry (bcdboot's, or one the
              *     agent writes when bcdboot made none for the new system partition).
              *     `disk-first`: that entry is first, so Setup's reboots and later boots go
              *     straight to disk; re-test via the firmware's one-time boot menu or by
              *     arming a deployment and network-booting. `network-first`: every boot shows
              *     the boot prompt, then falls back to disk after its timeout.
-             * @default disk-first
              * @enum {string}
              */
-            bootOrderAfterDeploy: "disk-first" | "network-first";
+            bootOrderAfterDeploy?: "disk-first" | "network-first";
         };
         Profile: components["schemas"]["Meta"] & components["schemas"]["ProfileInput"];
         /** @enum {string} */
@@ -5819,6 +5919,67 @@ export interface operations {
             403: components["responses"]["Problem"];
             404: components["responses"]["Problem"];
             429: components["responses"]["Problem"];
+        };
+    };
+    agentIpxeUnlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    /** @description The boot NIC's MAC, from iPXE's `${mac}`. */
+                    mac: string;
+                    arch: components["schemas"]["Architecture"];
+                    password?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description An iPXE script. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["Problem"];
+        };
+    };
+    agentIpxeStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    mac: string;
+                    arch: components["schemas"]["Architecture"];
+                    armed?: boolean | null;
+                    profileId?: string | null;
+                    unlockToken?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description An iPXE script. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["Problem"];
         };
     };
     agentStartDeployment: {

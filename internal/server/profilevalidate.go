@@ -45,6 +45,9 @@ func (s *Server) validateProfile(ctx context.Context, p store.Profile) ([]findin
 		}
 		add("error", prob.Code, "%s", msg)
 	}
+	if p.Kind == store.ProfileLinux {
+		return s.validateLinuxProfile(ctx, p, fs)
+	}
 
 	// Boot image.
 	if bi, err := s.store.BootImage(ctx, p.BootImageID); err == nil {

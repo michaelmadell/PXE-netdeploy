@@ -188,3 +188,48 @@ func TestSharedDir(t *testing.T) {
 		t.Errorf("shared file with no boot content: %d", w.Code)
 	}
 }
+
+// TestGeneratedScriptAndLinux: autoexec.ipxe is generated when Script says
+// so, else the shared file; /content/linux/<id>/ serves any client (ADR 0034).
+func TestGeneratedScriptAndLinux(t *testing.T) {
+	shared := t.TempDir()
+	write(t, shared, "ipxe/x64/autoexec.ipxe", "#!ipxe static")
+	write(t, shared, "ipxe/x64/snponly.efi", "ipxe")
+	img := t.TempDir()
+	write(t, img, "casper/vmlinuz", "kernel")
+	write(t, img, "image.iso", "0123456789")
+	h := New(Config{Shared: cas.DirFS(shared), SharedDir: "ipxe",
+		Script: func(r *http.Request, ip netip.Addr, arch string) ([]byte, []any, bool) {
+			if ip == netip.MustParseAddr("10.77.0.102") {
+				return []byte("#!ipxe gate " + arch), nil, true
+			}
+			return nil, nil, false
+		},
+		Linux: func(id string) (fs.FS, error) {
+			if id != "IMG1" {
+				return nil, fs.ErrNotExist
+			}
+			return cas.DirFS(img), nil
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if w := get(h, "GET", BootPrefix+"ipxe/x64/autoexec.ipxe", "10.77.0.102"); w.Body.String() != "#!ipxe gate x64" || w.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("generated: %d %q", w.Code, w.Body)
+	}
+	if w := get(h, "GET", BootPrefix+"ipxe/x64/autoexec.ipxe", "10.77.0.5"); w.Body.String() != "#!ipxe static" {
+		t.Errorf("static: %d %q", w.Code, w.Body)
+	}
+	if w := get(h, "GET", BootPrefix+"ipxe/x64/snponly.efi", "10.77.0.102"); w.Body.String() != "ipxe" {
+		t.Errorf("other shared file: %d %q", w.Code, w.Body)
+	}
+	if w := get(h, "GET", LinuxPrefix+"IMG1/casper/vmlinuz", "10.77.0.103"); w.Code != 200 || w.Body.String() != "kernel" {
+		t.Errorf("kernel: %d %q", w.Code, w.Body)
+	}
+	if w := get(h, "GET", LinuxPrefix+"IMG1/image.iso", "10.77.0.103", "Range", "bytes=0-3"); w.Code != http.StatusPartialContent || w.Body.String() != "0123" {
+		t.Errorf("iso range: %d %q", w.Code, w.Body)
+	}
+	for _, p := range []string{"IMG2/casper/vmlinuz", "IMG1/../x", "../IMG1/casper/vmlinuz", "IMG1/casper/none"} {
+		if w := get(h, "GET", LinuxPrefix+p, "10.77.0.103"); w.Code != http.StatusNotFound {
+			t.Errorf("%s: %d", p, w.Code)
+		}
+	}
+}

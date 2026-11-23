@@ -63,10 +63,22 @@ type Answer struct {
 	BootImageID string
 	ProfileID   string
 	Source      string // "deployment", "client profile" or "default profile"
+	// Linux is set when the profile is a Linux one (ADR 0034): the client
+	// gets the iPXE chain and a generated gate instead of a boot image.
+	Linux *LinuxAnswer
+}
+
+// LinuxAnswer is what a Linux profile's client boots.
+type LinuxAnswer struct {
+	ImageID string
+	Armed   bool // a pending deployment chose it
 }
 
 // LogAttrs describes the answer for logs.
 func (a Answer) LogAttrs() []any {
+	if a.Linux != nil {
+		return []any{"linux_image", a.Linux.ImageID, "profile", a.ProfileID, "via", a.Source}
+	}
 	if a.BootImageID == "" {
 		return nil
 	}

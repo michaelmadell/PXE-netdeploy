@@ -155,6 +155,11 @@ func (s *Server) prepareDeployment(ctx context.Context, c store.Client, p store.
 	if err != nil {
 		return store.NewDeployment{}, nil, err
 	}
+	if p.Kind == store.ProfileLinux {
+		// No unattend, secrets or computer name yet (decision 4).
+		return store.NewDeployment{ClientID: c.ID, ProfileID: p.ID, ProfileSnapshot: snap, Origin: origin,
+			Running: origin == store.OriginBootPrompt}, nil, nil
+	}
 	up, err := unattend.Parse(snap)
 	if err != nil {
 		return store.NewDeployment{}, nil, err

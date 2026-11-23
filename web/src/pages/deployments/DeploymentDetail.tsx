@@ -53,8 +53,11 @@ export function DeploymentDetailPage() {
     ["Client", c ? <Link to={`/clients/${c.id}`} className="text-primary underline-offset-4 hover:underline">{clientName(c)}</Link> : "Deleted client"],
     ["Started", d.origin === "scheduled" ? "Armed from this server" : "At the machine’s boot prompt"],
     ["Profile", snap?.name ?? "–"],
-    ["Installs", snap ? `${edition ?? `Edition ${snap.editionIndex}`}${image ? ` from ${image.name}` : ""}` : "–"],
-    ["Accounts", snap ? identityText[snap.identity.mode] : "–"],
+    [
+      "Installs",
+      !snap ? "–" : snap.kind === "linux" ? (image?.name ?? "Deleted image") : `${edition ?? `Edition ${snap.editionIndex}`}${image ? ` from ${image.name}` : ""}`,
+    ],
+    ["Accounts", !snap ? "–" : snap.identity ? identityText[snap.identity.mode] : "Set up in the installer"],
     [
       "Unattend template",
       d.unattendTemplate ? (
@@ -78,7 +81,7 @@ export function DeploymentDetailPage() {
         "None"
       ),
     ],
-    ["Computer name", d.computerName ?? (snap?.identity.mode === "ad" ? "From the offline join blob, or chosen by Windows" : "Chosen by Windows")],
+    ["Computer name", d.computerName ?? (snap?.identity?.mode === "ad" ? "From the offline join blob, or chosen by Windows" : "Chosen by Windows")],
     ["Armed", formatDateTime(d.createdAt)],
     ["Ran", d.startedAt ? `${formatDateTime(d.startedAt)}${d.finishedAt ? ` to ${formatDateTime(d.finishedAt)}` : ""}` : "Not yet"],
     ["Took", secs === null ? "–" : formatDuration(secs)],

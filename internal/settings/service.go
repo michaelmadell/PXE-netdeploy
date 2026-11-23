@@ -49,6 +49,9 @@ type Options struct {
 	IPXE *ipxe.Bundle
 	// Agent serves /api/v1/agent/ on content listeners (ADR 0009). Nil: 404.
 	Agent http.Handler
+	// LinuxContent opens a ready Linux image's content for
+	// /content/linux/<id>/ (ADR 0034). Nil: 404.
+	LinuxContent func(imageID string) (fs.FS, error)
 	// Events receives client sightings and lease changes from DHCP.
 	Events *events.Bus
 	// CheckBackup validates backup settings against things the settings
@@ -410,6 +413,8 @@ func (s *Service) contentHandler(iface string) *content.Handler {
 		cfg := content.Config{
 			DefaultRoot: s.defaultRoot(),
 			ClientRoot:  s.clientRoot(iface),
+			Script:      s.ipxeScript(iface),
+			Linux:       s.opts.LinuxContent,
 			Agent:       s.opts.Agent,
 			Logger:      s.opts.Logger,
 		}
@@ -462,23 +467,64 @@ func (d defaultFS) Open(name string) (fs.File, error) {
 // clients apart, so they all get the default.
 func (s *Service) clientRoot(iface string) func(netip.Addr) (fs.FS, []any) {
 	return func(ip netip.Addr) (fs.FS, []any) {
-		if sess, ok := s.sessions.Lookup(iface, ip); ok {
-			return sess.Answer.Root, append([]any{"mac", sess.MAC, "boot_session", "dhcp"}, sess.Answer.LogAttrs()...)
-		}
-		if s.opts.Store != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if l, err := s.opts.Store.LeaseByIP(ctx, iface, ip); err == nil {
-				arch := boot.ArchUEFIX64
-				if l.Arch != nil {
-					arch = boot.Arch(*l.Arch)
-				}
-				if ans, ok, _ := s.booter().Boot(ctx, boot.Request{Interface: iface, MAC: l.MAC, Arch: arch}); ok {
-					return ans.Root, append([]any{"mac", l.MAC, "boot_session", "lease"}, ans.LogAttrs()...)
-				}
-			}
+		if ans, attrs, ok := s.clientAnswer(iface, ip); ok {
+			return ans.Root, attrs
 		}
 		return nil, []any{"boot_session", "none"} // the default content
+	}
+}
+
+// clientAnswer is what a client IP was answered: its DHCP session, else
+// (full mode, after a restart) the decision for its lease's MAC.
+func (s *Service) clientAnswer(iface string, ip netip.Addr) (boot.Answer, []any, bool) {
+	if sess, ok := s.sessions.Lookup(iface, ip); ok {
+		return sess.Answer, append([]any{"mac", sess.MAC, "boot_session", "dhcp"}, sess.Answer.LogAttrs()...), true
+	}
+	if s.opts.Store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if l, err := s.opts.Store.LeaseByIP(ctx, iface, ip); err == nil {
+			arch := boot.ArchUEFIX64
+			if l.Arch != nil {
+				arch = boot.Arch(*l.Arch)
+			}
+			if ans, ok, _ := s.booter().Boot(ctx, boot.Request{Interface: iface, MAC: l.MAC, Arch: arch}); ok {
+				return ans, append([]any{"mac", l.MAC, "boot_session", "lease"}, ans.LogAttrs()...), true
+			}
+		}
+	}
+	return boot.Answer{}, nil, false
+}
+
+// ipxeScript generates an HTTP(S) Boot client's autoexec.ipxe (ADR 0034):
+// the gate for a Linux profile; ok=false (the static ADR 0032 script) for a
+// Windows one. The decision is the client's session or lease, else the
+// default profile (a URL typed into the firmware, or DHCP off).
+func (s *Service) ipxeScript(iface string) func(*http.Request, netip.Addr, string) ([]byte, []any, bool) {
+	return func(r *http.Request, ip netip.Addr, arch string) ([]byte, []any, bool) {
+		ans, attrs, ok := s.clientAnswer(iface, ip)
+		if !ok {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			httpArch := boot.ArchUEFIX64HTTP
+			if arch == "arm64" {
+				httpArch = boot.ArchUEFIArm64HTTP
+			}
+			if ans, ok, _ = s.booter().Default(ctx, httpArch); !ok {
+				return nil, nil, false
+			}
+			attrs = append([]any{"boot_session", "none"}, ans.LogAttrs()...)
+		}
+		if ans.Linux == nil {
+			return nil, nil, false
+		}
+		cfg, _ := s.Current()
+		bp := cfg.BootPrompt
+		body := ipxe.LinuxGate(ipxe.GateOptions{
+			Arch: arch, Armed: ans.Linux.Armed, ArmedCountdown: bp.ArmedCountdownSeconds, PromptCountdown: bp.TimeoutSeconds,
+			NoPassword: !bp.RequirePassword, PasswordSet: bp.PasswordHash != "",
+		})
+		return []byte(body), append(attrs, "script", "linux gate"), true
 	}
 }
 

@@ -277,7 +277,8 @@ func run(parent context.Context, o options) error {
 		Events:             bus,
 		// The agent API is the same API handler; the content listener only
 		// forwards /api/v1/agent/ to it.
-		Agent: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }),
+		Agent:        http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }),
+		LinuxContent: booter.LinuxContent,
 		CheckBackup: func(ctx context.Context, b settings.Backup) []settings.FieldError {
 			if b.Destination == nil {
 				return nil
@@ -305,6 +306,7 @@ func run(parent context.Context, o options) error {
 		return err
 	}
 	booter.Tree = content.Tree
+	booter.BlobPath = content.BlobPath
 	up := uploads.New(uploads.Options{
 		Store:   st,
 		Content: content,

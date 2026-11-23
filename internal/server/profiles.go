@@ -16,37 +16,97 @@ import (
 // Profiles (ADR 0024). Identity and secret checks come with deployments
 // (decision 5).
 
-func profileInput(b *api.ProfileInput) (store.ProfileInput, error) {
-	identity, err := json.Marshal(b.Identity)
-	if err != nil {
-		return store.ProfileInput{}, err
-	}
+// profileInput maps the API's profile to the store's, checking which fields
+// the profile's kind allows (ADR 0034). A problem means the input is invalid.
+func profileInput(b *api.ProfileInput) (store.ProfileInput, *api.Problem, error) {
 	in := store.ProfileInput{
-		Name: b.Name, BootImageID: b.BootImageId, InstallImageID: b.InstallImageId, EditionIndex: b.EditionIndex,
-		InstallMethod: string(b.InstallMethod), SMBTargetID: b.SmbTargetId, UnattendTemplateID: b.UnattendTemplateId,
-		Identity: identity, BootOrderAfterDeploy: "disk-first", OSDriverGroupIDs: []string{}, Variables: map[string]string{},
+		Name: b.Name, Kind: store.ProfileWindows, InstallImageID: b.InstallImageId, SMBTargetID: b.SmbTargetId,
+		UnattendTemplateID: b.UnattendTemplateId, OSDriverGroupIDs: []string{}, Variables: map[string]string{},
+		BootOrderAfterDeploy: "disk-first",
+	}
+	if b.Kind != nil {
+		in.Kind = string(*b.Kind)
 	}
 	if b.Description != nil {
 		in.Description = *b.Description
 	}
+	if b.Variables != nil {
+		in.Variables = *b.Variables
+	}
+	if in.Kind == store.ProfileLinux {
+		var extra []fieldError
+		for _, f := range []struct {
+			name string
+			set  bool
+		}{
+			{"bootImageId", b.BootImageId != nil}, {"editionIndex", b.EditionIndex != nil}, {"installMethod", b.InstallMethod != nil},
+			{"identity", b.Identity != nil}, {"osDriverGroupIds", b.OsDriverGroupIds != nil && len(*b.OsDriverGroupIds) > 0},
+			{"unattendTemplateId", b.UnattendTemplateId != nil}, {"smbTargetId", b.SmbTargetId != nil},
+			{"osSettings", b.OsSettings != nil}, {"bootOrderAfterDeploy", b.BootOrderAfterDeploy != nil},
+		} {
+			if f.set {
+				extra = append(extra, fieldError{field: f.name, message: "not used by linux profiles"})
+			}
+		}
+		if len(extra) > 0 {
+			p := newProblem(http.StatusUnprocessableEntity, "not_for_kind", "Field not used by this kind of profile",
+				"A linux profile has a name, a description, installImageId, variables and kernelArgs (ADR 0034).", extra)
+			return in, &p, nil
+		}
+		if b.KernelArgs != nil {
+			in.KernelArgs = *b.KernelArgs
+		}
+		if len(in.KernelArgs) > 1024 || strings.ContainsAny(in.KernelArgs, "\r\n\"") {
+			p := newProblem(http.StatusUnprocessableEntity, "invalid_kernel_args", "Invalid kernel arguments",
+				"kernelArgs must be at most 1024 characters, on one line, without double quotes.", nil)
+			return in, &p, nil
+		}
+		return in, nil, nil
+	}
+
+	if b.KernelArgs != nil {
+		p := newProblem(http.StatusUnprocessableEntity, "not_for_kind", "Field not used by this kind of profile",
+			"kernelArgs is for linux profiles.", []fieldError{{field: "kernelArgs", message: "not used by windows profiles"}})
+		return in, &p, nil
+	}
+	var missing []fieldError
+	if b.BootImageId == nil {
+		missing = append(missing, fieldError{field: "bootImageId", message: "required for windows profiles"})
+	}
+	if b.EditionIndex == nil {
+		missing = append(missing, fieldError{field: "editionIndex", message: "required for windows profiles"})
+	}
+	if b.InstallMethod == nil {
+		missing = append(missing, fieldError{field: "installMethod", message: "required for windows profiles"})
+	}
+	if b.Identity == nil {
+		missing = append(missing, fieldError{field: "identity", message: "required for windows profiles"})
+	}
+	if len(missing) > 0 {
+		p := newProblem(http.StatusUnprocessableEntity, "required_for_kind", "Field required for this kind of profile",
+			"A windows profile needs a boot image, an edition, an install method and an identity.", missing)
+		return in, &p, nil
+	}
+	identity, err := json.Marshal(b.Identity)
+	if err != nil {
+		return in, nil, err
+	}
+	in.BootImageID, in.EditionIndex, in.InstallMethod, in.Identity = *b.BootImageId, *b.EditionIndex, string(*b.InstallMethod), identity
 	if id := in.UnattendTemplateID; id != nil && (*id == "" || isBuiltinID(*id)) {
 		in.UnattendTemplateID = nil // the built-in template (ADR 0027)
 	}
 	if b.OsDriverGroupIds != nil {
 		in.OSDriverGroupIDs = *b.OsDriverGroupIds
 	}
-	if b.Variables != nil {
-		in.Variables = *b.Variables
-	}
 	if b.BootOrderAfterDeploy != nil {
 		in.BootOrderAfterDeploy = string(*b.BootOrderAfterDeploy)
 	}
 	if b.OsSettings != nil {
 		if in.OSSettings, err = json.Marshal(b.OsSettings); err != nil {
-			return store.ProfileInput{}, err
+			return in, nil, err
 		}
 	}
-	return in, nil
+	return in, nil, nil
 }
 
 func profileProblem(status int, code, title, detail string) *api.Problem {
@@ -58,6 +118,19 @@ func profileProblem(status int, code, title, detail string) *api.Problem {
 func (s *Server) checkProfile(ctx context.Context, in store.ProfileInput) (*api.Problem, error) {
 	if in.Name == "" || len(in.Name) > 200 {
 		return profileProblem(http.StatusBadRequest, "invalid_request", "Invalid request", "name must be 1 to 200 characters."), nil
+	}
+	if in.Kind == store.ProfileLinux {
+		im, err := s.store.Image(ctx, in.InstallImageID)
+		if errors.Is(err, store.ErrNotFound) {
+			return profileProblem(http.StatusUnprocessableEntity, "install_image_unavailable", "Install image unavailable", "No image "+in.InstallImageID+"."), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if _, reason := linuxImage(im); reason != "" {
+			return profileProblem(http.StatusUnprocessableEntity, "install_image_unavailable", "Install image unavailable", reason), nil
+		}
+		return nil, nil
 	}
 	if in.InstallMethod == "smb" {
 		return profileProblem(http.StatusUnprocessableEntity, "not_implemented", "Not implemented", "installMethod smb arrives with the agent's SMB install (Phase 4 decision 4)."), nil
@@ -150,13 +223,14 @@ func (s *Server) CreateProfile(ctx context.Context, req api.CreateProfileRequest
 	if req.Body == nil {
 		return api.CreateProfile400ApplicationProblemPlusJSONResponse{ProblemApplicationProblemPlusJSONResponse: badRequest("A JSON body is required.")}, nil
 	}
-	in, err := profileInput(req.Body)
+	in, p, err := profileInput(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.checkProfile(ctx, in)
-	if err != nil {
-		return nil, err
+	if p == nil {
+		if p, err = s.checkProfile(ctx, in); err != nil {
+			return nil, err
+		}
 	}
 	if p == nil {
 		var pr store.Profile
@@ -228,13 +302,14 @@ func (s *Server) ReplaceProfile(ctx context.Context, req api.ReplaceProfileReque
 	if !ok {
 		return api.ReplaceProfile412ApplicationProblemPlusJSONResponse(etagMismatch()), nil
 	}
-	in, err := profileInput(req.Body)
+	in, p, err := profileInput(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.checkProfile(ctx, in)
-	if err != nil {
-		return nil, err
+	if p == nil {
+		if p, err = s.checkProfile(ctx, in); err != nil {
+			return nil, err
+		}
 	}
 	if p == nil {
 		pr, err := s.store.ReplaceProfile(ctx, req.ProfileId, in, version)
@@ -250,6 +325,9 @@ func (s *Server) ReplaceProfile(ctx context.Context, req api.ReplaceProfileReque
 			return api.ReplaceProfile412ApplicationProblemPlusJSONResponse(etagMismatch()), nil
 		case err == store.ErrNotFound:
 			return api.ReplaceProfile404ApplicationProblemPlusJSONResponse(profileNotFound(req.ProfileId)), nil
+		case errors.Is(err, store.ErrKindChanged):
+			return api.ReplaceProfile422ApplicationProblemPlusJSONResponse(*profileProblem(http.StatusUnprocessableEntity, "kind_changed",
+				"A profile's kind can't change", "Make a new profile of the other kind.")), nil
 		}
 		if p = profileStoreError(err); p == nil {
 			return nil, err
@@ -287,10 +365,16 @@ func profileToAPI(p store.Profile) (api.Profile, error) {
 	tag := versionETag(p.Version)
 	doc := map[string]any{
 		"id": p.ID, "etag": tag, "createdAt": p.CreatedAt, "updatedAt": p.UpdatedAt,
-		"name": p.Name, "bootImageId": p.BootImageID, "installImageId": p.InstallImageID, "editionIndex": p.EditionIndex,
-		"osDriverGroupIds": p.OSDriverGroupIDs, "unattendTemplateId": p.UnattendTemplateID, "variables": p.Variables,
-		"installMethod": p.InstallMethod, "smbTargetId": p.SMBTargetID, "identity": p.Identity,
-		"bootOrderAfterDeploy": p.BootOrderAfterDeploy,
+		"name": p.Name, "kind": p.Kind, "installImageId": p.InstallImageID, "variables": p.Variables,
+	}
+	if p.Kind == store.ProfileLinux {
+		if p.KernelArgs != "" {
+			doc["kernelArgs"] = p.KernelArgs
+		}
+	} else {
+		doc["bootImageId"], doc["editionIndex"], doc["installMethod"], doc["identity"] = p.BootImageID, p.EditionIndex, p.InstallMethod, p.Identity
+		doc["osDriverGroupIds"], doc["unattendTemplateId"], doc["smbTargetId"] = p.OSDriverGroupIDs, p.UnattendTemplateID, p.SMBTargetID
+		doc["bootOrderAfterDeploy"] = p.BootOrderAfterDeploy
 	}
 	if p.Description != "" {
 		doc["description"] = p.Description

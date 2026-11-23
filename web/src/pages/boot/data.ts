@@ -75,6 +75,11 @@ export function windowsImages(items: Image[] | undefined) {
   return (items ?? []).flatMap((im) => (im.status === "ready" && im.details?.kind === "windows" ? [{ image: im, win: im.details }] : []));
 }
 
+/** Ready Linux images profiles can deploy (ADR 0033/0034). */
+export function linuxImages(items: Image[] | undefined) {
+  return (items ?? []).flatMap((im) => (im.status === "ready" && im.details?.kind === "linux" ? [{ image: im, linux: im.details }] : []));
+}
+
 export const buildCodes: Record<string, string> = {
   builder_unavailable:
     "This server has nothing to build with. Install wimlib (wimlib-imagex) or, on Windows, run netdeployd elevated so it can use DISM.",

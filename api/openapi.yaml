@@ -2113,6 +2113,94 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
         "429": { $ref: "#/components/responses/Problem" }
 
+  /agent/ipxe/unlock:
+    post:
+      tags: [agent]
+      operationId: agentIpxeUnlock
+      security: []
+      summary: The iPXE boot prompt's password check (Linux profiles, ADR 0034).
+      description: |
+        Called by the generated iPXE script (`autoexec.ipxe`) of an HTTP(S) Boot
+        client whose profile is Linux, after a key was pressed at its prompt.
+        The form is what iPXE's `params` sends. The client is found by `mac`
+        (a client record is created if there is none, as at DHCP time).
+
+        Always answers `200` with an iPXE script, because iPXE shows a failed
+        request only as an error number. With the right password (or in debug
+        mode, `bootPrompt.requirePassword: false`, where `password` is
+        ignored) the script is a menu of the deployable Linux profiles, the
+        client's own (else the default) preselected; choosing one posts to
+        `/agent/ipxe/start` with a single-use `unlockToken` valid for 10
+        minutes and bound to this MAC. Otherwise the script says why (wrong
+        password, too many attempts with the wait, no password configured)
+        and returns to the firmware, which boots the next device. Failed
+        attempts are rate-limited per MAC and per source IP, as for
+        `/agent/unlock`.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [mac, arch]
+              properties:
+                mac: { type: string, description: "The boot NIC's MAC, from iPXE's `${mac}`." }
+                arch: { $ref: "#/components/schemas/Architecture" }
+                # nullable: the request validator decodes an absent form
+                # field as null.
+                password: { type: string, writeOnly: true, nullable: true }
+      responses:
+        "200":
+          description: An iPXE script.
+          content:
+            text/plain:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+
+  /agent/ipxe/start:
+    post:
+      tags: [agent]
+      operationId: agentIpxeStart
+      security: []
+      summary: Start a Linux deployment from iPXE and get its boot commands (ADR 0034).
+      description: |
+        Either `armed=true`, posted by the script of a client with a `pending`
+        deployment after its countdown: that deployment becomes `running`
+        (it's consumed, as at a Windows agent check-in). Or `profileId` with
+        the `unlockToken` from `/agent/ipxe/unlock`: a deployment of that
+        profile is created and started, snapshotting it as `POST /deployments`
+        does; a `running` deployment of the client is marked `failed`
+        (`code: superseded`) first and a `pending` one cancelled.
+
+        Always answers `200` with an iPXE script: on success the boot commands
+        (the distribution's shim through iPXE's `shim` command, the kernel with
+        the generated command line, the initrd, `boot`), served from
+        `/content/linux/<imageId>/`; otherwise why not (no pending deployment,
+        an expired or used token, a profile that isn't deployable), then back
+        to the firmware.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [mac, arch]
+              properties:
+                mac: { type: string }
+                arch: { $ref: "#/components/schemas/Architecture" }
+                # nullable: the request validator decodes an absent form
+                # field as null.
+                armed: { type: boolean, nullable: true }
+                profileId: { type: string, nullable: true }
+                unlockToken: { type: string, writeOnly: true, nullable: true }
+      responses:
+        "200":
+          description: An iPXE script.
+          content:
+            text/plain:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+
   /agent/deployments:
     post:
       tags: [agent]
@@ -3433,15 +3521,45 @@ components:
       type: string
       enum: [agent, smb]
 
+    ProfileKind:
+      type: string
+      enum: [windows, linux]
+      description: |
+        `windows`: WinPE and the agent apply an install image (ADR 0024, 0025).
+        `linux`: HTTP(S) Boot clients start the distribution's installer
+        through the iPXE chain (ADR 0034).
+
     ProfileInput:
       type: object
-      required: [name, bootImageId, installImageId, editionIndex, installMethod, identity]
+      required: [name, installImageId]
+      description: |
+        `bootImageId`, `editionIndex`, `installMethod` and `identity` are
+        required for `windows` profiles (`422`, `code: required_for_kind`,
+        the fields in `errors[]`) and must be absent for `linux` ones, which
+        use `kernelArgs` instead (`422`, `code: not_for_kind`). Other Windows-only fields
+        (`osDriverGroupIds`, `unattendTemplateId`, `smbTargetId`,
+        `osSettings`, `bootOrderAfterDeploy`) are refused on a `linux` profile
+        the same way. `kind` can't be changed by a replace (`422`,
+        `code: kind_changed`): make a new profile.
       properties:
         name: { type: string }
         description: { type: string }
-        bootImageId: { type: string }
-        installImageId: { type: string }
-        editionIndex: { type: integer, minimum: 1 }
+        kind:
+          allOf: [{ $ref: "#/components/schemas/ProfileKind" }]
+          default: windows
+        bootImageId: { type: string, description: Windows profiles. }
+        installImageId:
+          type: string
+          description: |
+            A ready image of the profile's kind: a Windows image, or a
+            deployable Linux image (`details.deployable`).
+        editionIndex: { type: integer, minimum: 1, description: Windows profiles. }
+        kernelArgs:
+          type: string
+          maxLength: 1024
+          description: |
+            Linux profiles: arguments added to the generated kernel command line
+            (ADR 0034), e.g. `console=ttyS0,115200`. No newlines or `"`.
         osDriverGroupIds:
           type: array
           uniqueItems: true
@@ -3467,9 +3585,11 @@ components:
         bootOrderAfterDeploy:
           type: string
           enum: [disk-first, network-first]
-          default: disk-first
           description: |
             UEFI boot order the agent leaves after a successful deployment.
+            Windows profiles only; `disk-first` when not given. (No schema
+            default: the request validator would fill it in on Linux
+            profiles too, which refuse it.)
             Either way the installed system has a boot entry (bcdboot's, or one the
             agent writes when bcdboot made none for the new system partition).
             `disk-first`: that entry is first, so Setup's reboots and later boots go

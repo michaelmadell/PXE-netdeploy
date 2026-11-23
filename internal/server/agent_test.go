@@ -30,6 +30,7 @@ type agentFixture struct {
 	profile string
 	wim     string // install.wim sha
 	now     time.Time
+	content *cas.Store
 }
 
 func newAgentFixture(t *testing.T) *agentFixture {
@@ -46,7 +47,7 @@ func newAgentFixture(t *testing.T) *agentFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &agentFixture{t: t, ctx: ctx, st: st, now: time.Now()}
+	f := &agentFixture{t: t, ctx: ctx, st: st, now: time.Now(), content: content}
 
 	upload := func(sha string) string {
 		name := "x"

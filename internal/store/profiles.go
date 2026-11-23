@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,13 +17,24 @@ var (
 	ErrProfileInUse = errors.New("store: profile is in use")
 	// ErrBootImageInUse: a profile uses the boot image.
 	ErrBootImageInUse = errors.New("store: boot image is used by a profile")
+	// ErrKindChanged: a replace tried to change a profile's kind.
+	ErrKindChanged = errors.New("store: a profile's kind can't change")
+)
+
+// Profile kinds (ADR 0034).
+const (
+	ProfileWindows = "windows"
+	ProfileLinux   = "linux"
 )
 
 // ProfileInput is a profile's editable fields (ProfileInput with defaults
-// applied). Identity and OSSettings are the API's JSON.
+// applied). Identity and OSSettings are the API's JSON. For Linux profiles
+// (ADR 0034) the Windows fields are zero (stored as NULL) and KernelArgs may
+// be set.
 type ProfileInput struct {
 	Name                 string
 	Description          string
+	Kind                 string // ProfileWindows or ProfileLinux
 	BootImageID          string
 	InstallImageID       string
 	EditionIndex         int
@@ -34,6 +46,7 @@ type ProfileInput struct {
 	Identity             json.RawMessage
 	OSSettings           json.RawMessage // nil: none
 	BootOrderAfterDeploy string
+	KernelArgs           string
 }
 
 // Profile is a profiles row with its OS driver groups.
@@ -45,20 +58,24 @@ type Profile struct {
 	UpdatedAt time.Time
 }
 
-const profileCols = `id, name, description, boot_image_id, install_image_id, edition_index, install_method, smb_target_id,
-	unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, version, created_at, updated_at`
+const profileCols = `id, name, description, kind, boot_image_id, install_image_id, edition_index, install_method, smb_target_id,
+	unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, kernel_args, version, created_at, updated_at`
 
 func (s *Store) scanProfile(ctx context.Context, r rowScanner) (Profile, error) {
 	var p Profile
-	var smb, tmpl, osSettings sql.NullString
-	var identity, vars string
+	var smb, tmpl, osSettings, bootImage, method, identity sql.NullString
+	var edition sql.NullInt64
+	var vars string
 	var created, updated int64
-	if err := r.Scan(&p.ID, &p.Name, &p.Description, &p.BootImageID, &p.InstallImageID, &p.EditionIndex, &p.InstallMethod, &smb,
-		&tmpl, &identity, &osSettings, &vars, &p.BootOrderAfterDeploy, &p.Version, &created, &updated); err != nil {
+	if err := r.Scan(&p.ID, &p.Name, &p.Description, &p.Kind, &bootImage, &p.InstallImageID, &edition, &method, &smb,
+		&tmpl, &identity, &osSettings, &vars, &p.BootOrderAfterDeploy, &p.KernelArgs, &p.Version, &created, &updated); err != nil {
 		return Profile{}, err
 	}
+	p.BootImageID, p.EditionIndex, p.InstallMethod = bootImage.String, int(edition.Int64), method.String
 	p.SMBTargetID, p.UnattendTemplateID = fromNullStr(smb), fromNullStr(tmpl)
-	p.Identity = json.RawMessage(identity)
+	if identity.Valid {
+		p.Identity = json.RawMessage(identity.String)
+	}
 	if osSettings.Valid {
 		p.OSSettings = json.RawMessage(osSettings.String)
 	}
@@ -87,8 +104,30 @@ func (in ProfileInput) columns() ([]any, error) {
 	if len(in.OSSettings) > 0 && string(in.OSSettings) != "null" {
 		osSettings = sql.NullString{String: string(in.OSSettings), Valid: true}
 	}
-	return []any{in.Name, in.Description, in.BootImageID, in.InstallImageID, in.EditionIndex, in.InstallMethod,
-		nullStr(in.SMBTargetID), nullStr(in.UnattendTemplateID), string(in.Identity), osSettings, v, in.BootOrderAfterDeploy}, nil
+	kind := in.Kind
+	if kind == "" {
+		kind = ProfileWindows
+	}
+	var identity, bootImage, method sql.NullString
+	var edition sql.NullInt64
+	if len(in.Identity) > 0 && string(in.Identity) != "null" {
+		identity = sql.NullString{String: string(in.Identity), Valid: true}
+	}
+	if in.BootImageID != "" {
+		bootImage = sql.NullString{String: in.BootImageID, Valid: true}
+	}
+	if in.InstallMethod != "" {
+		method = sql.NullString{String: in.InstallMethod, Valid: true}
+	}
+	if in.EditionIndex != 0 {
+		edition = sql.NullInt64{Int64: int64(in.EditionIndex), Valid: true}
+	}
+	order := in.BootOrderAfterDeploy
+	if order == "" {
+		order = "disk-first"
+	}
+	return []any{in.Name, in.Description, kind, bootImage, in.InstallImageID, edition, method,
+		nullStr(in.SMBTargetID), nullStr(in.UnattendTemplateID), identity, osSettings, v, order, in.KernelArgs}, nil
 }
 
 func (s *Store) setProfileGroups(ctx context.Context, t *sql.Tx, id string, groups []string) error {
@@ -117,10 +156,12 @@ func (s *Store) setProfileGroups(ctx context.Context, t *sql.Tx, id string, grou
 // what they contain) and the unattend template renders the identity mode.
 func profileRefs(ctx context.Context, t *sql.Tx, in ProfileInput) error {
 	var one int
-	if err := t.QueryRowContext(ctx, `SELECT 1 FROM boot_images WHERE id = ?`, in.BootImageID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: boot image %s", ErrNotFound, in.BootImageID)
-	} else if err != nil {
-		return err
+	if in.BootImageID != "" {
+		if err := t.QueryRowContext(ctx, `SELECT 1 FROM boot_images WHERE id = ?`, in.BootImageID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: boot image %s", ErrNotFound, in.BootImageID)
+		} else if err != nil {
+			return err
+		}
 	}
 	if err := t.QueryRowContext(ctx, `SELECT 1 FROM images WHERE id = ?`, in.InstallImageID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: install image %s", ErrNotFound, in.InstallImageID)
@@ -145,9 +186,9 @@ func (s *Store) CreateProfile(ctx context.Context, in ProfileInput) (Profile, er
 		}
 		now := ms(s.now())
 		args := append(append([]any{id}, cols...), now, now)
-		if _, err := t.ExecContext(ctx, `INSERT INTO profiles (id, name, description, boot_image_id, install_image_id, edition_index,
-			install_method, smb_target_id, unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+		if _, err := t.ExecContext(ctx, `INSERT INTO profiles (id, name, description, kind, boot_image_id, install_image_id, edition_index,
+			install_method, smb_target_id, unattend_template_id, identity, os_settings, variables, boot_order_after_deploy, kernel_args,
+			created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 			return fmt.Errorf("store: create profile: %w", err)
 		}
 		return s.setProfileGroups(ctx, t, id, in.OSDriverGroupIDs)
@@ -206,7 +247,8 @@ func (s *Store) ReplaceProfile(ctx context.Context, id string, in ProfileInput, 
 	}
 	err = s.tx(ctx, func(t *sql.Tx) error {
 		var v int64
-		if err := t.QueryRowContext(ctx, `SELECT version FROM profiles WHERE id = ?`, id).Scan(&v); err != nil {
+		var kind string
+		if err := t.QueryRowContext(ctx, `SELECT version, kind FROM profiles WHERE id = ?`, id).Scan(&v, &kind); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -215,13 +257,16 @@ func (s *Store) ReplaceProfile(ctx context.Context, id string, in ProfileInput, 
 		if v != ifVersion {
 			return ErrVersionMismatch
 		}
+		if want := cmp.Or(in.Kind, ProfileWindows); want != kind {
+			return ErrKindChanged
+		}
 		if err := profileRefs(ctx, t, in); err != nil {
 			return err
 		}
 		args := append(cols, ms(s.now()), id)
-		if _, err := t.ExecContext(ctx, `UPDATE profiles SET name = ?, description = ?, boot_image_id = ?, install_image_id = ?,
+		if _, err := t.ExecContext(ctx, `UPDATE profiles SET name = ?, description = ?, kind = ?, boot_image_id = ?, install_image_id = ?,
 			edition_index = ?, install_method = ?, smb_target_id = ?, unattend_template_id = ?, identity = ?, os_settings = ?,
-			variables = ?, boot_order_after_deploy = ?, version = version + 1, updated_at = ? WHERE id = ?`, args...); err != nil {
+			variables = ?, boot_order_after_deploy = ?, kernel_args = ?, version = version + 1, updated_at = ? WHERE id = ?`, args...); err != nil {
 			return fmt.Errorf("store: replace profile: %w", err)
 		}
 		return s.setProfileGroups(ctx, t, id, in.OSDriverGroupIDs)

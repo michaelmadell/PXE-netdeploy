@@ -972,3 +972,40 @@ Stop the Windows host's netdeployd first (see the top of this section).
 
 When finished: `sudo systemctl stop netdeploy` in the VM (or shut it down),
 then start the Windows host's netdeployd again.
+
+## Linux deployments (Phase 7, ADR 0034)
+
+Needs: the NUC set to UEFI HTTP(S) Boot with Secure Boot on (2011 and 2023
+CAs in db: Ubuntu's shim is 2011-signed only), HTTP Boot on in Settings
+(`architectures.httpBoot`), **plain HTTP on the deployment interface**
+(casper downloads the ISO over HTTP even when content HTTPS is on), and a
+boot prompt password.
+
+1. **Images:** import `ubuntu-26.04.1-live-server-amd64.iso`. It's `Linux`,
+   ready, deployable, with the "2011 CA only" warning.
+2. **Profiles → New profile → Linux:** that image; extra kernel arguments
+   empty for an interactive install (or `autoinstall` with your own
+   NoCloud seed, which netdeploy doesn't serve until decision 4). **Check**
+   shows `http_boot_only` (info) and the shim warning, no errors.
+3. **Not armed, password gate:** assign the profile to the NUC's client (or
+   make it the default) and HTTP-boot it. Expect "Press any key within 30 s
+   to deploy this machine…".
+   - No key: after 30 s iPXE exits and the firmware boots the next device
+     (the disk, or the next boot option).
+   - A key: the login prompt; give any username and a wrong password →
+     "wrong password", back to the countdown. Right password → the menu,
+     listing Linux profiles only, the client's own preselected. Choose it:
+     the shim's "Verification failed" probe line, then the kernel and
+     initrd load, casper downloads `image.iso` (watch the netdeployd log:
+     `content served … linux_image=…`, from the installer's own address),
+     and the Ubuntu installer starts. The deployment shows `running`
+     (origin boot prompt).
+4. **Armed:** arm a deployment of the profile for the NUC and HTTP-boot it.
+   Expect "a deployment is armed… Press any key within 10 s for the menu",
+   then the installer without a key. The deployment goes `pending` →
+   `running`; a second boot is not armed any more.
+5. **PXE:** PXE-boot the NUC with the Linux profile: no answer, and the log
+   says "is a Linux profile, which needs HTTP(S) Boot".
+
+Linux deployments don't report progress yet (decision 5): they stay
+`running` until they expire or you cancel them.

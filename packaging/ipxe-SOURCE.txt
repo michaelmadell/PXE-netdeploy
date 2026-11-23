@@ -4,9 +4,12 @@ them to UEFI HTTP(S) Boot clients (ADR 0032); it never runs them itself.
 <arch>/ipxe-shim.efi  shim, iPXE's build (signed by Microsoft UEFI CA 2011 and 2023)
                       https://github.com/ipxe/shim/releases/tag/ipxe-16.1
                       (ipxe-shimx64.efi, ipxe-shimaa64.efi). Licence: licences/shim-COPYRIGHT.txt.
-<arch>/ipxe.efi       iPXE v2.0.0 (signed by the iPXE Secure Boot CA)
+<arch>/ipxe.efi       iPXE v2.0.0 snponly.efi (signed by the iPXE Secure Boot CA),
+                      renamed: the shim loads ipxe.efi. snponly.efi drives only
+                      the boot network card through the firmware's driver and
+                      leaves USB alone, so keyboards keep working.
                       https://github.com/ipxe/ipxe/releases/tag/v2.0.0
-                      (ipxeboot.tar.gz: x86_64-sb/ipxe.efi, arm64-sb/ipxe.efi).
+                      (ipxeboot.tar.gz: x86_64-sb/snponly.efi, arm64-sb/snponly.efi).
                       Licence: GNU GPL v2 or later, with UBDL; licences/iPXE-*.txt.
 <arch>/wimboot        wimboot v2.9.0 (signed by Microsoft UEFI CA 2011 and 2023)
                       https://github.com/ipxe/wimboot/releases/tag/v2.9.0

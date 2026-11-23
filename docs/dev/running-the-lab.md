@@ -180,7 +180,11 @@ identical; `Range` 206; admin path 404) and across the lab switch from
 
 HTTP Boot clients get Microsoft-signed shim → iPXE-signed `ipxe.efi` →
 a generated `autoexec.ipxe` → Microsoft-signed `wimboot` → the same
-`bootmgfw.efi`, BCD and boot.wim a PXE client gets. The files are served
+`bootmgfw.efi`, BCD and boot.wim a PXE client gets. The bundled `ipxe.efi`
+is iPXE's `snponly.efi` (ADR 0032, amended 2026-11-23): it uses the
+firmware's network driver and leaves USB alone, because the full
+`ipxe.efi` killed the NUC's keyboard. To try the full build, point
+`-ipxe-dir` at a copy of the tree with it in place of `ipxe.efi`. The files are served
 from `/content/boot/ipxe/<arch>/` on every content listener.
 
 In a checkout, run `just fetch-ipxe` once: it downloads the chain into

@@ -1,6 +1,7 @@
 # 32. HTTP(S) Boot through the signed iPXE shim and wimboot
 
-Status: accepted (2026-11-20). Phase 6 decision 2. Narrows
+Status: accepted (2026-11-20); amended 2026-11-23 (`snponly.efi`, see
+the end). Phase 6 decision 2. Narrows
 [0002](0002-separate-windows-boot-path.md) and replaces the HTTP Boot
 answer deferred in [0024](0024-booter.md). Builds on
 [0028](0028-content-https.md) and [0031](0031-packaging.md).
@@ -63,11 +64,12 @@ third-party CA requirement is the price of using it.
   | File | From | Signed by |
   |---|---|---|
   | `ipxe-shim.efi` | `ipxe/shim` release `ipxe-16.1` (`ipxe-shimx64.efi`, `ipxe-shimaa64.efi`) | Microsoft UEFI CA 2011 **and** 2023 |
-  | `ipxe.efi` | iPXE v2.0.0 `ipxeboot.tar.gz`, `x86_64-sb/` and `arm64-sb/` | iPXE Secure Boot CA |
+  | `ipxe.efi` | iPXE v2.0.0 `ipxeboot.tar.gz`, `x86_64-sb/snponly.efi` and `arm64-sb/snponly.efi`, renamed (amendment below) | iPXE Secure Boot CA |
   | `wimboot` | wimboot v2.9.0 (`wimboot`, `wimboot.arm64`) | Microsoft UEFI CA 2011 and 2023 |
 
   The shim inside the iPXE v2.0.0 archive is signed only by the 2011 CA,
-  so it isn't used. `ipxe.efi`, not `snponly.efi`, was the one tested. Only
+  so it isn't used. The archive's full `ipxe.efi` was the one first tested;
+  `snponly.efi` replaced it on 2026-11-23 (amendment below). Only
   these precompiled signed builds work under Secure Boot; a custom iPXE
   build would not.
 - **The server reads the bundle at start** and reports it in capabilities
@@ -103,3 +105,47 @@ third-party CA requirement is the price of using it.
   either shim (findings, stage 4). If a machine shows it once, boot again
   before investigating.
 - arm64 is bundled but untested (no arm64 lab machine).
+
+## Amendment, 2026-11-23: `snponly.efi` instead of the full `ipxe.efi`
+
+**Context.** In the Phase 7 spike (Phase 7 findings, "Intel NUC") the
+NUC's USB keyboard did nothing in an iPXE menu loaded by the full
+`ipxe.efi`. That build has its own USB host controller drivers; it takes
+the controllers from the firmware and offers `EFI_USB_IO_PROTOCOL` in their
+place, which many vendors' keyboard drivers don't attach to. This is a known
+iPXE problem (for example [ipxe/ipxe discussion #1182](https://github.com/ipxe/ipxe/discussions/1182));
+the fixes people use are custom builds (no USB drivers, or `USB_HCD_USBIO`),
+which the iPXE shim refuses under Secure Boot, and iPXE has no runtime
+setting for it. Phase 7 puts interactive steps in iPXE (menus, a prompt:
+decision 3), so the keyboard has to work.
+
+`snponly.efi`, built and signed alongside `ipxe.efi` in the same release
+archive, drives only the network card the machine booted from, through the
+firmware's own network driver (SNP), and leaves USB to the firmware.
+
+**Tested on the NUC, Secure Boot on, over HTTPS, 2026-11-23:** the keyboard
+works in the iPXE menu; Windows boots through it (WinPE and the netdeploy
+agent with network; boot.wim, 599 MB, in 17.5 s, the same as the full build's
+17.6 s); Ubuntu 26.04.1 and 24.04.5 boot through iPXE's `shim` command to the
+installer. On OVMF with Secure Boot it also loaded and started Ubuntu's
+kernel (the Phase 7 B2 rerun). Not tested: arm64.
+
+**Decision.**
+- The bundle's `<arch>/ipxe.efi` is the archive's `<arch>-sb/snponly.efi`,
+  under the name `ipxe.efi` because the iPXE shim loads that name. Pinned
+  SHA-256: x64 `b1e67c3e4a1e8708ddfd0079ad4505e3a02245acb55ee9a95437ab3c507be82a`,
+  arm64 `bed8da8639b45eeec55d41627349863efa5085a2113bb1193838b8a463e5f49e`.
+- No code, spec or UI change: the file name, paths and capabilities report
+  are the same (capabilities show the new hash).
+- The full build stays available by pointing `-ipxe-dir` at a copy of the
+  tree with it in place of `ipxe.efi`.
+
+**Consequences.**
+- iPXE uses the firmware's network driver only. A machine whose firmware
+  network driver is poor loses iPXE's own drivers as a fallback; such a
+  machine would also HTTP Boot poorly, since the firmware fetched the shim
+  with the same driver.
+- Only the NIC the machine booted from is used (as before in practice).
+- A netdeploy release changes the binary that every HTTP(S) Boot client
+  runs: re-test on the NUC with netdeployd's own DHCP answer after
+  updating.

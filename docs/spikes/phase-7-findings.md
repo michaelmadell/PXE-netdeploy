@@ -79,21 +79,28 @@ boot.
 | TCG artefact | The first B boot panicked: `IO-APIC + timer doesn't work!`. QEMU/TCG on this host only; `no_timer_check` (added by `qemu-sb.ps1 -Tcg` through the server's `extra` file) avoids it. Not for real hardware |
 | **C**: B plus `autoinstall ds=nocloud;s=http://…/nocloud/`, without `cloud-config-url=/dev/null` | cloud-init (local stage) took `url=` as a cloud-config URL and started downloading the 2.79 GB ISO a second time (`ua="Cloud-Init/26.1-0ubuntu3~26.04.1"`, 2.65 GB in 4 minutes before the VM was stopped). **`cloud-config-url=/dev/null` is required whenever `url=` is used** |
 | **C** with `cloud-config-url=/dev/null` | cloud-init fetched `network-config` (404, retried 5 times about a second apart), `meta-data`, `user-data`, `vendor-data` from our URL; `;` in `ds=nocloud;s=…` passes through iPXE unchanged. The `early-commands` hook posted the kernel command line. Subiquity's `reporting` webhook posted JSON events (`name`, `description`, `event_type` start/finish, `result`, `level`, `timestamp`; user agent `Curtin/…`), about 150 in the first minute at the default level, most of them `DEBUG`. `autoinstall` on the command line skipped the confirmation (`NEEDS_CONFIRMATION` → `RUNNING` with no input) |
-| **C**, progress when the session stopped (12:59) | Curtin had partitioned and formatted `vda` and was extracting the system (`stage-extract`, still running after 13 minutes under TCG). Install end, the `late-commands` hook, power-off and the installed system's own Secure Boot boot **not yet seen** |
+| **C** to the end | **Worked.** The `late-commands` hook reported at 15:01 (about 2.5 hours under TCG, most of it extracting the system and applying security updates), then the VM powered off as `shutdown: poweroff` asked |
+| The installed system, 2026-11-23 (`qemu-sb.ps1 -Choice x`: the menu returns to the firmware) | **Booted under Secure Boot** from its disk through Ubuntu's own shim and GRUB: `secureboot: Secure boot enabled`, locked down, kernel 7.0.0-44 (updated during the install from the ISO's 7.0.0-30), hostname `nd-spike`. The firmware still tried **network boot first**: curtin didn't put its `ubuntu` entry ahead of the network in this VM's boot order. The install also copied the console arguments from the installer's command line into the installed GRUB configuration |
 
-**Intel NUC, 2026-11-20 (partial):** with the typed URL
-`https://10.77.0.1:8444/ipxe-shim.efi`, the NUC fetched the shim and
-`ipxe.efi` (firmware, TLS 1.3) and iPXE fetched the generated menu script
-(TLS 1.2 ECDHE) at 12:47. No chain was run from it yet.
+**Intel NUC, 2026-11-20:** with the typed URL
+`https://10.77.0.1:8444/ipxe-shim.efi`, Secure Boot on:
+
+| Run | Result |
+|---|---|
+| **B** (the menu's default after 30 s) | The firmware fetched the shim and `ipxe.efi` (TLS 1.3); iPXE fetched the script, Ubuntu's shim, the kernel and the initrd over HTTPS (TLS 1.2 ECDHE; the 99 MB initrd in 2.9 s). The **kernel ran**: it took its own DHCP address (`10.77.0.103`; iPXE had `.102`) and casper downloaded the 2.79 GB ISO over HTTP in **24.8 s**, and the live installer reached its **language selection screen**. **B works on real hardware under Secure Boot** |
+| The keyboard in the iPXE menu | **Didn't work** (the user couldn't move off the default), so no other entry could be chosen. Likely cause, not yet confirmed: the full `ipxe.efi` has its own USB host drivers (EHCI, UHCI, xHCI in `config/usb.h`) and takes the controller from the firmware; on EFI it re-offers `EFI_USB_IO_PROTOCOL` so the firmware's keyboard driver can carry on (`USB_EFI`), which evidently didn't work on this NUC. `snponly.efi` (also iPXE-signed, same archive) drives only the network, through the firmware's SNP, and leaves USB alone. Next boot: `snponly.efi` served as `ipxe.efi` (the full one kept as `www\ipxe-full.efi`) |
+| The keyboard with **`snponly.efi`**, 2026-11-23 | **Worked**: entries were chosen within seconds of the menu appearing. Downloads through the firmware's network driver were as fast (the 99 MB initrd in 2.9 s, as with `ipxe.efi`) |
+| **B4** (24.04.5, `snponly.efi`) | **Worked**: Ubuntu 24.04.5's shim and kernel, then the 4.08 GB ISO over HTTP in 34.7 s, to the installer |
+| **B2** (ISO over HTTPS, `snponly.efi`) | **Failed** after the kernel started: casper printed `wget: error getting response: Connection reset by peer`, then `Unable to find a live file system on the network`, and dropped to the initramfs shell. Reproduced on OVMF with casper's output on the serial console (same messages; BusyBox v1.37.0). The server logged **nothing** for it on :8444, not even a TLS handshake error, though it logs one for a bare TCP connect-and-close or a TLS 1.1 client. So casper's `wget` never connected: BusyBox's `wget` hands `https://` to a helper (`ssl_client` or `openssl`), which the Ubuntu initramfs doesn't seem to have, and reports the closed helper pipe as a reset. **The stock casper initrd can't fetch the ISO over HTTPS** |
+| **E** (`sanboot` of the ISO) | The firmware booted the ISO's own shim, GRUB and kernel from iPXE's SAN disk (iPXE read the ISO with HTTP range requests), then casper stopped: "unable to find a medium containing a live filesystem". Once Linux runs, nothing provides that disk (no driver for iPXE's HTTP SAN device), and the ISO's GRUB configuration can't be given `url=`. **Not usable for Linux installs** |
+| **W**: Windows through `snponly.efi` (the ADR 0032 script: wimboot, then the stage 4 spike's `bootmgfw.efi`, BCD, boot.sdi, boot.wim) | **Worked**, twice: WinPE started and the netdeploy agent came up with network. boot.wim (599 MB) in 17.5 s both times, the same as the full `ipxe.efi` in stage 4 (17.6 s) |
+| "Verification failed" after `vmlinuz` (B, B2, B4) | Expected, as on OVMF: iPXE's `efi_can_load` probe asks the firmware to load the kernel directly, the iPXE shim's verifier refuses it and prints the message, then iPXE starts Ubuntu's shim, which verifies the kernel |
 
 ### Still to do
 
 | Item | How |
 |---|---|
-| C to the end | Watch for `/report/late` and the VM powering off, then boot it with `-Choice x` (the menu returns to the firmware, which boots the disk) and check the installed system starts under Secure Boot (`/var/log/sb-state.txt` is written by `late-commands`) |
-| NUC: B, B2 (ISO over HTTPS), B4 (24.04.5), E (`sanboot`) | Typed URL as above; the menu defaults to B after 30 s. C wipes the largest disk |
-| D (iPXE → Ubuntu shim → GRUB) | Exploratory; only needed if B fails on real hardware |
-| HTTPS for casper's ISO download and for cloud-init's NoCloud fetch | B2 on the NUC; NoCloud over HTTPS needs our CA trusted inside the installer, which nothing provides yet |
+| HTTPS inside the installer | casper's ISO fetch can't do HTTPS (above); cloud-init's NoCloud fetch over HTTPS would also need our CA trusted inside the installer. Untested |
 | A second family (Debian or Fedora with kickstart) | If time allows |
 | 2023-only DB | Ubuntu's shims are 2011-only (above), so expected to fail; confirm on the NUC with the 2011 CA unticked |
 
@@ -112,14 +119,23 @@ OVMF screenshots: `.tmp\httpboot-spike\shot.ps1 -File <png>` (QMP on
 
 ### Consequences so far (for decisions 3–6)
 
-- **The boot path for Linux is settled in principle:** the bundled chain plus
-  iPXE's `shim` command and the distribution's own shim. No GRUB, no new
-  bundled binaries, no custom iPXE build; the per-client iPXE script carries
-  the kernel, initrd, distribution shim and command line. To confirm on the
-  NUC.
+- **The boot path for Linux:** the bundled chain plus iPXE's `shim` command
+  and the distribution's own shim, proven on OVMF and on the NUC. No GRUB, no
+  new bundled binaries, no custom iPXE build; the per-client iPXE script
+  carries the kernel, initrd, distribution shim and command line.
 - **Import (decision 2)** must record, per Linux image, the shim
   (`EFI/BOOT/BOOTX64.EFI`) with all its signers, the kernel and initrd paths,
   and serve the ISO itself for casper's `url=`.
+- **The ISO goes over plain HTTP** even when the content listener serves
+  HTTPS: the shim, kernel and initrd come over HTTPS through iPXE (and are
+  signature-checked anyway), but casper's ISO download, the squashfs the
+  installed system is copied from, is unauthenticated. The same exposure as
+  Windows content over HTTP (ADR 0028); a deployment network is assumed. A
+  generated `url=` must therefore use the interface's HTTP address, which
+  means an interface that serves HTTPS must also serve HTTP for Linux
+  clients. Options for later: casper's `fsck.mode`/`md5sum.txt` checks don't
+  cover a tampered ISO; an initramfs hook with a TLS client would.
+- **`sanboot` is out**, for Linux at least (above).
 - **Autoinstall (decision 4):** NoCloud over our content listener works;
   serving an empty `network-config` would save cloud-init's five 404
   retries. `cloud-config-url=/dev/null` belongs in every generated command
@@ -128,3 +144,15 @@ OVMF screenshots: `.tmp\httpboot-spike\shot.ps1 -File <png>` (QMP on
   events for every install step with no agent. Set its `level` to `INFO` to
   cut the volume; `early-commands`/`late-commands` hooks mark the start and
   end explicitly.
+- **ADR 0032 now ships `snponly.efi`** (amended 2026-11-23): with it the
+  NUC's keyboard works in iPXE, which anything interactive (a menu, a
+  password prompt) needs; Windows (WinPE and the agent) and Ubuntu boot
+  through it, and downloads are as fast as with `ipxe.efi`. The full build
+  can't be fixed from our side: the known fixes are custom builds, which the
+  iPXE shim refuses under Secure Boot.
+- **Re-imaging (decision 3):** after the install the machine still
+  network-boots first, so a Linux client must not be re-installed just
+  because it boots our chain again. This is the same problem ADR 0013 solves
+  for Windows, and iPXE has no prompt of ours. Options for decision 3: the
+  script falls back to `exit` (back to the firmware, then the disk) unless a
+  deployment is armed, or curtin/`late-commands` sets the boot order.

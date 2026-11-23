@@ -36,6 +36,6 @@ Never deleted; a reversed decision gets a new ADR that supersedes the old one.
 | [0029](0029-admin-authentication.md) | Admin authentication: local accounts, session cookies, API tokens | accepted |
 | [0030](0030-linux-hosts.md) | Linux hosts: a service account with two capabilities | accepted |
 | [0031](0031-packaging.md) | Packaging: an Inno Setup installer and a .deb | accepted |
-| [0032](0032-https-boot-ipxe.md) | HTTP(S) Boot through the signed iPXE shim and wimboot | accepted |
+| [0032](0032-https-boot-ipxe.md) | HTTP(S) Boot through the signed iPXE shim and wimboot (amended: `snponly.efi`) | accepted |
 
 New ADR: copy the shape of an existing one, take the next number, add it here.

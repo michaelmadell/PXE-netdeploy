@@ -94,7 +94,7 @@ Each has an ADR in `docs/adr/` with context and consequences.
 | 0029 | Admin authentication: named local accounts (full admin, argon2id) with session cookies for the UI (`__Host-`, `HttpOnly`, `Secure`, `SameSite=Strict`, 8 h idle, 7 days max, Origin check) and `ndt_` bearer tokens for automation (hashed, shown once, can't manage accounts or tokens); first account from a setup code in the log and `setup-code.txt`; offline `admin reset-password`; health without auth is status only. |
 | 0030 | Linux hosts: a non-root service account with `CAP_NET_BIND_SERVICE` and `CAP_NET_RAW`; privileges reported in capabilities and health (`missing_privileges`) instead of only bind failures; ping check falls back to Linux's unprivileged ICMP socket (`dhcp_ping_unavailable` otherwise); `ownerProcess` from `/proc` and the Windows owner tables; data directory permission checks; CI on Ubuntu with wimtools. iPXE and non-Windows OSs moved to a phase of their own. |
 | 0031 | Packaging: an Inno Setup installer (LocalSystem service, private data folder, admin address and firewall asked at install, wimlib bundled, uninstall moves data aside) and a `.deb` (sysusers account, hardened unit with two capabilities, debconf admin address, purge moves data aside); versions from git tags; the generated admin certificate renewed at start; a `v*` tag publishes a GitHub release. Unsigned for now. |
-| 0032 | HTTP(S) Boot through the signed iPXE chain: Microsoft-signed shim (ipxe-16.1, 2011 + 2023 CAs) → iPXE-signed `ipxe.efi` → a generated script → wimboot → the same bootmgfw/BCD/boot.wim as PXE, served from `/content/boot/ipxe/<arch>/`. DHCP answers `HTTPClient` with the `https://` URL when the interface serves HTTPS. Bundled with pinned hashes. Narrows ADR 0002 to PXE. The RAM-disk ISO is kept for later. |
+| 0032 | HTTP(S) Boot through the signed iPXE chain: Microsoft-signed shim (ipxe-16.1, 2011 + 2023 CAs) → iPXE-signed `ipxe.efi` (the archive's `snponly.efi` since 2026-11-23: the full build broke the NUC's USB keyboard) → a generated script → wimboot → the same bootmgfw/BCD/boot.wim as PXE, served from `/content/boot/ipxe/<arch>/`. DHCP answers `HTTPClient` with the `https://` URL when the interface serves HTTPS. Bundled with pinned hashes. Narrows ADR 0002 to PXE. The RAM-disk ISO is kept for later. |
 
 Design details that live only in the spec (search `openapi.yaml` for them):
 variable precedence (template < profile < client), idempotency keys and
@@ -196,11 +196,14 @@ from netdeployd's own DHCP answer (2026-11-20). **Phase 6 is done.**
 **Phase 7: non-Windows operating systems.** Start from
 [plan/phase-7-handover.md](plan/phase-7-handover.md), with a spike: booting
 a Secure Boot Linux installer through the signed iPXE chain.
-Decision 1 spike in progress (2026-11-20): on OVMF with Secure Boot, iPXE's
-`shim` command with Ubuntu's own shim boots the Ubuntu 26.04.1 kernel, and
-an autoinstall started from NoCloud with progress on Subiquity's webhook;
-the NUC runs and the end of the install are still to do
-([spikes/phase-7-findings.md](spikes/phase-7-findings.md), "Still to do").
+Decision 1 spike (2026-11-20 to 23): iPXE's `shim` command with the
+distribution's own shim boots the Ubuntu 26.04.1 and 24.04.5 installers
+under Secure Boot, on OVMF and on the NUC; on OVMF an autoinstall from
+NoCloud ran to the end with progress on Subiquity's webhook and the
+installed system booted under Secure Boot. casper can't fetch the ISO over
+HTTPS (no TLS client in its initramfs), `sanboot` of the ISO doesn't work for
+Linux, and the NUC's keyboard works in iPXE only with `snponly.efi`
+([spikes/phase-7-findings.md](spikes/phase-7-findings.md)).
 
 ## Open questions and things to verify
 

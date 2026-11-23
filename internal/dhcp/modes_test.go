@@ -343,3 +343,36 @@ func TestDHCPPublishesEvents(t *testing.T) {
 		}
 	}
 }
+
+// The NUC, 2026-11-23: a second DHCP server on the lab network answered
+// first and the client took its address, yet fetched our boot files. The
+// address it requested must still carry its boot session (its armed
+// deployment), as in proxy mode.
+func TestFullNotesAddressFromOtherServer(t *testing.T) {
+	sessions := &boot.Sessions{}
+	s, _ := testServer(t, func(c *Config) { c.Sessions = sessions })
+	req, err := dhcpv4.New(dhcpv4.WithHwAddr(mac(1)), dhcpv4.WithMessageType(dhcpv4.MessageTypeRequest),
+		dhcpv4.WithOption(dhcpv4.OptRequestedIPAddress(net.IPv4(10, 77, 0, 103))),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(net.IPv4(10, 77, 0, 2))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range pxeClient(iana.EFI_X86_64) {
+		m(req)
+	}
+	if r := s.Handle(req); r != nil {
+		t.Fatal("answered a request addressed to another server")
+	}
+	sess, ok := sessions.Lookup("lab0", netip.MustParseAddr("10.77.0.103"))
+	if !ok || sess.MAC != mac(1).String() || sess.Answer.File != "bootmgfw.efi" {
+		t.Fatalf("session = %+v, %v", sess, ok)
+	}
+	// A client that isn't network booting gets no session.
+	plain, _ := dhcpv4.New(dhcpv4.WithHwAddr(mac(2)), dhcpv4.WithMessageType(dhcpv4.MessageTypeRequest),
+		dhcpv4.WithOption(dhcpv4.OptRequestedIPAddress(net.IPv4(10, 77, 0, 104))),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(net.IPv4(10, 77, 0, 2))))
+	s.Handle(plain)
+	if _, ok := sessions.Lookup("lab0", netip.MustParseAddr("10.77.0.104")); ok {
+		t.Error("a non-booting client got a session")
+	}
+}

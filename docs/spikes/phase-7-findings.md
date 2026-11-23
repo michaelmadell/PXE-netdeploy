@@ -254,9 +254,61 @@ serves the image's tree and `image.iso`. Import also warns about a
   consumes the deployment once; WinPE neither lists, starts nor consumes
   Linux deployments; profile API per-kind codes and `kind_changed`.
 
-**Not yet tested:** any of it on the NUC: `prompt`, `login`, `menu` and
-`params` (POST) in the signed `snponly.efi`, `exit 1` falling through to
-the disk, and an Ubuntu install started from the menu and from an armed
-deployment through netdeployd (the spike used its own server). The UI's
-profile editor (kind choice, Linux fields) only through `tsc`.
+**Lab, Intel NUC, 2026-11-23 (the user):** the checks in
+`running-the-lab.md` ("Linux deployments") **passed**: the gate's countdown
+with no key falling through to the disk (`exit 1`), the password prompt
+(`login`) with a wrong and a right password, the menu of Linux profiles
+(`menu`, `choose`) and the form POSTs (`params`) in the signed
+`snponly.efi`, the Ubuntu installer started from the menu and from an armed
+deployment through netdeployd (the deployment `pending` → `running`, not
+armed on the next boot), and no answer for PXE. The profile editor's kind
+choice and Linux fields were used to set it up.
 
+
+## Automated installs (decision 4, ADR 0035)
+
+**Built 2026-11-23** (not yet lab-tested). `internal/autoinstall`
+(templates with YAML escaping, data, the built-in template, checks, SHA-512
+crypt); templates' `format` and `builtin-autoinstall`; Linux profiles'
+`linux` settings (migration 0016 rebuilds `unattend_templates` and
+`profiles`); arming snapshots the template, variables, hostname and
+password secret; the boot commands add `autoinstall
+ds=nocloud;s=http://<interface>:<port>/content/seed/<token>/`; the content
+listeners serve the seed.
+
+**Automated** (Windows lab host: `go test -count=1 ./...`, `just lint`):
+
+- `autoinstall`: SHA-512 crypt matches the specification's vector and an
+  OpenSSL 3 one (`openssl passwd -6`); YAML escaping (quotes, `#`, `: `,
+  lists, booleans, `raw`, `shquote`) parses back to the input; the built-in
+  template checks clean and renders, through yaml.v3, the identity, SSH,
+  storage, packages, the `efibootmgr` late command for `disk-first`, a
+  locked password with passwordless sudo when there's no password, no SSH
+  server without keys; each check; hostname patterns (placeholder serial,
+  lowercasing, invalid names).
+- `server`: template API (`not_for_format`, `identity_modes_required`,
+  `template_invalid`, `template_render`, `format_changed`, the masked
+  sample preview); profile codes (`linux_account_required`,
+  `reserved_account_name`, `invalid_ssh_key`, `invalid_hostname_pattern`,
+  `template_format_mismatch`); `validate` ok; from the iPXE menu the boot
+  commands carry the seed URL, `user-data` has the account, keys, the
+  hostname from the pattern and a hash that verifies against the secret,
+  `meta-data` has the instance id, `network-config` is 404, and the seed is
+  gone once the deployment ends.
+
+**Not yet tested:** an install from the seed on the NUC through netdeployd
+(the spike's seed was hand-written), the built-in template's `late-commands`
+(boot order, sudoers), the locked-password account; the UI (template format,
+the profile's install settings) only through `tsc`.
+
+**Armed deployment ignored on the first boot (NUC, 2026-11-23).** The user
+saw the unarmed 30 s countdown first, and the armed 10 s one only on the
+next boot. The log: a second DHCP server at `10.77.0.2` (the Phase 6
+`nd-linux` VM's netdeployd, still running) answered too; the NUC took its
+address (`10.77.0.103`, `client selected server 10.77.0.2`) but fetched our
+boot files, so netdeployd had no boot session for `.103` and generated the
+script from the default profile, unarmed. 29 such requests in the log
+since 2026-11-20. Fixes: stop the other server; and full mode now notes the
+address a booting client takes from another server as a boot session, as
+proxy mode does (`another DHCP server answered a network-boot client` in
+the log).

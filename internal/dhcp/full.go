@@ -42,6 +42,16 @@ func (s *Server) full(ctx context.Context, req *dhcpv4.DHCPv4, mt dhcpv4.Message
 			s.mu.Lock()
 			s.pool.release(mac)
 			s.mu.Unlock()
+			// A network-boot client taking another server's address may still
+			// fetch our boot files (it can combine our offer's boot file with
+			// the other's address): note the address, as proxy mode does, so
+			// its content and generated iPXE script are still its own.
+			if ip := req.RequestedIPAddress(); ip != nil && !ip.IsUnspecified() && (c.pxe() || c.http()) {
+				s.log.Warn("another DHCP server answered a network-boot client", "mac", mac, "server", sid.String(), "ip", ip.String())
+				if ans, arch, ok, _ := s.boot(ctx, req, c, ip); ok {
+					s.session(ip, mac, arch, ans)
+				}
+			}
 			return nil, "client selected server " + sid.String()
 		}
 		ip := req.RequestedIPAddress()

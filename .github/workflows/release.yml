@@ -42,9 +42,20 @@ jobs:
       - run: pnpm --dir web install --frozen-lockfile
       - run: just test
       - run: just package -RequireInstaller
+      - name: Checksums
+        shell: pwsh
+        run: |
+          # sha256sum format, so `sha256sum -c SHA256SUMS.txt` works on Linux.
+          Get-ChildItem dist/netdeploy-*-setup.exe, dist/netdeploy_*.deb | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/netdeploy-*-setup.exe
             dist/netdeploy_*.deb
+            dist/SHA256SUMS.txt
           generate_release_notes: true
+          # v0.1.0-rc.1 and the like are marked as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}

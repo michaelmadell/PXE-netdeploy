@@ -352,3 +352,18 @@ refused, passwordless sudo), A3 (network-first: the countdown, then the
 disk), A4 (a failing late command: failed, with the installer's errors in
 the log) and A5 (interactive: succeeded at once, the installer asked its
 questions). Windows regression and the release candidate still to run.
+
+**Windows regression after Phase 7 (the user, 2026-11-24): passed.** PXE
+deployment on Hyper-V and on the NUC; HTTP Boot on the NUC from
+netdeployd's DHCP answer; the WinPE boot prompt lists only Windows
+profiles; existing unattend templates preview and save; deployments from
+before Phase 7 display correctly. The NUC's HTTPS boot entry still held the
+spike's typed URI (`https://10.77.0.1:8444/…`, the spike server's menu), so
+HTTPS Boot through netdeployd wasn't re-run (last run 2026-11-23, ADR 0032
+amendment).
+
+**Release versions:** `scripts/version.ps1` didn't recognise pre-release
+tags (`v0.1.0-rc.1` would have built as `0.0.0-<n>-g0.1.0-rc.1`); it now
+gives `0.1.0-rc.1` (deb `0.1.0~rc.1`, which dpkg sorts before `0.1.0`; file
+version `0.1.0.0`), and the release workflow marks tags with a `-` as
+pre-releases.

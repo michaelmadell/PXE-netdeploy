@@ -54,7 +54,9 @@ foreach ($arch in 'amd64', 'arm64') {
     (Get-Content -Raw packaging/linux/nfpm.yaml).Replace('${NETDEPLOY_ARCH}', $arch).
         Replace('${NETDEPLOY_DEB_VERSION}', $debVersion).Replace('${NETDEPLOY_BIN}', $bin) |
         Set-Content -NoNewline $config
-    go run $nfpm package -f $config -p deb -t dist/
+    # Named with the plain version: GitHub renames release assets with a ~ in
+    # them (the package's own version, inside, keeps 0.1.0~rc.1).
+    go run $nfpm package -f $config -p deb -t "dist/netdeploy_${v}_$arch.deb"
     if ($LASTEXITCODE) { throw "nfpm failed for $arch" }
 }
 
